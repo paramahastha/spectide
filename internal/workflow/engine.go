@@ -16,6 +16,7 @@ import (
 	"github.com/spectide/spectide/internal/adapters"
 	"github.com/spectide/spectide/internal/adapters/claude"
 	"github.com/spectide/spectide/internal/adapters/codex"
+	fakeadapter "github.com/spectide/spectide/internal/adapters/fake"
 	"github.com/spectide/spectide/internal/adapters/opencode"
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
@@ -29,15 +30,17 @@ import (
 // Engine is deliberately provider-neutral. The built-in fake route is the offline,
 // deterministic acceptance path; real providers must be added only after a successful probe.
 type Engine struct {
-	store        *store.Store
-	ownerID      string
-	adapters     map[adapters.ProviderName]adapters.Adapter
-	discover     func(string) (speckit.Installation, error)
-	mu           sync.Mutex
-	cancels      map[string]context.CancelFunc
-	resumes      map[string]chan struct{}
-	locks        map[string]string
-	processLocks map[string]*workspaceguard.ProcessLock
+	store         *store.Store
+	ownerID       string
+	adapters      map[adapters.ProviderName]adapters.Adapter
+	discover      func(string) (speckit.Installation, error)
+	mu            sync.Mutex
+	cancels       map[string]context.CancelFunc
+	resumes       map[string]chan struct{}
+	locks         map[string]string
+	processLocks  map[string]*workspaceguard.ProcessLock
+	fakeAdapter   fakeadapter.Adapter
+	fakeScenarios map[string]fakeadapter.Adapter
 }
 
 func New(s *store.Store) *Engine {
@@ -53,7 +56,7 @@ func NewWithAdapters(s *store.Store, providers ...adapters.Adapter) *Engine {
 			registry[provider.Name()] = provider
 		}
 	}
-	return &Engine{store: s, ownerID: uuid.NewString(), adapters: registry, discover: speckit.Discover, cancels: map[string]context.CancelFunc{}, resumes: map[string]chan struct{}{}, locks: map[string]string{}, processLocks: map[string]*workspaceguard.ProcessLock{}}
+	return &Engine{store: s, ownerID: uuid.NewString(), adapters: registry, fakeAdapter: fakeadapter.Adapter{Script: []fakeadapter.ScriptStep{{Type: "started", Summary: "simulated stage started"}, {Type: "completed", Summary: "simulated stage completed"}}}, discover: speckit.Discover, cancels: map[string]context.CancelFunc{}, resumes: map[string]chan struct{}{}, locks: map[string]string{}, processLocks: map[string]*workspaceguard.ProcessLock{}}
 }
 
 var stages = []string{"constitution", "specify", "clarify", "plan", "checklist", "tasks", "analyze", "implement", "tests", "converge", "final_review", "report"}
@@ -1025,6 +1028,24 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			e.finish(r.ID)
 			return
 		}
+		fakeRunner := e.fakeAdapter
+		if scenario, ok := e.fakeScenarios[key]; ok {
+			fakeRunner = scenario
+		}
+		fakeEvents, fakeErr := fakeRunner.Execute(ctx)
+		for _, event := range fakeEvents {
+			if err := e.store.Event(ctx, r.ID, key, "provider.event", "info", map[string]any{"simulated": true, "type": event.Type, "summary": event.Summary}); err != nil {
+				e.failPersistence(r.ID)
+				return
+			}
+		}
+		if fakeErr != nil {
+			if err := e.failSimulatedStage(ctx, r.ID, key, st.ID, fakeErr); err != nil {
+				e.failPersistence(r.ID)
+			}
+			e.finish(r.ID)
+			return
+		}
 		if err := e.store.SetStage(ctx, st.ID, model.Succeeded); err != nil {
 			e.failPersistence(r.ID)
 			return
@@ -1120,6 +1141,30 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 		return
 	}
 	e.finish(r.ID)
+}
+
+func (e *Engine) failSimulatedStage(ctx context.Context, runID, key, stageID string, cause error) error {
+	reason := safeStageError(cause)
+	if err := e.store.SetStage(context.Background(), stageID, model.StageFail); err != nil {
+		return err
+	}
+	if err := e.store.Event(context.Background(), runID, key, "stage.failed", "error", map[string]any{"simulated": true, "reason": reason, "execution": "SIMULATED"}); err != nil {
+		return err
+	}
+	for _, gate := range []string{"analyze_clean", "required_tests", "converged", "final_review", "simulated_e2e"} {
+		verdict := "BLOCKED"
+		evidence := "simulated workflow stopped before this gate"
+		if (key == "analyze" && gate == "analyze_clean") || (key == "tests" && gate == "required_tests") || (key == "converge" && gate == "converged") || (key == "final_review" && gate == "final_review") || (key != "analyze" && key != "tests" && key != "converge" && key != "final_review" && gate == "simulated_e2e") {
+			verdict, evidence = "FAIL", reason
+		}
+		if err := e.store.Gate(context.Background(), runID, gate, verdict, "SIMULATED: "+evidence); err != nil {
+			return err
+		}
+	}
+	if err := e.store.SetRunState(context.Background(), runID, model.Failed); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (e *Engine) waitForSensitiveApproval(ctx context.Context, runID, stage, stageID string, approval model.Approval, resume <-chan struct{}) (bool, error) {

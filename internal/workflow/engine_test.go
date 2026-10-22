@@ -4,15 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/spectide/spectide/internal/config"
-	"github.com/spectide/spectide/internal/model"
-	"github.com/spectide/spectide/internal/security"
-	"github.com/spectide/spectide/internal/store"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	fakeadapter "github.com/spectide/spectide/internal/adapters/fake"
+	"github.com/spectide/spectide/internal/config"
+	"github.com/spectide/spectide/internal/model"
+	"github.com/spectide/spectide/internal/security"
+	"github.com/spectide/spectide/internal/store"
 )
 
 func TestFakeLifecyclePersistsEvidence(t *testing.T) {
@@ -72,6 +74,84 @@ func TestFakeLifecyclePersistsEvidence(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("workflow did not complete")
+}
+
+func TestFakeProviderScenarioFixturesRunThroughCompleteEngine(t *testing.T) {
+	fixtureBytes, err := os.ReadFile(filepath.Join("..", "..", "testdata", "fake-provider", "scenarios.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture map[string][]struct {
+		Type           string `json:"type"`
+		Summary        string `json:"summary"`
+		FailureCode    string `json:"failure_code"`
+		FailureMessage string `json:"failure_message"`
+		RetryAfterMS   int    `json:"retry_after_ms"`
+	}
+	if err := json.Unmarshal(fixtureBytes, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	for _, scenario := range []struct {
+		name, wantCode string
+		wantState      model.RunState
+	}{{"success", "", model.Completed}, {"failure", "SCRIPTED_FAILURE", model.Failed}, {"rate_limit", "RATE_LIMITED", model.Failed}} {
+		t.Run(scenario.name, func(t *testing.T) {
+			s, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			steps := make([]fakeadapter.ScriptStep, 0, len(fixture[scenario.name]))
+			for _, item := range fixture[scenario.name] {
+				steps = append(steps, fakeadapter.ScriptStep{Type: item.Type, Summary: item.Summary, FailureCode: item.FailureCode, FailureMessage: item.FailureMessage, RetryAfter: time.Duration(item.RetryAfterMS) * time.Millisecond})
+			}
+			engine := New(s)
+			engine.fakeScenarios = map[string]fakeadapter.Adapter{"specify": {Script: steps}}
+			run, err := engine.Start(context.Background(), t.TempDir(), "exercise a deterministic simulated provider scenario")
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := engine.Wait(context.Background(), run.ID)
+			if err != nil || result.State != scenario.wantState {
+				t.Fatalf("run=%+v err=%v", result, err)
+			}
+			report, err := s.Report(context.Background(), run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(report.Gates) != 6 {
+				t.Fatalf("terminal report omitted the simulated required-gate inventory: %+v", report.Gates)
+			}
+			events, err := s.Events(context.Background(), run.ID, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var foundFailure, foundSimulatedEvent bool
+			for _, event := range events {
+				payload := fmt.Sprint(event.Payload)
+				if scenario.wantCode != "" && event.Type == "stage.failed" && strings.Contains(payload, scenario.wantCode) && strings.Contains(payload, "SIMULATED") {
+					foundFailure = true
+				}
+				if event.Type == "provider.event" && strings.Contains(payload, "SIMULATED") {
+					foundSimulatedEvent = true
+				}
+			}
+			if scenario.wantCode != "" && (len(report.Stages) != 2 || report.Stages[1].Key != "specify" || report.Stages[1].State != model.StageFail) {
+				t.Fatalf("scripted failure did not terminate the full lifecycle at its provider stage: %+v", report.Stages)
+			}
+			if scenario.wantCode == "" && len(report.Stages) != len(stages) {
+				t.Fatalf("scripted success did not execute the complete lifecycle: stages=%d", len(report.Stages))
+			}
+			if (scenario.wantCode != "" && !foundFailure) || !foundSimulatedEvent {
+				t.Fatalf("failure evidence must preserve the typed reason and simulated provider events: failure=%t simulated_event=%t events=%+v", foundFailure, foundSimulatedEvent, events)
+			}
+			for _, gate := range report.Gates {
+				if gate.Key != "workflow_execution" && !strings.Contains(strings.ToUpper(gate.Evidence), "SIMULATED") {
+					t.Fatalf("gate omitted simulated evidence: %+v", gate)
+				}
+			}
+		})
+	}
 }
 
 func TestWorkflowDoesNotCompleteWhenQualityEventPersistenceFails(t *testing.T) {
