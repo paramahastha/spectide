@@ -639,3 +639,15 @@
 - Full engine tests load the checked-in success, failure, and rate-limit fixtures; success completes all 12 lifecycle stages, while failure scenarios assert the prior stage succeeds and the scripted stage fails. Existing workflow tests cover failed-check repair, append-only convergence, loop exhaustion/no-progress, pause/cancel interruption, and workspace contention. Focused `go test ./internal/workflow ./internal/adapters/fake -count=1` passed.
 - Full `make verify` passed: `go vet ./...`, `go test ./...`, dashboard typecheck, 29 frontend tests, production build, binary build, secret scan, and simulated smoke. SC-001: 20.936 ms.
 - T076 is complete; T077 is next. Browser page/state acceptance and authenticated live-provider checks remain `NOT_RUN`.
+
+### T077 — Browser acceptance attempt — 2026-10-23
+
+- Component tests remain green (29 tests, seven named Axe surfaces with zero critical/serious violations; stylesheet contrast and reduced-motion rules are separately checked). The rendered acceptance matrix is documented in `docs/accessibility-audit.md` and `docs/screenshots/README.md`.
+- Chrome is installed and available, but its saved origin approval policy rejected the local dashboard origin `http://127.0.0.1:4747` and explicitly prohibited alternate browser surfaces or indirect access. I stopped the attempt and requested that the user enable this specific local origin. Browser E2E, rendered keyboard/focus/contrast/reduced-motion, 200% zoom, and screenshots remain `NOT_RUN` pending authorization.
+- T077 remains open; this is a concrete browser policy blocker, not a failed app test.
+
+### T079 — Node 26 CI and contributor toolchain — 2026-10-23
+
+- CI now selects Node 26, and README/user-guide prerequisites document Node.js 26 with npm and Go 1.27. Local Node is v26.12.0.
+- `make verify` passed on Node 26: Go 1.27 vet/tests, dashboard typecheck, 29 tests, production build, binary build, secret scan, and simulated smoke. SC-001: 18.782 ms.
+- T079 is complete.

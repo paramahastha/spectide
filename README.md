@@ -6,6 +6,8 @@ SpecTide is a local-first control plane for evidence-backed, profile-aware Spec-
 
 ## Offline quickstart
 
+Development requires Go 1.27 and Node.js 26 with npm. CI uses the same toolchain versions.
+
 ```bash
 make test
 make build

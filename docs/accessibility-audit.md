@@ -1,11 +1,11 @@
 # Dashboard accessibility audit
 
-**Status: PARTIAL — browser acceptance remains open (T031).**
+**Status: PARTIAL — rendered browser acceptance remains open (T031/T077).**
 
 ## Automated state and surface coverage
 
 Command: `cd web && npm test`  
-Run: 2026-10-22, Vitest 4.1.12 / jsdom. Result at that checkpoint: **26 tests passed**. The FR-026 Axe scan renders each named surface and reports **0 critical and 0 serious violations**. The current suite has 27 tests, including keyboard-operable approval controls; the rendered browser evidence remains outstanding.
+Run: 2026-10-23, Vitest 4.1.12 / jsdom on Node 26. Result: **29 tests passed**. The FR-026 Axe scan renders each named surface and reports **0 critical and 0 serious violations**. The suite includes keyboard-operable approval controls and two-viewer event replay; rendered browser evidence remains outstanding.
 
 | Surface | States covered by automated tests |
 |---|---|
@@ -28,4 +28,4 @@ Keyboard focus has a visible `:focus-visible` outline, and the stylesheet has a 
 - Rendered browser contrast, keyboard/focus sequence, and reduced-motion behavior: NOT_RUN.
 - Screenshots at desktop, tablet, and phone widths: NOT_RUN.
 
-No Chromium, Chrome, or Edge executable is installed in this environment. A previous localhost browser inspection was denied by the browser access gate. No alternate browser access path was used. T031 remains unchecked until these browser checks can run in an authorized browser environment.
+Google Chrome is installed and available, but opening the local dashboard at `http://127.0.0.1:4747` was rejected by the browser origin approval gate. The saved browser permission policy denied local network access and disallowed alternate browser surfaces or indirect access. No alternate access path was used. T031/T077 remain unchecked until the origin is authorized and the rendered checks can run.

@@ -13,7 +13,7 @@
 - Architecture: arm64
 - Build command: `make build` (`go build -o bin/spectide ./cmd/spectide`)
 - Startup/health command: `make smoke` (`scripts/smoke.sh` starts `spectide serve --port 0`, then requests `/healthz`)
-- Measurement: latest `make verify` run measured 20.936 ms from the monotonic timestamp immediately before `Popen` through the first HTTP 200 from `/healthz`; acceptance limit is 2,000 ms. Earlier measurements are retained in the implementation checkpoint history.
+- Measurement: latest `make verify` run measured 18.782 ms from the monotonic timestamp immediately before `Popen` through the first HTTP 200 from `/healthz`; acceptance limit is 2,000 ms. Earlier measurements are retained in the implementation checkpoint history.
 - The same smoke run completed the offline demo and reported `SIMULATED`.
 
 ## Other verification executed
@@ -41,6 +41,7 @@
 | Immutable execution labels | PASS, store/CLI/component fixtures | `make verify`; run history and reports derive execution class from immutable route snapshots; simulated/live/mixed/unknown rows render before selection, CLI status includes the class and acceptance verdict, and stage details include effort and attempt (T074). Live account execution and browser rendering remain NOT_RUN. |
 | Local API contract completion | PASS | `make verify`; API tests cover safe persisted capabilities, configuration validation without run creation, default 100-run pagination and metadata, exact route/method handling, request-ID-correlated sanitized errors, and explicit stage/artifact/report projections (T075). `ruby -e 'require "yaml"; YAML.load_file("docs/openapi.yaml")'` parses the updated OpenAPI contract. |
 | Deterministic simulated failure lifecycles | PASS | `go test ./internal/workflow ./internal/adapters/fake -count=1` and `make verify`; checked-in fake success/failure/rate-limit scripts execute through engine stages. Complete-run assertions verify typed provider errors, preserved SIMULATED events, failed stage outcomes, and the six-gate terminal inventory. Workflow lifecycle tests also cover failed-check repair, append-only convergence, bounded exhaustion/no-progress, interruption, and workspace contention (T076). |
+| Node 26 dashboard verification | PASS | Local Node v26.12.0 and CI `.github/workflows/ci.yml` use Node 26; `make verify` passed frontend typecheck, 29 tests, production build, and Go 1.27 vet/tests (T079). |
 | Runner timeout/output/cancellation | PASS | `go test ./internal/runner -count=1` |
 | Deterministic repeated lifecycle | PASS | `TestTwentyDeterministicRunsCompleteWithRequiredEvidence` (20 runs) |
 | Workspace path/scope enforcement | PASS | Focused `go test ./internal/workflow ./internal/api ./internal/workspace`; missing paths and disallowed roots rejected before run creation, canonical symlink path accepted within scope |
@@ -64,5 +65,5 @@
 
 - Authenticated provider execution and real-provider convergence: NOT_RUN. The official Spec-Kit converge command ran and appended T055–T079, but the project is not yet converged. The verified workflow path is fixture-backed; `doctor` reports provider CLIs as not authenticated. T045 remains open.
 - Mixed live workflow final acceptance: BLOCKED at `simulated_e2e`; T016/T034/T035 implementation and T036 fixture-backed failure/recovery/secret-leak/exhaustion scenarios pass, but no authenticated provider run is available.
-- Browser E2E, actual 200% zoom, rendered keyboard/focus/contrast and reduced-motion checks, and screenshots: NOT_RUN. No Chromium/Chrome/Edge executable is installed and the prior localhost browser inspection was denied by the browser access gate; T031/T046 remain open. Component-level Axe and stylesheet contrast checks are recorded separately.
+- Browser E2E, actual 200% zoom, rendered keyboard/focus/contrast and reduced-motion checks, and screenshots: NOT_RUN. Chrome's saved origin approval policy denied access to `http://127.0.0.1:4747` and prohibited alternate access paths; local origin authorization is pending. T031/T046/T077 remain open. Component-level Axe and stylesheet contrast checks are recorded separately.
 - Full release acceptance: INCOMPLETE. T031 browser evidence, T045 official convergence, and T046 screenshots/release report remain open. See [the acceptance ledger](acceptance-ledger.md) and [the implementation task ledger](../specs/001-build-spectide/tasks.md).

@@ -1,6 +1,6 @@
 # Local user guide
 
-SpecTide runs on the developer's machine. Go builds the service and CLI; Node.js builds and tests the embedded dashboard.
+SpecTide runs on the developer's machine. Development and CI use Go 1.27 and Node.js 26 with npm. Go builds the service and CLI; Node.js builds and tests the embedded dashboard.
 
 ## Build and run the offline demo
 
