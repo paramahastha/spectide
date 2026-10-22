@@ -36,6 +36,44 @@ func TestProjectConfigSaveLoadIsPrivateAndValidated(t *testing.T) {
 	}
 }
 
+func TestConfigPersistenceRedactsDisplayNameAndRejectsSecretIdentities(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	displaySecret := "config-display-secret-123456"
+	cfg := Default()
+	cfg.Project = "workspace password=" + displaySecret
+	if err := Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(contents), displaySecret) || !strings.Contains(string(contents), "[REDACTED]") {
+		t.Fatalf("saved config leaked display metadata: %s", contents)
+	}
+	loaded, err := Load(path)
+	if err != nil || strings.Contains(loaded.Project, displaySecret) || !strings.Contains(loaded.Project, "[REDACTED]") {
+		t.Fatalf("loaded config=%+v err=%v", loaded, err)
+	}
+	if err := Save(filepath.Join(dir, "token="+displaySecret+".json"), Default()); err == nil || !strings.Contains(err.Error(), "CONFIG_PATH_SECRET_REFERENCE_REJECTED") {
+		t.Fatalf("secret-bearing config path was accepted: %v", err)
+	}
+	for name, mutate := range map[string]func(*Config){
+		"profile identity": func(c *Config) { c.DefaultRoute.Profile = "work api_key=" + displaySecret },
+		"model identity":   func(c *Config) { c.DefaultRoute.Model = "model token=" + displaySecret },
+		"workspace scope":  func(c *Config) { c.AllowedScopes = []string{"/workspace/secret=" + displaySecret} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := Default()
+			mutate(&bad)
+			if err := Save(filepath.Join(t.TempDir(), "config.json"), bad); err == nil || !strings.Contains(err.Error(), "CONFIG_") {
+				t.Fatalf("secret-bearing configuration identity was accepted: %v", err)
+			}
+		})
+	}
+}
+
 func TestMissingConfigGetsDefaults(t *testing.T) {
 	c, err := Load(filepath.Join(t.TempDir(), "missing.json"))
 	if err != nil || c.RoutingMode != "hybrid" {

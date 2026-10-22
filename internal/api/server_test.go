@@ -665,6 +665,40 @@ func TestProjectConfigAndApprovalEndpoints(t *testing.T) {
 	}
 }
 
+func TestProjectAndArtifactSecretsStayRedactedThroughAPIAndReport(t *testing.T) {
+	s := testServer(t)
+	root := t.TempDir()
+	projectSecret := "api-project-secret-123456"
+	body := `{"path":"` + root + `","name":"workspace password=` + projectSecret + `"}`
+	r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/projects", strings.NewReader(body))
+	r.Host = "127.0.0.1"
+	r.Header.Set("X-SpecTide-CSRF", s.CSRF)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusCreated || strings.Contains(w.Body.String(), projectSecret) || !strings.Contains(w.Body.String(), "[REDACTED]") {
+		t.Fatalf("project response leaked or failed to redact display name: status=%d body=%s", w.Code, w.Body.String())
+	}
+	projects, err := s.Store.Projects(context.Background())
+	if err != nil || len(projects) != 1 || strings.Contains(projects[0].DisplayName, projectSecret) {
+		t.Fatalf("project persistence leaked display name: projects=%+v err=%v", projects, err)
+	}
+	run, err := s.Store.CreateRun(context.Background(), root, "report fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifactSecret := "api-artifact-secret-654321"
+	if _, err := s.Store.SaveArtifact(context.Background(), model.Artifact{RunID: run.ID, Stage: "specify", Path: "specs/spec.md", Kind: "source token=" + artifactSecret, SHA256: strings.Repeat("c", 64)}); err != nil {
+		t.Fatal(err)
+	}
+	r = httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/v1/runs/"+run.ID+"/report", nil)
+	r.Host = "127.0.0.1"
+	w = httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), artifactSecret) || !strings.Contains(w.Body.String(), "[REDACTED]") {
+		t.Fatalf("report response leaked or failed to redact artifact metadata: status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestProjectConfigRejectsRegisteredPathSymlinkSwap(t *testing.T) {
 	s := testServer(t)
 	root := filepath.Join(t.TempDir(), "project")

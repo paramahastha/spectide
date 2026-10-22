@@ -206,6 +206,9 @@ func (s *Store) CreateRunIdempotent(ctx context.Context, key, project, prompt st
 }
 
 func (s *Store) CreateRunWithConfiguration(ctx context.Context, key, project, prompt string, configJSON []byte) (model.Run, bool, error) {
+	if security.Redact(project) != project {
+		return model.Run{}, false, fmt.Errorf("RUN_PROJECT_SECRET_REFERENCE_REJECTED")
+	}
 	if len(configJSON) > 0 && security.Redact(string(configJSON)) != string(configJSON) {
 		return model.Run{}, false, fmt.Errorf("RUN_CONFIGURATION_SECRET_REFERENCE_REJECTED")
 	}
@@ -378,6 +381,15 @@ func (s *Store) RegisterProject(ctx context.Context, path, name string, scopes [
 	if path == "" || name == "" {
 		return fmt.Errorf("PROJECT_PATH_AND_NAME_REQUIRED")
 	}
+	if security.Redact(path) != path {
+		return fmt.Errorf("PROJECT_PATH_SECRET_REFERENCE_REJECTED")
+	}
+	for _, scope := range scopes {
+		if security.Redact(scope) != scope {
+			return fmt.Errorf("PROJECT_SCOPE_SECRET_REFERENCE_REJECTED")
+		}
+	}
+	name = security.Redact(name)
 	b, err := json.Marshal(scopes)
 	if err != nil {
 		return err

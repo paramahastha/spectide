@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/spectide/spectide/internal/security"
 )
 
 const FileName = "config.json"
@@ -84,6 +86,7 @@ func Load(path string) (Config, error) {
 	if err := Validate(c); err != nil {
 		return Config{}, err
 	}
+	c.Project = security.Redact(c.Project)
 	return c, nil
 }
 
@@ -124,6 +127,7 @@ func loadOptional(path string) (Config, bool, error) {
 	if err = Validate(c); err != nil {
 		return Config{}, false, err
 	}
+	c.Project = security.Redact(c.Project)
 	return c, true, nil
 }
 
@@ -233,9 +237,13 @@ func mergeRoute(base, override Route) Route {
 }
 
 func Save(path string, c Config) error {
+	if security.Redact(path) != path {
+		return fmt.Errorf("CONFIG_PATH_SECRET_REFERENCE_REJECTED")
+	}
 	if err := Validate(c); err != nil {
 		return err
 	}
+	c.Project = security.Redact(c.Project)
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
@@ -256,6 +264,19 @@ func Save(path string, c Config) error {
 }
 
 func Validate(c Config) error {
+	if routeHasSecret(c.DefaultRoute) {
+		return fmt.Errorf("CONFIG_ROUTE_SECRET_REFERENCE_REJECTED")
+	}
+	for stage, route := range c.StageRoutes {
+		if security.Redact(stage) != stage || routeHasSecret(route) {
+			return fmt.Errorf("CONFIG_ROUTE_SECRET_REFERENCE_REJECTED")
+		}
+	}
+	for _, scope := range c.AllowedScopes {
+		if security.Redact(scope) != scope {
+			return fmt.Errorf("CONFIG_SCOPE_SECRET_REFERENCE_REJECTED")
+		}
+	}
 	if c.Version != 1 {
 		return fmt.Errorf("CONFIG_VERSION_UNSUPPORTED: %d", c.Version)
 	}
@@ -293,6 +314,20 @@ func Validate(c Config) error {
 		return fmt.Errorf("DEFAULT_ROUTE_REQUIRED")
 	}
 	return nil
+}
+
+func routeHasSecret(route Route) bool {
+	for _, identity := range []string{route.Provider, route.Profile, route.Model, route.Effort} {
+		if security.Redact(identity) != identity {
+			return true
+		}
+	}
+	for _, fallback := range route.Fallback {
+		if routeHasSecret(fallback) {
+			return true
+		}
+	}
+	return false
 }
 
 func validateExecution(settings ExecutionSettings) error {

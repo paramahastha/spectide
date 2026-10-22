@@ -658,3 +658,9 @@
 - Findings include persistence redaction and config symlink containment, runner/process lock lifetime, read-only/owner-only workspace mutation checks, checkpoint/restart cursor semantics, repair-path approvals, final-gate aggregation, local stage routing, selected feature scope, semantic no-op evidence, parser compatibility, live event delivery, stream validation, quality-check discovery, migration compatibility, retention, dashboard evidence projections, CLI/API preview parity, release documentation, and packaging.
 - Fresh review checks: `go vet ./...`, `npm run typecheck`, `npm test -- --run` (29 tests), and targeted race tests passed. `go test -count=1 ./...` failed `TestHeartbeatOwnershipLossCancelsActiveWorker` (observed state `FAILED`); the focused `-count=5` retry failed 2/5. `make load-test-sse` failed in fixture setup with `UNIQUE constraint failed: events.run_id, events.seq` before any latency measurement. See T101/T102; do not replace those outcomes with earlier passes.
 - Official outcome: `tasks_appended`; T045 remains open. T077 remains blocked because the browser-origin policy denies local dashboard access. T080 is next.
+
+### T080 — Secret-safe project, artifact, and config persistence — 2026-10-23
+
+- Project display names and artifact kind metadata are redacted before persistence. Canonical project/run paths, allowed scopes, artifact IDs/stages/paths, route/profile/model/effort references, and config save paths reject values containing supported secret patterns rather than rewriting identity values.
+- Synthetic-secret tests cover config JSON save/load, SQLite project/artifact values, backup bytes and restore, report projection, CLI project listing, and API project/report responses.
+- `go test ./internal/config ./internal/store ./internal/cli ./internal/api -count=1` passed. T080 is complete; T081 is next.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -174,6 +175,81 @@ func TestEvidenceAndCapabilityStringsAreRedactedBeforePersistence(t *testing.T) 
 	}
 	if _, _, err = s.CreateRunWithConfiguration(ctx, "", "/workspace", "safe prompt", []byte(`[{"model":"api_key=configuration-secret-123456"}]`)); err == nil || !strings.Contains(err.Error(), "RUN_CONFIGURATION_SECRET_REFERENCE_REJECTED") {
 		t.Fatalf("secret-bearing execution identity was persisted: %v", err)
+	}
+}
+
+func TestProjectAndArtifactSecretBoundariesCoverBackupAndReport(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	root := filepath.Join(dir, "project")
+	projectSecret := "project-secret-123456"
+	if err := s.RegisterProject(ctx, root, "workspace password="+projectSecret, []string{root}); err != nil {
+		t.Fatal(err)
+	}
+	projects, err := s.Projects(ctx)
+	if err != nil || len(projects) != 1 || strings.Contains(projects[0].DisplayName, projectSecret) || !strings.Contains(projects[0].DisplayName, "[REDACTED]") || projects[0].CanonicalPath != root {
+		t.Fatalf("registered project=%+v err=%v", projects, err)
+	}
+	if err := s.RegisterProject(ctx, root+"/token="+projectSecret, "unsafe path", []string{root}); err == nil || !strings.Contains(err.Error(), "PROJECT_PATH_SECRET_REFERENCE_REJECTED") {
+		t.Fatalf("secret-bearing canonical path was stored: %v", err)
+	}
+	if err := s.RegisterProject(ctx, root, "unsafe scope", []string{root + "/api_key=" + projectSecret}); err == nil || !strings.Contains(err.Error(), "PROJECT_SCOPE_SECRET_REFERENCE_REJECTED") {
+		t.Fatalf("secret-bearing scope was stored: %v", err)
+	}
+	run, err := s.CreateRun(ctx, root, "project artifact evidence")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateRun(ctx, root+"/password="+projectSecret, "must reject secret workspace identity"); err == nil || !strings.Contains(err.Error(), "RUN_PROJECT_SECRET_REFERENCE_REJECTED") {
+		t.Fatalf("secret-bearing run workspace identity was stored: %v", err)
+	}
+	if _, err := s.SaveArtifact(ctx, model.Artifact{RunID: run.ID, Stage: "specify", Path: "specs/token=" + projectSecret + ".md", Kind: "spec", SHA256: strings.Repeat("a", 64)}); err == nil || !strings.Contains(err.Error(), "ARTIFACT_SECRET_IDENTITY_REJECTED") {
+		t.Fatalf("secret-bearing artifact path was stored: %v", err)
+	}
+	artifactSecret := "artifact-secret-654321"
+	artifact, err := s.SaveArtifact(ctx, model.Artifact{RunID: run.ID, Stage: "specify", Path: "specs/spec.md", Kind: "source password=" + artifactSecret, SHA256: strings.Repeat("b", 64)})
+	if err != nil || strings.Contains(artifact.Kind, artifactSecret) || !strings.Contains(artifact.Kind, "[REDACTED]") {
+		t.Fatalf("artifact metadata=%+v err=%v", artifact, err)
+	}
+	report, err := s.Report(ctx, run.ID)
+	if err != nil || len(report.Artifacts) != 1 || strings.Contains(report.Artifacts[0].Kind, artifactSecret) {
+		t.Fatalf("report artifact=%+v err=%v", report.Artifacts, err)
+	}
+	backup := filepath.Join(dir, "state.backup.db")
+	if err := s.Backup(ctx, backup); err != nil {
+		t.Fatal(err)
+	}
+	backupBytes, err := os.ReadFile(backup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{projectSecret, artifactSecret} {
+		if strings.Contains(string(backupBytes), secret) {
+			t.Fatalf("backup leaked synthetic secret %q", secret)
+		}
+	}
+	restoredPath := filepath.Join(dir, "restored.db")
+	if err := RestoreBackup(ctx, backup, restoredPath); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := Open(restoredPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	projects, err = restored.Projects(ctx)
+	if err != nil || len(projects) != 1 || !strings.Contains(projects[0].DisplayName, "[REDACTED]") {
+		t.Fatalf("restored project=%+v err=%v", projects, err)
+	}
+	report, err = restored.Report(ctx, run.ID)
+	if err != nil || len(report.Artifacts) != 1 || strings.Contains(report.Artifacts[0].Kind, artifactSecret) {
+		t.Fatalf("restored report artifacts=%+v err=%v", report.Artifacts, err)
 	}
 }
 

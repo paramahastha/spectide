@@ -40,6 +40,25 @@ func TestCLIJSONPresentationRedactsNestedSecretValues(t *testing.T) {
 	}
 }
 
+func TestProjectListRedactsPersistedDisplayName(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "state.db")
+	s, err := store.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret := "cli-project-secret-123456"
+	if err := s.RegisterProject(context.Background(), filepath.Join(t.TempDir(), "workspace"), "workspace password="+secret, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := executeCLI(t, db, "projects", "list")
+	if err != nil || strings.Contains(output, secret) || !strings.Contains(output, "[REDACTED]") {
+		t.Fatalf("project list leaked or failed to redact display metadata: output=%s err=%v", output, err)
+	}
+}
+
 func TestCLIReportPresentationRedactsPersistedEvidence(t *testing.T) {
 	ctx := context.Background()
 	s, err := store.Open(filepath.Join(t.TempDir(), "state.db"))

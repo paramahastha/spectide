@@ -24,6 +24,12 @@ func (s *Store) SaveArtifact(ctx context.Context, a model.Artifact) (model.Artif
 	if a.RunID == "" || a.Stage == "" || a.Kind == "" || a.Path == "" {
 		return a, fmt.Errorf("ARTIFACT_FIELDS_REQUIRED")
 	}
+	for _, identity := range []string{a.ID, a.RunID, a.Stage, a.Path} {
+		if security.Redact(identity) != identity {
+			return a, fmt.Errorf("ARTIFACT_SECRET_IDENTITY_REJECTED")
+		}
+	}
+	a.Kind = security.Redact(a.Kind)
 	clean := filepath.Clean(a.Path)
 	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return a, fmt.Errorf("ARTIFACT_PATH_MUST_BE_WORKSPACE_RELATIVE")
