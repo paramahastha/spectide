@@ -47,7 +47,11 @@ func Open(path string) (*Store, error) {
 		return nil, absErr
 	}
 	s := &Store{DB: db, path: absPath}
-	return s, s.migrate()
+	if err = s.migrate(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("STORE_MIGRATION_FAILED: database was not opened; inspect the schema error and restore a verified backup before retrying: %w", err)
+	}
+	return s, nil
 }
 
 func (s *Store) Close() error { return s.DB.Close() }
@@ -62,6 +66,9 @@ func (s *Store) migrate() error {
 		return err
 	}
 	var version int
+	if err = validateMigrationHistory(tx); err != nil {
+		return err
+	}
 	if err = tx.QueryRow(`SELECT COALESCE(MAX(version),0) FROM schema_migrations`).Scan(&version); err != nil {
 		return err
 	}
@@ -160,6 +167,32 @@ func (s *Store) migrate() error {
 		}
 	}
 	return tx.Commit()
+}
+
+func validateMigrationHistory(tx *sql.Tx) error {
+	rows, err := tx.Query(`SELECT version FROM schema_migrations ORDER BY version`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	expected := 1
+	for rows.Next() {
+		var version int
+		if err = rows.Scan(&version); err != nil {
+			return err
+		}
+		if version > currentSchemaVersion {
+			return fmt.Errorf("STORE_SCHEMA_VERSION_UNSUPPORTED: database version %d exceeds supported version %d", version, currentSchemaVersion)
+		}
+		if version != expected {
+			return fmt.Errorf("STORE_MIGRATION_METADATA_INVALID: expected version %d, found %d", expected, version)
+		}
+		expected++
+	}
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	return nil
 }
 
 //go:embed migrations/001_initial.sql

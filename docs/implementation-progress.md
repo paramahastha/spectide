@@ -765,3 +765,9 @@
 - The immutable run configuration now records a check-selection policy: freeze checks detected at run start, or defer discovery until after implementation when no supported manifest exists. Newly derived Go/Node/Python checks are stored separately in an append-only `quality.checks.derived` event with provenance and a hash of all supported project manifests; the original configuration JSON is unchanged.
 - Resume reuses the derived check list only when its manifest hash still matches. Unsupported projects remain explicitly BLOCKED. CLI `verify` now discovers checks for its target project rather than running SpecTide's own default Go checks.
 - Tests cover newly created Go and Node projects, derived check restore and manifest drift, unsupported layout blocking, immutable configuration evidence, and target-specific CLI verification. `go test ./internal/quality ./internal/workflow ./internal/cli -count=1`, package vet, and `git diff --check` passed. T096 is complete; T097 is next. T087/T088 remain partial.
+
+### T097 — Validate schema compatibility during database open — 2026-10-23
+
+- Normal open now checks that migration metadata is contiguous and no version exceeds the supported schema before any new migration is applied. A gap or forward-incompatible database is rejected with an actionable schema code.
+- Migration failures close the database connection and return recovery guidance. Schema changes and history updates run in one SQLite transaction, preserving the original schema/history if a migration fails.
+- Tests verify future-version rejection without mutation, inconsistent-history rejection, rollback and connection cleanup for a deliberately failing upgrade, and the existing valid upgrade paths. `go test ./internal/store -count=1`, `go vet ./internal/store`, and `git diff --check` passed. T097 is complete; T098 is next. T087/T088 remain partial.
