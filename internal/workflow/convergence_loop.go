@@ -48,7 +48,17 @@ func (e *Engine) liveConvergenceHooks(run model.Run, phase string, decisions map
 			if err != nil {
 				return "", err
 			}
-			return output, e.store.Event(ctx, run.ID, "converge", "convergence.report", "info", map[string]any{"converged": result.Converged, "appended_tasks": result.Appended, "execution": "LIVE"})
+			if err := e.store.Event(ctx, run.ID, "converge", "convergence.report", "info", map[string]any{"converged": result.Converged, "appended_tasks": result.Appended, "execution": "LIVE"}); err != nil {
+				return "", err
+			}
+			workflowStage := "converge"
+			if phase == "final_review" {
+				workflowStage = "final_review"
+			}
+			if err := e.loopControlBoundary(ctx, run, workflowStage, featureDir, budget); err != nil {
+				return "", err
+			}
+			return output, nil
 		},
 		Implement: func(ctx context.Context, tasks []string) error {
 			prompt := "Implement only the newly appended convergence tasks below. Preserve the existing product specification and do not edit the task ledger.\n"
@@ -59,7 +69,14 @@ func (e *Engine) liveConvergenceHooks(run model.Run, phase string, decisions map
 			if cancelled {
 				return context.Canceled
 			}
-			return err
+			if err != nil {
+				return err
+			}
+			workflowStage := "converge"
+			if phase == "final_review" {
+				workflowStage = "final_review"
+			}
+			return e.loopControlBoundary(ctx, run, workflowStage, featureDir, budget)
 		},
 		Test: func(ctx context.Context) (map[string]string, error) {
 			verdicts, err := e.runTestRepairLoop(ctx, run, phase, decisions, installation, featureDir, budget)
@@ -122,6 +139,9 @@ func (e *Engine) runLiveFinalReviewLoop(ctx context.Context, run model.Run, deci
 			for _, finding := range analysis.Findings {
 				findings = append(findings, security.Redact(fmt.Sprintf("%s %s %s: %s; resolution: %s", finding.ID, finding.Severity, finding.Location, finding.Summary, finding.Resolution)))
 			}
+			if err := e.loopControlBoundary(ctx, run, "final_review", featureDir, budget); err != nil {
+				return nil, err
+			}
 			return findings, nil
 		},
 		Fix: func(ctx context.Context, findings []string) error {
@@ -136,7 +156,10 @@ func (e *Engine) runLiveFinalReviewLoop(ctx context.Context, run model.Run, deci
 			if cancelled {
 				return context.Canceled
 			}
-			return err
+			if err != nil {
+				return err
+			}
+			return e.loopControlBoundary(ctx, run, "final_review", featureDir, budget)
 		},
 	}
 	converged, err := RunFinalReviewWithBudget(ctx, hooks, budget, budget.Limits())

@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +25,9 @@ import (
 type liveFixtureAdapter struct {
 	timeouts        []time.Duration
 	models, efforts []string
+	analyzeStart    string
+	analyzeRelease  string
+	analyzeBarrier  sync.Once
 }
 
 func approveWhenRequested(t *testing.T, state *store.Store, runID string) func() {
@@ -89,6 +94,14 @@ func (a *liveFixtureAdapter) Build(request adapters.Request) (runner.Invocation,
 	}
 	if request.Stage == "analyze" {
 		output = "## Specification Analysis Report\n\n| ID | Category | Severity | Location(s) | Summary | Recommendation |\n|---|---|---|---|---|---|\n| — | — | — | — | — | — |\n\n### Metrics\n- Coverage: 100% (1/1)\n"
+		barrier := false
+		if a.analyzeStart != "" {
+			a.analyzeBarrier.Do(func() { barrier = true })
+		}
+		if barrier {
+			script := "touch '" + a.analyzeStart + "'; while [ ! -f '" + a.analyzeRelease + "' ]; do sleep 0.01; done; printf '%s' '" + output + "'"
+			return runner.Invocation{Binary: "/bin/sh", Args: []string{"-c", script}, Dir: request.ProjectRoot, Timeout: request.Timeout}, nil
+		}
 	} else if request.Stage == "converge" {
 		output = "✅ Converged — required gates pass."
 	}
@@ -141,6 +154,13 @@ func TestEngineCompletesVerifiedMixedRunWithApplicableEvidence(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(internalDir, "fixture.go"), []byte("package internal\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	for _, args := range [][]string{{"init", "-q"}, {"config", "user.email", "fixture@example.invalid"}, {"config", "user.name", "Fixture"}, {"add", "-A"}, {"commit", "-m", "fixture baseline"}} {
+		command := exec.Command("git", args...)
+		command.Dir = project
+		if output, gitErr := command.CombinedOutput(); gitErr != nil {
+			t.Fatalf("git %v: %v: %s", args, gitErr, output)
+		}
+	}
 	commandFiles := make(map[string]string)
 	commandHashes := make(map[string]string)
 	commands := make(map[string]string)
@@ -181,7 +201,9 @@ func TestEngineCompletesVerifiedMixedRunWithApplicableEvidence(t *testing.T) {
 	if _, err = state.SaveProfileCapability(ctx, "fixture", capability); err != nil {
 		t.Fatal(err)
 	}
-	fixtureAdapter := &liveFixtureAdapter{}
+	analyzeStarted := filepath.Join(t.TempDir(), "analyze-started")
+	analyzeRelease := filepath.Join(t.TempDir(), "analyze-release")
+	fixtureAdapter := &liveFixtureAdapter{analyzeStart: analyzeStarted, analyzeRelease: analyzeRelease}
 	engine := NewWithAdapters(state, fixtureAdapter)
 	engine.discover = func(root string) (speckit.Installation, error) {
 		return speckit.Installation{
@@ -193,9 +215,72 @@ func TestEngineCompletesVerifiedMixedRunWithApplicableEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	runIDReady := make(chan string, 1)
+	pauseResult := make(chan string, 1)
+	go func() {
+		id := <-runIDReady
+		deadline := time.After(5 * time.Second)
+		ticker := time.NewTicker(5 * time.Millisecond)
+		defer ticker.Stop()
+		requested := false
+		for {
+			select {
+			case <-deadline:
+				if requested {
+					pauseResult <- "workflow did not persist inner-loop pause"
+				} else {
+					pauseResult <- "analyze invocation did not start"
+				}
+				return
+			case <-ticker.C:
+				if !requested {
+					if _, err := os.Stat(analyzeStarted); err != nil {
+						continue
+					}
+					if err := engine.Pause(id); err != nil {
+						pauseResult <- "pause request failed: " + err.Error()
+						return
+					}
+					if err := os.WriteFile(analyzeRelease, []byte("continue"), 0o600); err != nil {
+						pauseResult <- err.Error()
+						return
+					}
+					requested = true
+					continue
+				}
+				current, err := state.GetRun(ctx, id)
+				if err != nil {
+					pauseResult <- err.Error()
+					return
+				}
+				if current.State == model.Paused {
+					checkpoints, err := state.Checkpoints(ctx, id)
+					if err != nil || len(checkpoints) == 0 {
+						pauseResult <- "paused loop has no durable checkpoint"
+						return
+					}
+					var cursor cursorCheckpointState
+					if err = json.Unmarshal([]byte(checkpoints[len(checkpoints)-1].StateJSON), &cursor); err != nil || cursor.NextStage != "analyze" {
+						pauseResult <- "checkpoint did not retain the active analyze cursor"
+						return
+					}
+					if err = engine.Resume(id); err != nil {
+						pauseResult <- "resume failed: " + err.Error()
+						return
+					}
+					pauseResult <- "paused with analyze checkpoint and resumed"
+					return
+				}
+			}
+		}
+	}()
+	runIDReady <- run.ID
 	stopApproval := approveWhenRequested(t, state, run.ID)
 	defer stopApproval()
 	run, err = engine.Wait(ctx, run.ID)
+	if result := <-pauseResult; result != "paused with analyze checkpoint and resumed" {
+		t.Fatalf("inner-loop control: %s", result)
+	}
 	if !stringSliceContains(fixtureAdapter.models, "fixture/model") || !stringSliceContains(fixtureAdapter.efforts, "medium") {
 		t.Fatalf("verified configured model/effort did not reach offline launch: models=%v efforts=%v", fixtureAdapter.models, fixtureAdapter.efforts)
 	}
@@ -335,7 +420,7 @@ func reportEvents(t *testing.T, state *store.Store, runID string) []model.Event 
 	}
 	return events
 }
-func (liveFixtureAdapter) Normalize([]byte) ([]adapters.Event, error) {
+func (*liveFixtureAdapter) Normalize([]byte) ([]adapters.Event, error) {
 	return []adapters.Event{{Type: "codex.message", Summary: "fixture stage completed"}}, nil
 }
 

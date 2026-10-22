@@ -160,6 +160,14 @@ func Discover(root string, executor Executor) (*Registry, error) {
 func exists(path string) bool { info, err := os.Stat(path); return err == nil && !info.IsDir() }
 
 func (r *Registry) Run(ctx context.Context, root string) []Evidence {
+	evidence, _ := r.RunControlled(ctx, root, nil, nil)
+	return evidence
+}
+
+// RunControlled checks durable run controls between commands and while a
+// registered command is active. Pause waits for the caller's boundary hook
+// after the current result is persisted; cancel stops the process promptly.
+func (r *Registry) RunControlled(ctx context.Context, root string, control func(context.Context) (string, error), after func(context.Context, Evidence) error) ([]Evidence, error) {
 	results := make([]Evidence, 0, len(r.checks))
 	for _, check := range r.checks {
 		command := append([]string{check.Binary}, check.Args...)
@@ -167,18 +175,61 @@ func (r *Registry) Run(ctx context.Context, root string) []Evidence {
 			results = append(results, Evidence{Key: check.Key, Verdict: NotRun, Command: command, Summary: "not started after cancellation"})
 			continue
 		}
+		if control != nil {
+			action, err := control(ctx)
+			if err != nil {
+				return results, err
+			}
+			if action == "cancel" {
+				return results, context.Canceled
+			}
+		}
 		if check.UnavailableReason != "" {
-			results = append(results, Evidence{Key: check.Key, Verdict: Blocked, Command: command, Summary: check.UnavailableReason})
+			evidence := Evidence{Key: check.Key, Verdict: Blocked, Command: command, Summary: check.UnavailableReason}
+			results = append(results, evidence)
+			if after != nil {
+				if err := after(ctx, evidence); err != nil {
+					return results, err
+				}
+			}
 			continue
 		}
 		if _, local := r.executor.(localExecutor); local {
 			if _, lookErr := exec.LookPath(check.Binary); lookErr != nil {
-				results = append(results, Evidence{Key: check.Key, Verdict: Blocked, Command: command, Summary: "required local command is unavailable"})
+				evidence := Evidence{Key: check.Key, Verdict: Blocked, Command: command, Summary: "required local command is unavailable"}
+				results = append(results, evidence)
+				if after != nil {
+					if err := after(ctx, evidence); err != nil {
+						return results, err
+					}
+				}
 				continue
 			}
 		}
 		started := time.Now().UTC()
 		checkCtx, cancel := context.WithTimeout(ctx, check.Timeout)
+		monitorDone := make(chan struct{})
+		if control != nil {
+			go func() {
+				defer close(monitorDone)
+				ticker := time.NewTicker(50 * time.Millisecond)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-checkCtx.Done():
+						return
+					case <-ticker.C:
+						action, err := control(context.Background())
+						if err != nil || action == "cancel" {
+							cancel()
+							return
+						}
+					}
+				}
+			}()
+		} else {
+			close(monitorDone)
+		}
 		args := append([]string(nil), check.Args...)
 		cleanup := func() {}
 		if check.Key == "build" {
@@ -199,6 +250,7 @@ func (r *Registry) Run(ctx context.Context, root string) []Evidence {
 		result, err := r.executor.Run(checkCtx, runner.Invocation{Binary: check.Binary, Args: args, Dir: root})
 		contextErr := checkCtx.Err()
 		cancel()
+		<-monitorDone
 		cleanup()
 		evidence := Evidence{Key: check.Key, Verdict: Pass, Command: append([]string{check.Binary}, args...), ProcessID: result.ProcessID, ExitCode: result.ExitCode, Duration: result.Duration, StartedAt: started}
 		summary := strings.TrimSpace(strings.Join([]string{result.Stdout, result.Stderr}, "\n"))
@@ -223,8 +275,13 @@ func (r *Registry) Run(ctx context.Context, root string) []Evidence {
 			evidence.Summary = "check reported items requiring correction: " + summary
 		}
 		results = append(results, evidence)
+		if after != nil {
+			if err := after(ctx, evidence); err != nil {
+				return results, err
+			}
+		}
 	}
-	return results
+	return results, nil
 }
 
 func (r *Registry) RequiredPassed(evidence []Evidence) bool {

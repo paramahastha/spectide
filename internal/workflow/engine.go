@@ -551,6 +551,44 @@ func (e *Engine) pausePoint(ctx context.Context, runID, stage string, resume <-c
 	return ctx.Err() == nil
 }
 
+// loopControlBoundary is called after each inner provider/check invocation has
+// persisted its result. The checkpoint points back to the active workflow
+// stage so a process restart can safely replay that stage from its artifacts.
+func (e *Engine) loopControlBoundary(ctx context.Context, run model.Run, stage, featureDir string, budget *LoopBudget) error {
+	action, err := e.store.RunControl(ctx, run.ID)
+	if err != nil {
+		return err
+	}
+	if action == "cancel" {
+		return context.Canceled
+	}
+	if action != "pause" {
+		return ctx.Err()
+	}
+	configuration, err := e.store.RunConfiguration(ctx, run.ID)
+	if err != nil {
+		return err
+	}
+	stageIndex := indexOfStage(stage)
+	if stageIndex < 0 {
+		return fmt.Errorf("WORKFLOW_STAGE_UNKNOWN: %s", stage)
+	}
+	checkpointStage := "starting"
+	if stageIndex > 0 {
+		checkpointStage = stages[stageIndex-1]
+	}
+	if err = e.saveCursorCheckpoint(ctx, run, featureDir, checkpointStage, stage, configuration.SHA256, "LIVE", budget.Counts()); err != nil {
+		return err
+	}
+	e.mu.Lock()
+	resume := e.resumes[run.ID]
+	e.mu.Unlock()
+	if !e.pauseUntilResume(ctx, run.ID, stage, resume) {
+		return context.Canceled
+	}
+	return ctx.Err()
+}
+
 func (e *Engine) cancelRun(runID, stage, stageID string) error {
 	ctx := context.Background()
 	if run, err := e.store.GetRun(ctx, runID); err == nil && run.State == model.Blocked {
@@ -848,6 +886,15 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 				return
 			}
 			if testErr != nil {
+				action, _ := e.store.RunControl(context.Background(), r.ID)
+				if ctx.Err() != nil || action == "cancel" {
+					if persistErr := e.cancelRun(r.ID, key, st.ID); persistErr != nil {
+						e.failPersistence(r.ID)
+					} else {
+						e.finish(r.ID)
+					}
+					return
+				}
 				if persistErr := e.store.SetStage(context.Background(), st.ID, model.StageFail); persistErr != nil {
 					e.failPersistence(r.ID)
 					return

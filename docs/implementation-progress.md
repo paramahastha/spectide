@@ -570,6 +570,13 @@
 - Store/API tests cover mismatch, single resolution, persistence across reopen, and approved restart replay; workflow tests cover denial and fixture-backed approval before implementation. `make verify` passed: `go vet ./...`, `go test ./...`, dashboard typecheck, 27 frontend tests, production build, secret scan, and simulated smoke. SC-001: 19.621 ms.
 - T069 is complete; T070 is next. T031, T045, and T046 remain open. Live provider execution remains `NOT_RUN`.
 
+### T070 — Durable inner-loop pause and cancellation — 2026-10-23
+
+- Analyze, test-repair, convergence, and final-review loops now honor shared pause/cancel controls between provider invocations. After each completed invocation, result and evidence are persisted, then a checkpoint records the active stage cursor and loop counters before the run enters PAUSED. Resume continues in-process; process restart replays from the verified active-stage cursor.
+- Registered local quality checks persist each check result as it completes and poll durable control state while the subprocess is running. A second controller can cancel the child; runner process-group termination and cleanup remain bounded. The tests pause after an analyze invocation, inspect the durable checkpoint, resume, and cancel a long-running registered check from a second SQLite connection.
+- Focused quality/workflow/store/API tests and full `make verify` passed: `go vet ./...`, `go test ./...`, dashboard typecheck, 27 frontend tests, production build, secret scan, and simulated smoke. SC-001: 21.163 ms.
+- T070 is complete; T071 is next. T031, T045, and T046 remain open. Live provider execution remains `NOT_RUN`.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified

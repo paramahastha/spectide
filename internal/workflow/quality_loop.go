@@ -10,6 +10,7 @@ import (
 
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
+	"github.com/spectide/spectide/internal/quality"
 	"github.com/spectide/spectide/internal/security"
 	"github.com/spectide/spectide/internal/speckit"
 )
@@ -18,6 +19,16 @@ func (e *Engine) runTestRepairLoop(ctx context.Context, run model.Run, phase str
 	latest := map[string]string{}
 	hooks := TestRepairHooks{
 		Test: func(ctx context.Context) (map[string]string, error) {
+			workflowStage := phase
+			switch phase {
+			case "convergence":
+				workflowStage = "converge"
+			case "final_review":
+				workflowStage = "final_review"
+			}
+			if err := e.loopControlBoundary(ctx, run, workflowStage, featureDir, budget); err != nil {
+				return nil, err
+			}
 			runConfiguration, err := e.store.RunConfiguration(ctx, run.ID)
 			if err != nil {
 				return nil, err
@@ -30,28 +41,31 @@ func (e *Engine) runTestRepairLoop(ctx context.Context, run model.Run, phase str
 			if err != nil {
 				return nil, err
 			}
-			startedAt := time.Now().UTC()
-			evidence := registry.Run(ctx, run.Project)
-			finishedAt := time.Now().UTC()
-			persisted := model.QualityExecution{RunID: run.ID, Phase: phase, ProcessID: os.Getpid(), StartedAt: startedAt, FinishedAt: finishedAt}
+			evidence, runErr := registry.RunControlled(ctx, run.Project, func(ctx context.Context) (string, error) {
+				return e.store.RunControl(ctx, run.ID)
+			}, func(ctx context.Context, item quality.Evidence) error {
+				startedAt := item.StartedAt
+				if startedAt.IsZero() {
+					startedAt = time.Now().UTC().Add(-item.Duration)
+				}
+				finishedAt := startedAt.Add(item.Duration)
+				persisted := model.QualityExecution{RunID: run.ID, Phase: phase, ProcessID: os.Getpid(), StartedAt: startedAt, FinishedAt: finishedAt}
+				persisted.Results = []model.QualityResult{{Key: item.Key, Verdict: string(item.Verdict), Command: append([]string(nil), item.Command...), ProcessID: item.ProcessID, ExitCode: item.ExitCode, Duration: item.Duration, Summary: item.Summary, StartedAt: startedAt}}
+				if _, err := e.store.SaveQualityExecution(ctx, persisted); err != nil {
+					return err
+				}
+				if err := e.store.Gate(ctx, run.ID, "live_test_"+item.Key, string(item.Verdict), security.Redact(item.Summary)); err != nil {
+					return err
+				}
+				return e.loopControlBoundary(ctx, run, workflowStage, featureDir, budget)
+			})
 			verdicts := make(map[string]string, len(evidence))
 			for _, item := range evidence {
 				verdict := string(item.Verdict)
 				verdicts[item.Key] = verdict
-				persisted.Results = append(persisted.Results, model.QualityResult{Key: item.Key, Verdict: verdict, Command: append([]string(nil), item.Command...), ProcessID: item.ProcessID, ExitCode: item.ExitCode, Duration: item.Duration, Summary: item.Summary, StartedAt: item.StartedAt})
-			}
-			if _, err := e.store.SaveQualityExecution(ctx, persisted); err != nil {
-				return nil, err
-			}
-			for _, item := range evidence {
-				verdict := string(item.Verdict)
-				summary := security.Redact(item.Summary)
-				if err := e.store.Gate(ctx, run.ID, "live_test_"+item.Key, verdict, summary); err != nil {
-					return nil, err
-				}
 			}
 			latest = verdicts
-			return verdicts, nil
+			return verdicts, runErr
 		},
 		Repair: func(ctx context.Context, failed map[string]string) error {
 			decision, ok := decisions["implement"]
