@@ -41,6 +41,7 @@ func ExecuteStage(ctx context.Context, installation Installation, adapter adapte
 	if invocation.Dir != installation.ProjectRoot {
 		return StageResult{}, fmt.Errorf("PERMISSION_DENIED: provider invocation working directory differs from canonical Spec-Kit root")
 	}
+	invocation.ExtraFiles = append(invocation.ExtraFiles, request.InheritedFiles...)
 	process, runErr := runner.Run(ctx, invocation)
 	result := StageResult{Process: process}
 	if runErr != nil {

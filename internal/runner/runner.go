@@ -14,11 +14,12 @@ import (
 )
 
 type Invocation struct {
-	Binary    string
-	Args, Env []string
-	Dir       string
-	Stdin     []byte
-	Timeout   time.Duration
+	Binary     string
+	Args, Env  []string
+	ExtraFiles []*os.File
+	Dir        string
+	Stdin      []byte
+	Timeout    time.Duration
 }
 type Result struct {
 	Stdout, Stderr string
@@ -74,6 +75,7 @@ func Run(ctx context.Context, in Invocation) (Result, error) {
 	defer cancel()
 	start := time.Now()
 	cmd := exec.CommandContext(ctx, in.Binary, in.Args...)
+	cmd.ExtraFiles = in.ExtraFiles
 	configureProcessGroup(cmd)
 	cmd.Dir = in.Dir
 	home, _ := os.UserHomeDir()

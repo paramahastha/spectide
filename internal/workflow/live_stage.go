@@ -111,6 +111,11 @@ func (e *Engine) runLiveStagePrompt(ctx context.Context, run model.Run, stage st
 			AllowedProjects: append([]string(nil), profile.AllowedScopes...),
 		},
 	}
+	e.mu.Lock()
+	if processLock := e.processLocks[run.ID]; processLock != nil && processLock.File() != nil {
+		request.InheritedFiles = []*os.File{processLock.File()}
+	}
+	e.mu.Unlock()
 	result, err := speckit.ExecuteStage(ctx, installation, adapter, request, stage, prompt)
 	if err != nil {
 		return nil, err

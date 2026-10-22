@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"github.com/spectide/spectide/internal/runner"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -64,6 +65,7 @@ type Request struct {
 	ProjectRoot, Stage, Prompt, Model, Effort string
 	ReadOnly                                  bool
 	Timeout                                   time.Duration
+	InheritedFiles                            []*os.File
 	Profile                                   Profile
 }
 type Capability struct {

@@ -417,3 +417,78 @@ func TestResumeAfterOwnerLeaseExpiryBlocksWithWorkspaceDrift(t *testing.T) {
 		t.Fatalf("stale workspace lock count=%d err=%v", locks, err)
 	}
 }
+
+func TestWorkspaceOwnershipSurvivesStalledHeartbeatAndFencesOtherDatabase(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	if err := os.Mkdir(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	firstStore, err := store.Open(filepath.Join(root, "first.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer firstStore.Close()
+	secondStore, err := store.Open(filepath.Join(root, "second.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondStore.Close()
+	firstEngine := New(firstStore)
+	run, err := firstEngine.Start(ctx, project, "hold the workspace while stages execute")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().UTC().Add(-store.RunOwnerLease - time.Second).Format(time.RFC3339Nano)
+	if _, err = firstStore.DB.ExecContext(ctx, `UPDATE run_owners SET heartbeat_at=? WHERE run_id=?`, stale, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = firstStore.RecoverAbandonedRuns(ctx, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	stillRunning, err := firstStore.GetRun(ctx, run.ID)
+	if err != nil || stillRunning.State != model.Running {
+		t.Fatalf("expired heartbeat reclaimed an active writer: run=%+v err=%v", stillRunning, err)
+	}
+	secondRun, err := New(secondStore).Start(ctx, project, "must be fenced from the active writer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondRun, err = secondStore.GetRun(ctx, secondRun.ID)
+	if err != nil || secondRun.State != model.Blocked {
+		t.Fatalf("second database acquired an active workspace: run=%+v err=%v", secondRun, err)
+	}
+	completed, err := firstEngine.Wait(ctx, run.ID)
+	if err != nil || completed.State != model.Completed {
+		t.Fatalf("original owner did not finish safely: run=%+v err=%v", completed, err)
+	}
+}
+
+func TestHeartbeatOwnershipLossCancelsActiveWorker(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	engine := New(s)
+	project := t.TempDir()
+	run, err := engine.Start(ctx, project, "stop when workspace ownership is lost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.DB.ExecContext(ctx, `UPDATE run_owners SET owner_id=? WHERE run_id=?`, "replacement-owner", run.ID); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		got, getErr := s.GetRun(ctx, run.ID)
+		if getErr == nil && got.State == model.Cancelled {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	got, _ := s.GetRun(ctx, run.ID)
+	t.Fatalf("worker kept running after owner identity changed: state=%s", got.State)
+}

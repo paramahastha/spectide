@@ -479,6 +479,12 @@
 - API JSON/error responses and CLI JSON/report output sanitize nested secret-key values and redact inline secret patterns. Synthetic-secret coverage now checks SQLite, reports, CLI output, API responses/errors, and the prompt-to-SSE path from T036.
 - Focused `go test ./internal/store ./internal/api ./internal/cli -count=1` passed. Full `make verify` passed: Go vet/tests, dashboard typecheck/tests/build, binary build, secret scan, and offline smoke. Latest SC-001: 19.065 ms; smoke remained `SIMULATED`. T055 is complete. T056 is the next convergence task; T031, T045, and T046 remain open.
 
+### Phase checkpoint — canonical workspace ownership fencing (T056)
+
+- Added a per-user-cache kernel lock keyed by the canonical workspace. It supplements SQLite ownership so separate database files cannot concurrently authorize writes to the same workspace. Startup recovery leaves stale-heartbeat runs untouched while the kernel reports a live owner.
+- Provider invocations inherit the lock descriptor. Closing SpecTide’s descriptor does not explicitly unlock it; the kernel releases ownership only after provider children close their inherited copies. Resume refuses to claim while another process still holds the lock. A failed owner heartbeat cancels the worker and process group.
+- Tests cover lock exclusion across processes, child-held lifetime, stalled heartbeat recovery, owner identity loss, and two independent databases contending for one workspace. Focused `go test ./internal/workspace ./internal/runner ./internal/store ./internal/workflow -count=1` and full `make verify` passed, including Go vet/tests, dashboard typecheck/tests/build, binary build, secret scan, and offline smoke. Latest SC-001: 19.236 ms; smoke remained `SIMULATED`. T056 is complete; T057 is next. T031, T045, and T046 remain open.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified

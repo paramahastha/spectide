@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/spectide/spectide/internal/model"
+	workspaceguard "github.com/spectide/spectide/internal/workspace"
 )
 
 const RunOwnerLease = 3 * time.Second
@@ -161,25 +162,26 @@ func (s *Store) RecoverAbandonedRuns(ctx context.Context, at time.Time) error {
 		at = now()
 	}
 	cutoff := at.Add(-RunOwnerLease)
-	rows, err := s.DB.QueryContext(ctx, `SELECT r.id,r.state,COALESCE(o.heartbeat_at,'') FROM runs r LEFT JOIN run_owners o ON o.run_id=r.id WHERE r.state IN (?,?)`, model.Running, model.Paused)
+	rows, err := s.DB.QueryContext(ctx, `SELECT r.id,r.state,r.project,COALESCE(o.heartbeat_at,'') FROM runs r LEFT JOIN run_owners o ON o.run_id=r.id WHERE r.state IN (?,?)`, model.Running, model.Paused)
 	if err != nil {
 		return err
 	}
 	type ownerState struct {
-		id    string
-		state model.RunState
+		id      string
+		project string
+		state   model.RunState
 	}
 	var stale []ownerState
 	for rows.Next() {
-		var id, heartbeat string
+		var id, project, heartbeat string
 		var state model.RunState
-		if err = rows.Scan(&id, &state, &heartbeat); err != nil {
+		if err = rows.Scan(&id, &state, &project, &heartbeat); err != nil {
 			rows.Close()
 			return err
 		}
 		updated, parseErr := time.Parse(time.RFC3339Nano, heartbeat)
 		if heartbeat == "" || parseErr != nil || updated.Before(cutoff) {
-			stale = append(stale, ownerState{id: id, state: state})
+			stale = append(stale, ownerState{id: id, project: project, state: state})
 		}
 	}
 	if err = rows.Err(); err != nil {
@@ -188,6 +190,15 @@ func (s *Store) RecoverAbandonedRuns(ctx context.Context, at time.Time) error {
 	}
 	rows.Close()
 	for _, item := range stale {
+		held, lockErr := workspaceguard.ProcessLockHeld(item.project)
+		if lockErr != nil {
+			return lockErr
+		}
+		if held {
+			// A paused or stalled owner still has a live process/provider child.
+			// Heartbeat expiry alone is not sufficient to reassign its writer.
+			continue
+		}
 		tx, txErr := s.DB.BeginTx(ctx, nil)
 		if txErr != nil {
 			return txErr

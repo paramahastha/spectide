@@ -28,14 +28,15 @@ import (
 // Engine is deliberately provider-neutral. The built-in fake route is the offline,
 // deterministic acceptance path; real providers must be added only after a successful probe.
 type Engine struct {
-	store    *store.Store
-	ownerID  string
-	adapters map[adapters.ProviderName]adapters.Adapter
-	discover func(string) (speckit.Installation, error)
-	mu       sync.Mutex
-	cancels  map[string]context.CancelFunc
-	resumes  map[string]chan struct{}
-	locks    map[string]string
+	store        *store.Store
+	ownerID      string
+	adapters     map[adapters.ProviderName]adapters.Adapter
+	discover     func(string) (speckit.Installation, error)
+	mu           sync.Mutex
+	cancels      map[string]context.CancelFunc
+	resumes      map[string]chan struct{}
+	locks        map[string]string
+	processLocks map[string]*workspaceguard.ProcessLock
 }
 
 func New(s *store.Store) *Engine {
@@ -51,7 +52,7 @@ func NewWithAdapters(s *store.Store, providers ...adapters.Adapter) *Engine {
 			registry[provider.Name()] = provider
 		}
 	}
-	return &Engine{store: s, ownerID: uuid.NewString(), adapters: registry, discover: speckit.Discover, cancels: map[string]context.CancelFunc{}, resumes: map[string]chan struct{}{}, locks: map[string]string{}}
+	return &Engine{store: s, ownerID: uuid.NewString(), adapters: registry, discover: speckit.Discover, cancels: map[string]context.CancelFunc{}, resumes: map[string]chan struct{}{}, locks: map[string]string{}, processLocks: map[string]*workspaceguard.ProcessLock{}}
 }
 
 var stages = []string{"constitution", "specify", "clarify", "plan", "checklist", "tasks", "analyze", "implement", "tests", "converge", "final_review", "report"}
@@ -164,7 +165,14 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 		blocked, blockErr := e.blockUnavailableStage(ctx, r, blockedStage, decisions[blockedStage], blockedReason)
 		return blocked, false, blockErr
 	}
+	processLock, lockErr := workspaceguard.AcquireProcessLock(workspace)
+	if lockErr != nil {
+		_ = e.store.Event(context.Background(), r.ID, "", "workspace.lock_denied", "warning", map[string]any{"reason": "another process owns this canonical workspace"})
+		_ = e.store.SetRunState(context.Background(), r.ID, model.Blocked)
+		return r, false, nil
+	}
 	if err = e.store.AcquireWorkspaceLockOwned(ctx, workspace, r.ID, e.ownerID); err != nil {
+		_ = processLock.Close()
 		_ = e.store.Event(context.Background(), r.ID, "", "workspace.lock_denied", "warning", map[string]any{"reason": "another run owns this workspace"})
 		_ = e.store.SetRunState(context.Background(), r.ID, model.Blocked)
 		return r, false, nil
@@ -177,6 +185,7 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 		_ = e.store.Event(context.Background(), r.ID, "", "checkpoint.failed", "error", map[string]any{"reason": safeStageError(err)})
 		_ = e.store.SetRunState(context.Background(), r.ID, model.Blocked)
 		_ = e.store.ReleaseWorkspaceLock(context.Background(), workspace, r.ID)
+		_ = processLock.Close()
 		return r, false, err
 	}
 	child, cancel := context.WithCancel(context.Background())
@@ -184,8 +193,9 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 	e.cancels[r.ID] = cancel
 	e.resumes[r.ID] = make(chan struct{}, 1)
 	e.locks[r.ID] = workspace
+	e.processLocks[r.ID] = processLock
 	e.mu.Unlock()
-	go e.heartbeat(child, r.ID)
+	go e.heartbeat(child, r.ID, cancel)
 	go e.execute(child, r, decisions, installation, featureDir, 0, LoopLimits{}, nil)
 	return r, false, nil
 }
@@ -344,6 +354,16 @@ func (e *Engine) Resume(id string) error {
 		if budgetErr != nil {
 			return e.blockUnverifiedRestart(run, budgetErr)
 		}
+		processLock, lockErr := workspaceguard.AcquireProcessLock(canonical)
+		if lockErr != nil {
+			return fmt.Errorf("WORKSPACE_OWNER_ACTIVE: %w", lockErr)
+		}
+		claimed := false
+		defer func() {
+			if !claimed {
+				_ = processLock.Close()
+			}
+		}()
 		if err = e.store.ClaimExpiredPausedRun(context.Background(), id, canonical, e.ownerID, time.Now().UTC()); err != nil {
 			return err
 		}
@@ -375,8 +395,10 @@ func (e *Engine) Resume(id string) error {
 		e.cancels[id] = cancel
 		e.resumes[id] = make(chan struct{}, 1)
 		e.locks[id] = canonical
+		e.processLocks[id] = processLock
 		e.mu.Unlock()
-		go e.heartbeat(child, id)
+		claimed = true
+		go e.heartbeat(child, id, cancel)
 		go e.execute(child, run, decisions, installation, featureDir, startAt, budget.Counts(), gateVerdicts)
 		return nil
 	}
@@ -446,7 +468,7 @@ func (e *Engine) resumeSpecKit(project string, decisions map[string]config.Decis
 	return speckit.Installation{}, "", nil
 }
 
-func (e *Engine) heartbeat(ctx context.Context, runID string) {
+func (e *Engine) heartbeat(ctx context.Context, runID string, cancel context.CancelFunc) {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -455,6 +477,7 @@ func (e *Engine) heartbeat(ctx context.Context, runID string) {
 			return
 		case <-ticker.C:
 			if err := e.store.HeartbeatRunOwner(ctx, runID, e.ownerID, time.Now().UTC()); err != nil {
+				cancel()
 				return
 			}
 		}
@@ -851,5 +874,9 @@ func (e *Engine) finish(id string) {
 	if path := e.locks[id]; path != "" {
 		_ = e.store.ReleaseWorkspaceLock(context.Background(), path, id)
 		delete(e.locks, id)
+	}
+	if lock := e.processLocks[id]; lock != nil {
+		_ = lock.Close()
+		delete(e.processLocks, id)
 	}
 }
