@@ -102,6 +102,19 @@
 
 - Parsing support does not execute agent commands. Workflow orchestration must still run installed Spec-Kit commands, persist their evidence, and handle remediation and convergence bounds.
 
+### Phase checkpoint — quality registry and local verification command
+
+**Verified in this checkpoint**
+
+- Added a quality registry with explicit `PASS`, `FAIL`, `BLOCKED`, and `NOT_RUN` states, per-check timeouts, bounded summaries, and a required-check success predicate.
+- Added `spectide verify --project DIR` for gofmt, go vet, Go tests, and build checks. The build output uses a temporary file and is removed after inspection.
+- The command ran against this repository and all four checks passed. Evidence was emitted as JSON with command, exit code, duration, summary, and UTC start time.
+- `go test ./...`, `go vet ./...`, and `make build` also passed. Task T015 is checked complete.
+
+**Remaining**
+
+- Check results are returned to the caller but are not yet persisted against a workflow run. The workflow's simulated `tests` stage remains visibly simulated and does not claim live test execution.
+
 ### Earlier checkpoint summary
 
 ### Completed and verified

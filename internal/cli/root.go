@@ -14,6 +14,7 @@ import (
 	"github.com/spectide/spectide/internal/app"
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
+	"github.com/spectide/spectide/internal/quality"
 	"github.com/spectide/spectide/internal/speckit"
 	"github.com/spf13/cobra"
 )
@@ -270,6 +271,27 @@ func Root() *cobra.Command {
 	}}
 	initCmd.Flags().String("project", ".", "project directory")
 	root.AddCommand(initCmd)
+	verify := &cobra.Command{Use: "verify", Short: "Run the registered local quality checks", RunE: func(c *cobra.Command, _ []string) error {
+		project, _ := c.Flags().GetString("project")
+		abs, e := filepath.Abs(project)
+		if e != nil {
+			return e
+		}
+		if st, e := os.Stat(abs); e != nil || !st.IsDir() {
+			return fmt.Errorf("project path must be an existing directory")
+		}
+		registry := quality.DefaultRegistry(nil)
+		results := registry.Run(c.Context(), abs)
+		if e = json.NewEncoder(c.OutOrStdout()).Encode(results); e != nil {
+			return e
+		}
+		if !registry.RequiredPassed(results) {
+			return fmt.Errorf("QUALITY_CHECK_FAILED")
+		}
+		return nil
+	}}
+	verify.Flags().String("project", ".", "project directory to validate")
+	root.AddCommand(verify)
 	return root
 }
 
