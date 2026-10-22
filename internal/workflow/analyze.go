@@ -11,6 +11,7 @@ import (
 type AnalyzeHooks struct {
 	ArtifactHash func(context.Context) (string, error)
 	Analyze      func(context.Context) (string, error)
+	ResolveOwner func(speckit.Finding) (string, error)
 	Remediate    func(context.Context, speckit.Finding) error
 }
 
@@ -44,7 +45,11 @@ func RunAnalyzeGateWithBudget(ctx context.Context, hooks AnalyzeHooks, budget *L
 			return analysis, fmt.Errorf("ANALYZE_REMEDIATION_EXHAUSTED")
 		}
 		finding := blocking[0]
-		finding.Owner, err = AnalysisOwner(finding)
+		if hooks.ResolveOwner != nil {
+			finding.Owner, err = hooks.ResolveOwner(finding)
+		} else {
+			finding.Owner, err = AnalysisOwner(finding)
+		}
 		if err != nil {
 			return analysis, err
 		}

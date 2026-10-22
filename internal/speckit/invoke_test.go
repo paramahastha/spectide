@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spectide/spectide/internal/adapters"
@@ -77,5 +78,43 @@ func TestExecuteStageRequiresVerifiedIntegrationAndMatchingProvider(t *testing.T
 	request.Profile.Provider = adapters.Codex
 	if _, err := ExecuteStage(context.Background(), installation, adapter, request, "analyze", ""); err == nil {
 		t.Fatal("mismatched profile provider accepted")
+	}
+}
+
+func TestExecuteStageWithOwnerTemplateAvoidsGeneralImplementationPrompt(t *testing.T) {
+	root := t.TempDir()
+	commandFiles := map[string]string{
+		"implement": filepath.Join(".opencode", "commands", "speckit.implement.md"),
+		"plan":      filepath.Join(".opencode", "commands", "speckit.plan.md"),
+	}
+	for stage, rel := range commandFiles {
+		path := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		body := "General product implementation instructions. $ARGUMENTS"
+		if stage == "plan" {
+			body = "Plan command owner-only scope. $ARGUMENTS"
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	installation := Installation{ProjectRoot: root, Verified: true, Commands: map[string]string{"implement": "/speckit.implement", "plan": "/speckit.plan"}, CommandFiles: commandFiles, CommandHashes: map[string]string{}}
+	for stage, rel := range commandFiles {
+		content, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		digest := sha256.Sum256(content)
+		installation.CommandHashes[stage] = hex.EncodeToString(digest[:])
+	}
+	adapter := &fixtureAdapter{}
+	_, err := ExecuteStageWithTemplate(context.Background(), installation, adapter, adapters.Request{Profile: adapters.Profile{Provider: adapters.Fake}}, "implement", "plan", "Edit only plan.md; do not implement product code.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adapter.request.Stage != "implement" || adapter.request.ReadOnly || !strings.HasPrefix(adapter.request.Prompt, "Plan command owner-only scope.") || strings.Contains(adapter.request.Prompt, "General product implementation instructions") {
+		t.Fatalf("owner remediation received the wrong template or execution policy: %+v", adapter.request)
 	}
 }

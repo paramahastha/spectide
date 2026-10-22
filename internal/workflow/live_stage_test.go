@@ -238,6 +238,13 @@ func TestRunLiveStageUsesVerifiedCommandAndPersistsSanitizedEvidence(t *testing.
 			t.Fatal(err)
 		}
 	}
+	internalDir := filepath.Join(project, "internal")
+	if err = os.MkdirAll(internalDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(internalDir, "fixture.go"), []byte("package internal\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	rel := ".opencode/commands/speckit.plan.md"
 	commandPath := filepath.Join(project, filepath.FromSlash(rel))
 	if err = os.MkdirAll(filepath.Dir(commandPath), 0o700); err != nil {
@@ -278,8 +285,11 @@ func TestRunLiveStageUsesVerifiedCommandAndPersistsSanitizedEvidence(t *testing.
 	if _, err = engine.runLiveStage(ctx, run, "plan", config.Route{Provider: "codex", Profile: "fixture"}, installation, feature); err == nil || !strings.Contains(err.Error(), "STAGE_EXPECTED_ARTIFACT_MISSING_OR_UNCHANGED") {
 		t.Fatalf("unchanged plan output was accepted as stage success: %v", err)
 	}
+	if _, err = engine.runLiveStagePromptPhase(ctx, run, "implement", "analyze_remediation", config.Route{Provider: "codex", Profile: "fixture"}, "Only edit spec.md", installation, feature, liveStageOptions{templateStage: "plan", ownerPath: "specs/001-product/spec.md"}); err == nil || !strings.Contains(err.Error(), "ANALYZE_REMEDIATION_CHANGED_NON_OWNER_ARTIFACT") {
+		t.Fatalf("remediation accepted source-code mutation outside its owning artifact: %v", err)
+	}
 	events, err := state.Events(ctx, run.ID, 0)
-	if err != nil || len(events) != 7 {
+	if err != nil || len(events) != 10 {
 		t.Fatalf("events=%+v err=%v", events, err)
 	}
 	providerEvent := events[2]
@@ -287,7 +297,7 @@ func TestRunLiveStageUsesVerifiedCommandAndPersistsSanitizedEvidence(t *testing.
 		t.Fatalf("unexpected persisted provider event: %+v", providerEvent)
 	}
 	attempts, err := state.ExecutionAttempts(ctx, run.ID)
-	if err != nil || len(attempts) != 2 || attempts[0].Result != "SUCCEEDED" || attempts[0].Iteration != 1 || attempts[0].ProcessID < 1 || attempts[0].StdoutSHA256 == "" || attempts[1].Iteration != 2 || attempts[1].Result != "FAILED" {
+	if err != nil || len(attempts) != 3 || attempts[0].Result != "SUCCEEDED" || attempts[0].Iteration != 1 || attempts[0].ProcessID < 1 || attempts[0].StdoutSHA256 == "" || attempts[1].Iteration != 2 || attempts[1].Result != "FAILED" || attempts[2].Result != "FAILED" || attempts[2].Phase != "analyze_remediation" {
 		t.Fatalf("provider invocation history=%+v err=%v", attempts, err)
 	}
 	if len(attempts[0].ArtifactIDs) != 1 || attempts[0].ArtifactIDs[0] != artifactIDs[0] {

@@ -17,6 +17,14 @@ type StageResult struct {
 // prompt, builds the provider's explicit invocation, and normalizes its output.
 // Callers must independently validate profile authorization and capabilities.
 func ExecuteStage(ctx context.Context, installation Installation, adapter adapters.Adapter, request adapters.Request, stage, arguments string) (StageResult, error) {
+	return ExecuteStageWithTemplate(ctx, installation, adapter, request, stage, stage, arguments)
+}
+
+// ExecuteStageWithTemplate keeps the execution capability stage separate from
+// the verified Spec-Kit prompt template. It is used for bounded remediation,
+// where a write-capable implementation route must receive an owner-specific
+// command template instead of general implementation instructions.
+func ExecuteStageWithTemplate(ctx context.Context, installation Installation, adapter adapters.Adapter, request adapters.Request, stage, templateStage, arguments string) (StageResult, error) {
 	if !installation.Verified {
 		return StageResult{}, fmt.Errorf("SPEC_KIT_INTEGRATION_UNVERIFIED")
 	}
@@ -26,7 +34,10 @@ func ExecuteStage(ctx context.Context, installation Installation, adapter adapte
 	if request.Profile.Provider != adapter.Name() {
 		return StageResult{}, fmt.Errorf("PROFILE_PROVIDER_MISMATCH: adapter %s profile %s", adapter.Name(), request.Profile.Provider)
 	}
-	prompt, err := StagePrompt(installation, stage, arguments)
+	if templateStage == "" {
+		return StageResult{}, fmt.Errorf("SPEC_KIT_STAGE_REQUIRED")
+	}
+	prompt, err := StagePrompt(installation, templateStage, arguments)
 	if err != nil {
 		return StageResult{}, err
 	}

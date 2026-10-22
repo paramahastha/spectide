@@ -26,6 +26,15 @@ func (e *Engine) runLiveStageWithControl(ctx context.Context, run model.Run, sta
 }
 
 func (e *Engine) runLiveStageWithControlPhase(ctx context.Context, run model.Run, stage, phase string, route config.Route, prompt string, installation speckit.Installation, featureDir string) (map[string]any, bool, error) {
+	return e.runLiveStageWithControlOptions(ctx, run, stage, phase, route, prompt, installation, featureDir)
+}
+
+type liveStageOptions struct {
+	templateStage string
+	ownerPath     string
+}
+
+func (e *Engine) runLiveStageWithControlOptions(ctx context.Context, run model.Run, stage, phase string, route config.Route, prompt string, installation speckit.Installation, featureDir string, options ...liveStageOptions) (map[string]any, bool, error) {
 	child, cancel := context.WithCancel(ctx)
 	defer cancel()
 	stop := make(chan struct{})
@@ -49,7 +58,7 @@ func (e *Engine) runLiveStageWithControlPhase(ctx context.Context, run model.Run
 			}
 		}
 	}()
-	evidence, err := e.runLiveStagePromptPhase(child, run, stage, phase, route, prompt, installation, featureDir)
+	evidence, err := e.runLiveStagePromptPhase(child, run, stage, phase, route, prompt, installation, featureDir, options...)
 	close(stop)
 	<-done
 	if err != nil {
@@ -71,7 +80,7 @@ func (e *Engine) runLiveStagePrompt(ctx context.Context, run model.Run, stage st
 	return e.runLiveStagePromptPhase(ctx, run, stage, stage, route, prompt, installation, featureDir)
 }
 
-func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, stage, phase string, route config.Route, prompt string, installation speckit.Installation, featureDir string) (map[string]any, error) {
+func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, stage, phase string, route config.Route, prompt string, installation speckit.Installation, featureDir string, options ...liveStageOptions) (map[string]any, error) {
 	adapter := e.adapters[adapters.ProviderName(route.Provider)]
 	if adapter == nil {
 		return nil, fmt.Errorf("PROVIDER_ADAPTER_UNAVAILABLE: %s", route.Provider)
@@ -98,7 +107,7 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 	}
 	var before string
 	if stage == "analyze" {
-		before, err = fingerprintArtifacts(featureDir)
+		before, err = workspaceFingerprint(installation.ProjectRoot)
 		if err != nil {
 			return nil, err
 		}
@@ -125,6 +134,10 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 			AllowedProjects: append([]string(nil), profile.AllowedScopes...),
 		},
 	}
+	option := liveStageOptions{}
+	if len(options) > 0 {
+		option = options[0]
+	}
 	e.mu.Lock()
 	if processLock := e.processLocks[run.ID]; processLock != nil && processLock.File() != nil {
 		request.InheritedFiles = []*os.File{processLock.File()}
@@ -134,7 +147,11 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 	if err != nil {
 		return nil, err
 	}
-	result, runErr := speckit.ExecuteStage(ctx, installation, adapter, request, stage, prompt)
+	templateStage := option.templateStage
+	if templateStage == "" {
+		templateStage = stage
+	}
+	result, runErr := speckit.ExecuteStageWithTemplate(ctx, installation, adapter, request, stage, templateStage, prompt)
 	status := "SUCCEEDED"
 	if runErr != nil {
 		status = "FAILED"
@@ -157,7 +174,7 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 	if runErr == nil {
 		switch stage {
 		case "analyze":
-			after, hashErr := fingerprintArtifacts(featureDir)
+			after, hashErr := workspaceFingerprint(installation.ProjectRoot)
 			if hashErr != nil {
 				runErr = hashErr
 			} else if before != after {
@@ -208,6 +225,13 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 	}
 	if runErr == nil && stage == "converge" {
 		registered, runErr = changedStageArtifacts(installation.ProjectRoot, featureDir, stage, beforeArtifacts)
+	}
+	if runErr == nil {
+		if option.ownerPath != "" {
+			if len(registered) != 1 || filepath.ToSlash(registered[0].Path) != filepath.ToSlash(option.ownerPath) {
+				runErr = fmt.Errorf("ANALYZE_REMEDIATION_CHANGED_NON_OWNER_ARTIFACT")
+			}
+		}
 	}
 	if runErr == nil {
 		for i := range registered {
@@ -340,7 +364,7 @@ func workspaceFiles(root string) (map[string]stageFile, error) {
 		if err != nil {
 			return err
 		}
-		if entry.IsDir() && (entry.Name() == ".git" || entry.Name() == "node_modules" || entry.Name() == ".spectide") {
+		if entry.IsDir() && (entry.Name() == ".git" || entry.Name() == "node_modules" || entry.Name() == ".next" || entry.Name() == "vendor" || entry.Name() == "dist" || entry.Name() == "build" || entry.Name() == "target" || entry.Name() == ".venv") {
 			return filepath.SkipDir
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
@@ -417,33 +441,29 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
+func workspaceFingerprint(root string) (string, error) {
+	files, err := workspaceFiles(root)
+	if err != nil {
+		return "", err
+	}
+	paths := make([]string, 0, len(files))
+	for path := range files {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	h := sha256.New()
+	for _, path := range paths {
+		_, _ = fmt.Fprintf(h, "%s:%s\n", path, files[path].SHA256)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
 func hashString(value string) string {
 	if value == "" {
 		return ""
 	}
 	digest := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(digest[:])
-}
-
-func fingerprintArtifacts(featureDir string) (string, error) {
-	state, err := speckit.InspectArtifacts(featureDir)
-	if err != nil {
-		return "", err
-	}
-	h := sha256.New()
-	for _, name := range []string{"spec", "plan", "tasks"} {
-		path := map[string]string{"spec": state.SpecPath, "plan": state.PlanPath, "tasks": state.TasksPath}[name]
-		if !state.Present[name] {
-			_, _ = fmt.Fprintf(h, "%s:absent\n", name)
-			continue
-		}
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return "", err
-		}
-		_, _ = fmt.Fprintf(h, "%s:%x\n", name, sha256.Sum256(content))
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func safeProviderEventType(value string) string {

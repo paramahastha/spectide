@@ -2,6 +2,8 @@ package workflow
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -50,6 +52,37 @@ func TestRunAnalyzeGateExcludesBaselineAndRemediatesThenReanalyzes(t *testing.T)
 	analysis, err := RunAnalyzeGate(context.Background(), hooks, DefaultLoopLimits())
 	if err != nil || len(BlockingAnalysisFindings(analysis)) != 0 || analyzeCalls != 2 || remediationCalls != 1 {
 		t.Fatalf("analysis=%+v err=%v analyzes=%d remediations=%d", analysis, err, analyzeCalls, remediationCalls)
+	}
+}
+
+func TestReadOnlyAnalysisDetectsSourceAndContractWrites(t *testing.T) {
+	for name, relative := range map[string]string{
+		"source":   filepath.Join("internal", "service.go"),
+		"contract": filepath.Join("specs", "001-product", "contracts", "api.md"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, relative)
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("before"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			hooks := AnalyzeHooks{
+				ArtifactHash: func(context.Context) (string, error) { return workspaceFingerprint(root) },
+				Analyze: func(context.Context) (string, error) {
+					if err := os.WriteFile(path, []byte("changed by read-only analyze"), 0o600); err != nil {
+						return "", err
+					}
+					return cleanAnalysis, nil
+				},
+				Remediate: func(context.Context, speckit.Finding) error { return nil },
+			}
+			if _, err := RunAnalyzeGate(context.Background(), hooks, DefaultLoopLimits()); err == nil || !strings.Contains(err.Error(), "ANALYZE_MUTATED_ARTIFACTS") {
+				t.Fatalf("read-only analyze mutation was accepted: %v", err)
+			}
+		})
 	}
 }
 

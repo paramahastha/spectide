@@ -510,6 +510,13 @@
 - Convergence output accepts only a standalone unquoted success marker or a structured findings report with one supported outcome. Task additions must be traceable, unchecked, unique, and consecutive; append validation requires one next-numbered Convergence phase, consecutive unused IDs, and exact reported/persisted task agreement.
 - Tests exercise realistic report summaries, malformed/unknown/contradictory output, quoted/fenced success markers, duplicate and skipped IDs, checked/untraceable tasks, multiple phases, and ledger/report mismatches. Focused Spec-Kit/workflow tests, full `make verify`, `go vet ./...`, and `git diff --check` passed. Latest SC-001: 18.385 ms; offline smoke remains `SIMULATED`. T060 is complete; T061 is next. T031, T045, and T046 remain open.
 
+### T061 — Workspace-wide analysis integrity and owner-only remediation — 2026-10-22
+
+- Live analyze hashes regular project files across the workspace before and after the provider call, so changes to source code, contracts, configuration, or any other included workspace file fail read-only analysis.
+- Remediation snapshots the workspace and requires exactly one changed file: the resolved owner. Spec, plan, and task findings map to their owning canonical artifacts. A design contract can be an owner only when its relative path appears in `plan.md`, it is a regular file, and symlink resolution remains inside the feature directory.
+- Owner-only remediation uses the verified Spec-Kit `clarify`, `plan`, or `tasks` prompt template on the implementation route; the prompt restricts changes to the one owner and explicitly forbids product implementation. Attempt completion also rejects files outside that owner.
+- Tests cover source and contract changes during read-only analysis, source/contract changes or deletion during remediation, new non-owner files, referenced/unreferenced contracts, symlink escape, and owner-specific prompt selection. Full `make verify` passed; Go vet/tests, dashboard typecheck/tests/build, binary build, secret scan, and offline smoke all passed. Latest SC-001: 21.574 ms; smoke remains `SIMULATED`. T061 is complete; T062 is next. T031, T045, and T046 remain open.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified
