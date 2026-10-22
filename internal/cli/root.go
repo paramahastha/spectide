@@ -68,7 +68,7 @@ func Root() *cobra.Command {
 		project, _ := c.Flags().GetString("project")
 		r, e := a.Engine.Start(context.Background(), project, args[0])
 		if e != nil {
-			if strings.HasPrefix(e.Error(), "LIVE_STAGE_EXECUTION_UNAVAILABLE:") || strings.HasPrefix(e.Error(), "WORKSPACE_LOCKED:") {
+			if strings.HasPrefix(e.Error(), "LIVE_STAGE_EXECUTION_UNAVAILABLE:") || strings.HasPrefix(e.Error(), "WORKSPACE_LOCKED:") || strings.HasPrefix(e.Error(), "PROFILE_NOT_FOUND:") || strings.HasPrefix(e.Error(), "PROFILE_PROVIDER_MISMATCH:") || strings.HasPrefix(e.Error(), "PROFILE_NOT_ALLOWED:") {
 				return &CommandError{Code: ExitBlocked, Err: e}
 			}
 			return e

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
+	"github.com/spectide/spectide/internal/routing"
 	"github.com/spectide/spectide/internal/store"
 	"github.com/spectide/spectide/internal/webassets"
 	"github.com/spectide/spectide/internal/workflow"
@@ -264,6 +265,15 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 					apiError(w, http.StatusUnprocessableEntity, "ROUTE_PREVIEW_BLOCKED", err.Error())
 					return
 				}
+			}
+			profiles, profileErr := s.Store.Profiles(r.Context())
+			if profileErr != nil {
+				apiError(w, http.StatusInternalServerError, "STORE_ERROR", profileErr.Error())
+				return
+			}
+			if err = routing.ValidateProfileRoutes(cfg, root, profiles); err != nil {
+				apiError(w, http.StatusUnprocessableEntity, "ROUTE_PREVIEW_BLOCKED", err.Error())
+				return
 			}
 			decisions := make([]config.Decision, 0, len(config.StageKeys))
 			for _, stage := range config.StageKeys {

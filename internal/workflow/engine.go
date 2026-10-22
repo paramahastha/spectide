@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
+	"github.com/spectide/spectide/internal/routing"
 	"github.com/spectide/spectide/internal/store"
 	workspaceguard "github.com/spectide/spectide/internal/workspace"
 )
@@ -60,6 +61,13 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 		if err != nil {
 			return model.Run{}, false, err
 		}
+	}
+	profiles, err := e.store.Profiles(ctx)
+	if err != nil {
+		return model.Run{}, false, err
+	}
+	if err = routing.ValidateProfileRoutes(cfg, workspace, profiles); err != nil {
+		return model.Run{}, false, err
 	}
 	decisions := make(map[string]config.Decision, len(stages))
 	for _, stage := range stages {

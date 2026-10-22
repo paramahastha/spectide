@@ -346,7 +346,8 @@
 ### Route-preview policy follow-up
 
 - API route preview now applies effective `allowed_scopes` through the same canonical-root check used by workflow start. Out-of-scope previews return `ROUTE_PREVIEW_BLOCKED`, persist no run, and do not claim execution.
-- `go test ./internal/api ./internal/workspace` and full `make verify` passed. T024 remains open for profile/capability validation and launch policy integration. Latest SC-001 measurement is 17.993 ms on the reference host.
+- Added shared route validation requiring stored non-fake profiles to exist, match the configured provider, and authorize the canonical project root. Both preview and workflow start use it; tests prove unauthorized profiles are rejected before run creation.
+- Focused `go test ./internal/routing ./internal/workflow ./internal/api` passed. A full-gate regression in CLI status mapping was fixed, and `make verify` then passed. T024 remains open for capability-backed model/effort/read-only/write validation, fallback authorization, and live launch integration. Latest SC-001 measurement is 19.558 ms on the reference host.
 
 ### Phase checkpoint — durable run-owner leases
 

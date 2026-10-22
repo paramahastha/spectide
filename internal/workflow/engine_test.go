@@ -264,6 +264,9 @@ func TestEngineDoesNotSilentlySimulateLiveRoute(t *testing.T) {
 	if err = config.Save(config.ProjectPath(project), cfg); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = s.SaveProfile(context.Background(), model.Profile{Name: "work", Provider: "codex", Executable: "codex", AllowedScopes: []string{project}}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err = New(s).Start(context.Background(), project, "task"); err == nil || !strings.Contains(err.Error(), "LIVE_STAGE_EXECUTION_UNAVAILABLE") {
 		t.Fatalf("err=%v", err)
 	}
@@ -273,6 +276,29 @@ func TestEngineDoesNotSilentlySimulateLiveRoute(t *testing.T) {
 	}
 	if len(runs) != 0 {
 		t.Fatalf("live configuration created a run that it cannot execute: %+v", runs)
+	}
+}
+
+func TestEngineRejectsConfiguredProfileOutsideItsAllowedScope(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	project, allowed := t.TempDir(), t.TempDir()
+	cfg := config.Default()
+	cfg.DefaultRoute = config.Route{Provider: "codex", Profile: "restricted"}
+	if err = config.Save(config.ProjectPath(project), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.SaveProfile(context.Background(), model.Profile{Name: "restricted", Provider: "codex", Executable: "codex", AllowedScopes: []string{allowed}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = New(s).Start(context.Background(), project, "must not cross profile boundary"); err == nil || !strings.Contains(err.Error(), "PROFILE_NOT_ALLOWED") {
+		t.Fatalf("profile scope error=%v", err)
+	}
+	if runs, err := s.Runs(context.Background()); err != nil || len(runs) != 0 {
+		t.Fatalf("denied profile created runs=%d err=%v", len(runs), err)
 	}
 }
 
