@@ -11,7 +11,7 @@
 ## Phase 1: Setup
 
 - [x] T001 Create the Go module and base repository structure in `go.mod`, `cmd/`, `internal/`, `docs/`, `examples/`, and `testdata/`
-- [ ] T002 [P] Create the React/TypeScript dashboard project in `web/package.json`, `web/vite.config.ts`, and `web/src/`
+- [x] T002 [P] Create the React/TypeScript dashboard project in `web/package.json`, `web/vite.config.ts`, and `web/src/`
 - [ ] T003 [P] Create formatting, lint, build, test, demo, and smoke targets in `Makefile` and `scripts/`
 - [x] T004 [P] Create public repository metadata and CI workflows in `README.md`, `LICENSE`, `.github/workflows/`, and root policy files
 
@@ -66,7 +66,7 @@
 - [ ] T028 [US3] Add API request validation, idempotency keys, project/profile/config/approval endpoints, and structured errors in `internal/api/`
 - [ ] T029 [US3] Add SSE high-water replay, heartbeats, slow-client backpressure, and integration tests in `internal/api/`
 - [ ] T029a [US3] Add Host/Origin/CSRF, path-escape, request-size, and idempotency security tests in `internal/api/`
-- [ ] T030 [US3] Implement React dashboard API client, run list/detail, live events, controls, profiles, routing, and quality views in `web/src/`
+- [x] T030 [US3] Implement React dashboard API client, run list/detail, live events, controls, profiles, routing, and quality views in `web/src/`
 - [ ] T031 [US3] Add dashboard component and browser end-to-end tests in `web/tests/` and `web/e2e/`
 
 ## Phase 6: User Story 4 — Safe failure recovery (P1)

@@ -2,8 +2,7 @@ package webassets
 
 import "embed"
 
-// Static contains the compiled dashboard asset directory. The development build
-// currently ships the same dependency-free local shell so the binary remains offline runnable.
+// Static embeds the production build of the local React/TypeScript dashboard.
 //
 //go:embed static/*
 var Static embed.FS

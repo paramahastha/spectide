@@ -35,14 +35,16 @@ type Request struct {
 	Profile                                   Profile
 }
 type Capability struct {
-	Provider        ProviderName `json:"provider"`
-	ExecutableFound bool         `json:"executable_found"`
-	Version         string       `json:"version"`
-	Authenticated   string       `json:"authenticated"`
-	StreamingEvents bool         `json:"streaming_events"`
-	ModelOverride   bool         `json:"model_override"`
-	EffortOverride  string       `json:"effort_override"`
-	Warnings        []string     `json:"warnings"`
+	Provider          ProviderName `json:"provider"`
+	ExecutableFound   bool         `json:"executable_found"`
+	Version           string       `json:"version"`
+	Authenticated     string       `json:"authenticated"`
+	StreamingEvents   bool         `json:"streaming_events"`
+	ModelOverride     bool         `json:"model_override"`
+	EffortOverride    string       `json:"effort_override"`
+	ReadOnlyExecution bool         `json:"read_only_execution"`
+	WorkspaceWrite    bool         `json:"workspace_write"`
+	Warnings          []string     `json:"warnings"`
 }
 type Event struct {
 	Type, Summary string

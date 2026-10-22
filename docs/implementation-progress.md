@@ -115,6 +115,21 @@
 
 - Check results are returned to the caller but are not yet persisted against a workflow run. The workflow's simulated `tests` stage remains visibly simulated and does not claim live test execution.
 
+### Phase checkpoint — React dashboard source and embedded production build
+
+**Verified in this checkpoint**
+
+- Added the React 19, TypeScript, Vite dashboard project under `web/` and embedded its production build in `internal/webassets/static/`.
+- The dashboard reads persisted runs, route decisions, attempts, gates, artifacts, approvals, profile readiness, and SSE events from the local API. It can start a labeled simulated run and request cancellation.
+- The interface is responsive, keyboard-focus visible, uses semantic buttons/forms, and makes the simulated/live execution boundary explicit. It uses system fonts and makes no third-party network requests.
+- `make test`, `make lint`, `make web-test`, `make web-build`, `make build`, and `git diff --check` passed. Frontend typecheck and two domain unit tests passed; production assets are embedded by Go.
+- Tasks T002 and T030 are checked complete.
+
+**Remaining**
+
+- Browser end-to-end coverage and screenshot evidence are not complete. The local browser inspection attempt was blocked by the browser access gate for `http://127.0.0.1:4747`; no alternate browser path was used.
+- API idempotency, project/config/approval endpoints, SSE high-water replay/backpressure, recovery, and workflow integration of real quality evidence remain open.
+
 ### Earlier checkpoint summary
 
 ### Completed and verified
