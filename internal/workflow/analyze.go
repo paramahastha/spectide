@@ -11,6 +11,7 @@ import (
 type AnalyzeHooks struct {
 	ArtifactHash func(context.Context) (string, error)
 	Analyze      func(context.Context) (string, error)
+	Boundary     func(context.Context, string) error
 	ResolveOwner func(speckit.Finding) (string, error)
 	Remediate    func(context.Context, speckit.Finding) error
 }
@@ -35,6 +36,11 @@ func RunAnalyzeGateWithBudget(ctx context.Context, hooks AnalyzeHooks, budget *L
 	analysis, artifactHash, err := readOnlyAnalysis(ctx, hooks)
 	if err != nil {
 		return analysis, err
+	}
+	if hooks.Boundary != nil {
+		if err = hooks.Boundary(ctx, "evaluate_analysis_report"); err != nil {
+			return analysis, err
+		}
 	}
 	for {
 		blocking := BlockingAnalysisFindings(analysis)
@@ -63,9 +69,19 @@ func RunAnalyzeGateWithBudget(ctx context.Context, hooks AnalyzeHooks, budget *L
 		if err = budget.AnalysisRemediation(artifactHash, remediatedHash); err != nil {
 			return analysis, err
 		}
+		if hooks.Boundary != nil {
+			if err = hooks.Boundary(ctx, "continue_after_remediation"); err != nil {
+				return analysis, err
+			}
+		}
 		analysis, artifactHash, err = readOnlyAnalysis(ctx, hooks)
 		if err != nil {
 			return analysis, err
+		}
+		if hooks.Boundary != nil {
+			if err = hooks.Boundary(ctx, "evaluate_analysis_report"); err != nil {
+				return analysis, err
+			}
 		}
 	}
 }

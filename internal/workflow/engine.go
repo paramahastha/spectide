@@ -206,7 +206,7 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 	e.processLocks[r.ID] = processLock
 	e.mu.Unlock()
 	go e.heartbeat(child, r.ID, cancel)
-	go e.execute(child, r, decisions, installation, featureDir, 0, LoopLimits{}, nil)
+	go e.execute(child, r, decisions, installation, featureDir, 0, LoopLimits{}, nil, 1)
 	return r, false, nil
 }
 
@@ -385,6 +385,32 @@ func (e *Engine) Resume(id string) error {
 		if _, _, err = e.verifyRestartCheckpoint(context.Background(), run, configuration); err != nil {
 			return e.blockUnverifiedRestart(run, err)
 		}
+		resumeAttempt := 1
+		stages, stageErr := e.store.Stages(context.Background(), id)
+		if stageErr != nil {
+			_ = e.store.ReleaseWorkspaceLock(context.Background(), canonical, id)
+			return stageErr
+		}
+		for _, previous := range stages {
+			if previous.Key != checkpointState.NextStage || previous.Attempt < resumeAttempt {
+				continue
+			}
+			resumeAttempt = previous.Attempt + 1
+			if previous.State == model.Pending || previous.State == model.StageRun {
+				if stageErr = e.store.SetStage(context.Background(), previous.ID, model.StageFail); stageErr != nil {
+					_ = e.store.ReleaseWorkspaceLock(context.Background(), canonical, id)
+					return stageErr
+				}
+				if stageErr = e.store.Event(context.Background(), id, previous.Key, "stage.attempt_interrupted", "error", map[string]any{"attempt": previous.Attempt, "reason": "owner process exited while stage was paused; continuation is replayed from the verified checkpoint"}); stageErr != nil {
+					_ = e.store.ReleaseWorkspaceLock(context.Background(), canonical, id)
+					return stageErr
+				}
+			}
+		}
+		if err = e.store.InterruptRunningAttempts(context.Background(), id, "owner process exited while stage was paused; invocation result is ambiguous"); err != nil {
+			_ = e.store.ReleaseWorkspaceLock(context.Background(), canonical, id)
+			return err
+		}
 		if err = e.store.ClearRunControl(context.Background(), id); err != nil {
 			_ = e.store.ReleaseWorkspaceLock(context.Background(), canonical, id)
 			return err
@@ -414,7 +440,7 @@ func (e *Engine) Resume(id string) error {
 		e.mu.Unlock()
 		claimed = true
 		go e.heartbeat(child, id, cancel)
-		go e.execute(child, run, decisions, installation, featureDir, startAt, budget.Counts(), gateVerdicts)
+		go e.execute(child, run, decisions, installation, featureDir, startAt, budget.Counts(), gateVerdicts, resumeAttempt)
 		return nil
 	}
 }
@@ -562,6 +588,10 @@ func (e *Engine) pausePoint(ctx context.Context, runID, stage string, resume <-c
 // persisted its result. The checkpoint points back to the active workflow
 // stage so a process restart can safely replay that stage from its artifacts.
 func (e *Engine) loopControlBoundary(ctx context.Context, run model.Run, stage, featureDir string, budget *LoopBudget) error {
+	return e.loopControlBoundaryAt(ctx, run, stage, featureDir, budget, checkpointCursor{Phase: stage, Operation: "resume_stage_from_verified_boundary"})
+}
+
+func (e *Engine) loopControlBoundaryAt(ctx context.Context, run model.Run, stage, featureDir string, budget *LoopBudget, cursor checkpointCursor) error {
 	action, err := e.store.RunControl(ctx, run.ID)
 	if err != nil {
 		return err
@@ -584,7 +614,7 @@ func (e *Engine) loopControlBoundary(ctx context.Context, run model.Run, stage, 
 	if stageIndex > 0 {
 		checkpointStage = stages[stageIndex-1]
 	}
-	if err = e.saveCursorCheckpoint(ctx, run, featureDir, checkpointStage, stage, configuration.SHA256, "LIVE", budget.Counts()); err != nil {
+	if err = e.saveCursorCheckpoint(ctx, run, featureDir, checkpointStage, stage, configuration.SHA256, "LIVE", budget.Counts(), cursor); err != nil {
 		return err
 	}
 	e.mu.Lock()
@@ -659,7 +689,7 @@ func (e *Engine) Wait(ctx context.Context, id string) (model.Run, error) {
 	}
 }
 
-func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]config.Decision, installation speckit.Installation, featureDir string, startAt int, restoredCounts LoopLimits, restoredGates map[string]string) {
+func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]config.Decision, installation speckit.Installation, featureDir string, startAt int, restoredCounts LoopLimits, restoredGates map[string]string, firstStageAttempt int) {
 	e.mu.Lock()
 	resume := e.resumes[r.ID]
 	e.mu.Unlock()
@@ -722,7 +752,11 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			return
 		}
 		d := decisions[key].Route
-		st := model.Stage{ID: uuid.NewString(), RunID: r.ID, Key: key, Position: i, State: model.Pending, Provider: d.Provider, Profile: d.Profile, Model: d.Model, Effort: d.Effort, Attempt: 1}
+		stageAttempt := 1
+		if i == startAt && firstStageAttempt > 1 {
+			stageAttempt = firstStageAttempt
+		}
+		st := model.Stage{ID: uuid.NewString(), RunID: r.ID, Key: key, Position: i, State: model.Pending, Provider: d.Provider, Profile: d.Profile, Model: d.Model, Effort: d.Effort, Attempt: stageAttempt}
 		if err := e.store.AddStage(ctx, st); err != nil {
 			e.failPersistence(r.ID)
 			return
@@ -733,7 +767,7 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			e.failPersistence(r.ID)
 			return
 		}
-		if err := e.store.Event(ctx, r.ID, key, "stage.started", "info", map[string]any{"attempt": 1, "read_only": key == "analyze"}); err != nil {
+		if err := e.store.Event(ctx, r.ID, key, "stage.started", "info", map[string]any{"attempt": st.Attempt, "read_only": key == "analyze"}); err != nil {
 			e.failPersistence(r.ID)
 			return
 		}

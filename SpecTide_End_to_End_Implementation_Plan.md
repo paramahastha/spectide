@@ -1603,6 +1603,8 @@ The detailed phase checklists below remain the full blueprint. Their original bo
 
 **T086 checkpoint (23 October 2026):** Checkpoint creation now reduces immutable artifact history to the newest observation per workspace path before comparing its digest with current bytes. Every historical artifact row remains stored; the checkpoint manifest carries one latest verified hash for each path. Restart tests advance spec, tasks, and source through successive recorded versions, verify both old and new observations persist, accept the current checkpoint, and continue to reject later external drift. Targeted restart/recovery tests, full workflow tests, vet, and diff checks passed. T086 is complete; T087 is next.
 
+**T087 checkpoint (23 October 2026, partial):** Cursor state now records pending phase/operation, tasks and position, check key, and spent loop budgets. Analyze/convergence pause points follow budget updates. Recovery finalizes dangling provider attempts as FAILED with an interruption reason, finalizes an active stage attempt, and appends the next numbered stage attempt. Restart and focused budget/cursor tests plus store/workflow suites and vet pass. The task remains open because restart still replays the whole active stage instead of dispatching the saved inner cursor, and owner-process-exit coverage for approval, analyze remediation, local checks, and appended-task convergence is not yet implemented.
+
 ### Phase 0 — Constitution, requirements, and repository setup
 
 **Objective:** Establish stable product boundaries and verified execution baseline.

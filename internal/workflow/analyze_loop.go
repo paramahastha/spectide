@@ -39,10 +39,10 @@ func (e *Engine) runLiveAnalyzeLoop(ctx context.Context, run model.Run, decision
 			if !ok {
 				return "", fmt.Errorf("ANALYZE_OUTPUT_MISSING")
 			}
-			if err := e.loopControlBoundary(ctx, run, "analyze", featureDir, budget); err != nil {
-				return "", err
-			}
 			return output, nil
+		},
+		Boundary: func(ctx context.Context, operation string) error {
+			return e.loopControlBoundaryAt(ctx, run, "analyze", featureDir, budget, checkpointCursor{Phase: "analyze", Operation: operation})
 		},
 		Remediate: func(ctx context.Context, finding speckit.Finding) error {
 			ownerPath, templateStage, err := resolveAnalysisOwner(installation.ProjectRoot, featureDir, finding)
@@ -79,7 +79,7 @@ func (e *Engine) runLiveAnalyzeLoop(ctx context.Context, run model.Run, decision
 			if err := e.store.Event(ctx, run.ID, "analyze", "analysis.remediated", "info", map[string]any{"finding_id": finding.ID, "owner": finding.Owner, "severity": finding.Severity}); err != nil {
 				return err
 			}
-			return e.loopControlBoundary(ctx, run, "analyze", featureDir, budget)
+			return nil
 		},
 	}
 	return RunAnalyzeGateWithBudget(ctx, hooks, budget, budget.Limits())

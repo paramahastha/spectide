@@ -47,8 +47,31 @@ func TestRestartResumeRequiresAndRestoresVerifiedCheckpoint(t *testing.T) {
 	if err = s.Event(ctx, run.ID, stages[0], "run.paused", "info", map[string]any{"stage": stages[0]}); err != nil {
 		t.Fatal(err)
 	}
-	if err = owner.saveCursorCheckpoint(ctx, run, "", "starting", stages[0], configuration.SHA256, "SIMULATED", LoopLimits{}); err != nil {
+	route := config.Route{Provider: "fake", Profile: "fake-demo"}
+	if err = s.AddStage(ctx, model.Stage{ID: "interrupted-stage-attempt", RunID: run.ID, Key: stages[0], Position: 0, State: model.Pending, Provider: route.Provider, Profile: route.Profile, Attempt: 1}); err != nil {
 		t.Fatal(err)
+	}
+	if err = s.SetStage(ctx, "interrupted-stage-attempt", model.StageRun); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.StartExecutionAttempt(ctx, model.ExecutionAttempt{RunID: run.ID, Stage: stages[0], Phase: "approval_check", Provider: route.Provider, Profile: route.Profile}); err != nil {
+		t.Fatal(err)
+	}
+	spent := LoopLimits{AnalyzeRemediations: 1, TestRepairs: 2, ConvergenceRounds: 3}
+	cursor := checkpointCursor{Phase: "approval", Operation: "continue_after_resolution", Tasks: []string{"T087"}, Check: "unit", Position: 2}
+	if err = owner.saveCursorCheckpoint(ctx, run, "", "starting", stages[0], configuration.SHA256, "SIMULATED", spent, cursor); err != nil {
+		t.Fatal(err)
+	}
+	checkpointRows, err := s.Checkpoints(ctx, run.ID)
+	if err != nil || len(checkpointRows) == 0 {
+		t.Fatalf("load continuation checkpoint rows=%d err=%v", len(checkpointRows), err)
+	}
+	var savedCursor cursorCheckpointState
+	if err = json.Unmarshal([]byte(checkpointRows[len(checkpointRows)-1].StateJSON), &savedCursor); err != nil {
+		t.Fatal(err)
+	}
+	if savedCursor.LoopCounts != spent || savedCursor.PendingPhase != cursor.Phase || savedCursor.PendingOperation != cursor.Operation || savedCursor.PendingCheck != cursor.Check || savedCursor.TaskPosition != cursor.Position || len(savedCursor.PendingTasks) != 1 || savedCursor.PendingTasks[0] != "T087" {
+		t.Fatalf("checkpoint did not persist precise continuation state: %+v", savedCursor)
 	}
 	stale := time.Now().UTC().Add(-store.RunOwnerLease - time.Second).Format(time.RFC3339Nano)
 	if _, err = s.DB.ExecContext(ctx, `UPDATE run_owners SET heartbeat_at=? WHERE run_id=?`, stale, run.ID); err != nil {
@@ -67,6 +90,26 @@ func TestRestartResumeRequiresAndRestoresVerifiedCheckpoint(t *testing.T) {
 			}
 			for _, event := range events {
 				if event.Type == "run.recovery_claimed" {
+					resumedStages, stagesErr := s.Stages(ctx, run.ID)
+					if stagesErr != nil {
+						t.Fatal(stagesErr)
+					}
+					var prior, replay model.Stage
+					for _, stage := range resumedStages {
+						if stage.Key == stages[0] && stage.Attempt == 1 {
+							prior = stage
+						}
+						if stage.Key == stages[0] && stage.Attempt == 2 {
+							replay = stage
+						}
+					}
+					if prior.State != model.StageFail || replay.State != model.Succeeded {
+						t.Fatalf("ambiguous stage attempt was not finalized before numbered replay: prior=%+v replay=%+v", prior, replay)
+					}
+					attempts, attemptErr := s.ExecutionAttempts(ctx, run.ID)
+					if attemptErr != nil || len(attempts) != 1 || attempts[0].Result != "FAILED" || !strings.Contains(attempts[0].Error, "ambiguous") {
+						t.Fatalf("ambiguous provider invocation was not finalized honestly: attempts=%+v err=%v", attempts, attemptErr)
+					}
 					return
 				}
 			}

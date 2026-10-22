@@ -34,6 +34,19 @@ type cursorCheckpointState struct {
 	ArtifactPathHashes map[string]string `json:"artifact_path_hashes"`
 	ManagedPathHashes  map[string]string `json:"managed_path_hashes"`
 	LoopCounts         LoopLimits        `json:"loop_counts"`
+	PendingPhase       string            `json:"pending_phase,omitempty"`
+	PendingOperation   string            `json:"pending_operation,omitempty"`
+	PendingTasks       []string          `json:"pending_tasks,omitempty"`
+	PendingCheck       string            `json:"pending_check,omitempty"`
+	TaskPosition       int               `json:"task_position,omitempty"`
+}
+
+type checkpointCursor struct {
+	Phase     string
+	Operation string
+	Tasks     []string
+	Check     string
+	Position  int
 }
 
 type storedRunDecision struct {
@@ -58,7 +71,7 @@ func parseStoredDecisions(encoded string) (map[string]config.Decision, error) {
 	return decisions, nil
 }
 
-func (e *Engine) saveCursorCheckpoint(ctx context.Context, run model.Run, featureDir, stage, next, configHash, execution string, counts LoopLimits) error {
+func (e *Engine) saveCursorCheckpoint(ctx context.Context, run model.Run, featureDir, stage, next, configHash, execution string, counts LoopLimits, cursors ...checkpointCursor) error {
 	artifacts, err := e.store.Artifacts(ctx, run.ID)
 	if err != nil {
 		return err
@@ -77,6 +90,14 @@ func (e *Engine) saveCursorCheckpoint(ctx context.Context, run model.Run, featur
 		Execution: execution, CursorOnly: true, WorkspacePath: filepath.Clean(run.Project),
 		WorkspaceIdentity: checkpoint.WorkspaceFingerprint, GitHead: gitHead, GitIndex: gitIndex,
 		ArtifactPathHashes: artifactHashes, ManagedPathHashes: managedHashes, LoopCounts: counts,
+	}
+	if len(cursors) > 0 {
+		cursor := cursors[0]
+		state.PendingPhase = cursor.Phase
+		state.PendingOperation = cursor.Operation
+		state.PendingTasks = append([]string(nil), cursor.Tasks...)
+		state.PendingCheck = cursor.Check
+		state.TaskPosition = cursor.Position
 	}
 	if featureDir != "" {
 		root, rootErr := filepath.EvalSymlinks(run.Project)

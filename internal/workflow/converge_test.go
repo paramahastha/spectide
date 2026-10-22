@@ -10,7 +10,11 @@ import (
 func TestRunConvergenceImplementsOnlyAppendedTasksThenRepeatsTests(t *testing.T) {
 	ledger := "# Tasks\n\n## Phase 1: Setup\n- [ ] T001 Existing task\n"
 	gates := map[string]string{"tests": "FAIL"}
-	convergeCalls, implementCalls, testCalls := 0, 0, 0
+	convergeCalls, implementCalls, testCalls, boundaryCalls := 0, 0, 0, 0
+	budget, err := NewLoopBudget(DefaultLoopLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
 	hooks := ConvergenceHooks{
 		Snapshot: func(context.Context) (ConvergenceSnapshot, error) {
 			return ConvergenceSnapshot{SpecificationPath: "specs/001-build-spectide/spec.md", TaskLedger: ledger, GateVerdicts: gates}, nil
@@ -35,10 +39,20 @@ func TestRunConvergenceImplementsOnlyAppendedTasksThenRepeatsTests(t *testing.T)
 			gates = map[string]string{"tests": "PASS"}
 			return map[string]string{"required_tests": "PASS"}, nil
 		},
+		Boundary: func(_ context.Context, operation string, tasks []string, position int) error {
+			boundaryCalls++
+			if budget.Counts().ConvergenceRounds != 1 {
+				return fmt.Errorf("continuation boundary preceded convergence budget update: %+v", budget.Counts())
+			}
+			if operation == "implement_appended_tasks" && (len(tasks) != 1 || position != 1) {
+				return fmt.Errorf("continuation cursor lost appended tasks/position: %s %v %d", operation, tasks, position)
+			}
+			return nil
+		},
 	}
-	converged, err := RunConvergence(context.Background(), hooks, DefaultLoopLimits())
-	if err != nil || !converged || convergeCalls != 2 || implementCalls != 1 || testCalls != 1 {
-		t.Fatalf("converged=%v err=%v converge=%d implement=%d tests=%d", converged, err, convergeCalls, implementCalls, testCalls)
+	converged, err := RunConvergenceWithBudget(context.Background(), hooks, budget, budget.Limits())
+	if err != nil || !converged || convergeCalls != 2 || implementCalls != 1 || testCalls != 1 || boundaryCalls != 3 {
+		t.Fatalf("converged=%v err=%v converge=%d implement=%d tests=%d boundaries=%d", converged, err, convergeCalls, implementCalls, testCalls, boundaryCalls)
 	}
 }
 

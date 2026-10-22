@@ -26,7 +26,7 @@ func (e *Engine) runTestRepairLoop(ctx context.Context, run model.Run, phase str
 			case "final_review":
 				workflowStage = "final_review"
 			}
-			if err := e.loopControlBoundary(ctx, run, workflowStage, featureDir, budget); err != nil {
+			if err := e.loopControlBoundaryAt(ctx, run, workflowStage, featureDir, budget, checkpointCursor{Phase: phase, Operation: "start_registered_checks"}); err != nil {
 				return nil, err
 			}
 			runConfiguration, err := e.store.RunConfiguration(ctx, run.ID)
@@ -63,7 +63,7 @@ func (e *Engine) runTestRepairLoop(ctx context.Context, run model.Run, phase str
 				if err := e.store.Gate(ctx, run.ID, "live_test_"+item.Key, string(item.Verdict), security.Redact(item.Summary)); err != nil {
 					return err
 				}
-				return e.loopControlBoundary(ctx, run, workflowStage, featureDir, budget)
+				return e.loopControlBoundaryAt(ctx, run, workflowStage, featureDir, budget, checkpointCursor{Phase: phase, Operation: "continue_registered_checks", Check: item.Key})
 			}, inheritedFiles...)
 			verdicts := make(map[string]string, len(evidence))
 			for _, item := range evidence {

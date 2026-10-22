@@ -22,12 +22,14 @@ type ConvergenceHooks struct {
 	Converge  func(context.Context) (string, error)
 	Implement func(context.Context, []string) error
 	Test      func(context.Context) (map[string]string, error)
+	Boundary  func(context.Context, string, []string, int) error
 }
 
 type FinalReviewHooks struct {
 	Convergence ConvergenceHooks
 	Review      func(context.Context) ([]string, error)
 	Fix         func(context.Context, []string) error
+	Boundary    func(context.Context, string, []string, int) error
 }
 
 // RunConvergence consumes official convergence reports through callbacks while
@@ -93,6 +95,11 @@ func RunFinalReviewWithBudget(ctx context.Context, hooks FinalReviewHooks, budge
 			return false, err
 		}
 		if len(findings) == 0 {
+			if hooks.Boundary != nil {
+				if err = hooks.Boundary(ctx, "complete_final_review", nil, budget.Counts().ConvergenceRounds); err != nil {
+					return false, err
+				}
+			}
 			return true, nil
 		}
 		findingsHash := hashLedger(strings.Join(findings, "\n"))
@@ -103,8 +110,18 @@ func RunFinalReviewWithBudget(ctx context.Context, hooks FinalReviewHooks, budge
 		if err = budget.ConvergenceRound(hashLedger("review:"+strings.Join(findings, "\n")), hashLedger("review-fix:"+strings.Join(findings, "\n")), snapshot.GateVerdicts, snapshot.GateVerdicts); err != nil {
 			return false, err
 		}
+		if hooks.Boundary != nil {
+			if err = hooks.Boundary(ctx, "fix_final_review_findings", findings, budget.Counts().ConvergenceRounds); err != nil {
+				return false, err
+			}
+		}
 		if err = hooks.Fix(ctx, findings); err != nil {
 			return false, err
+		}
+		if hooks.Boundary != nil {
+			if err = hooks.Boundary(ctx, "test_after_final_review_fix", findings, 0); err != nil {
+				return false, err
+			}
 		}
 		gates, err := hooks.Convergence.Test(ctx)
 		if err != nil {
@@ -160,6 +177,11 @@ func runConvergenceWithBudget(ctx context.Context, hooks ConvergenceHooks, budge
 					return false, fmt.Errorf("CONVERGENCE_REQUIRED_GATE_FAILED: %s=%s", name, verdict)
 				}
 			}
+			if hooks.Boundary != nil {
+				if err = hooks.Boundary(ctx, "complete_convergence", nil, budget.Counts().ConvergenceRounds); err != nil {
+					return false, err
+				}
+			}
 			return true, nil
 		}
 		ledgerChanged := before.TaskLedger != after.TaskLedger
@@ -184,9 +206,23 @@ func runConvergenceWithBudget(ctx context.Context, hooks ConvergenceHooks, budge
 		if err = budget.ConvergenceRound(beforeHash, afterHash, before.GateVerdicts, after.GateVerdicts); err != nil {
 			return false, err
 		}
+		if hooks.Boundary != nil {
+			operation := "continue_convergence"
+			if len(persistedTasks) > 0 {
+				operation = "implement_appended_tasks"
+			}
+			if err = hooks.Boundary(ctx, operation, persistedTasks, budget.Counts().ConvergenceRounds); err != nil {
+				return false, err
+			}
+		}
 		if len(persistedTasks) > 0 {
 			if err = hooks.Implement(ctx, persistedTasks); err != nil {
 				return false, err
+			}
+			if hooks.Boundary != nil {
+				if err = hooks.Boundary(ctx, "run_tests_after_task_implementation", persistedTasks, budget.Counts().ConvergenceRounds); err != nil {
+					return false, err
+				}
 			}
 		}
 		gates, err := hooks.Test(ctx)

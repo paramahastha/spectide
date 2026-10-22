@@ -701,3 +701,10 @@
 - Checkpoint creation now selects the newest artifact observation for each normalized workspace path before validating current file bytes. It records one current hash per path without modifying or pruning any historical artifact rows.
 - The restart regression test records two versions each of spec, tasks, and source, confirms all six observations remain in the reportable store, saves and verifies a checkpoint against the latest versions, then confirms an external post-checkpoint source edit still produces `WORKSPACE_DRIFT`.
 - Targeted restart/recovery tests, `go test ./internal/workflow -count=1`, `go vet ./internal/workflow`, and `git diff --check` passed. T086 is complete; T087 is next.
+
+### T087 — Restart continuation cursor and attempt recovery — partial, 2026-10-23
+
+- Checkpoints can record pending phase, operation, task list/position, quality check, and spent loop budgets. Analyze checkpoints are now written after remediation budget accounting; convergence checkpoints follow report validation and round accounting.
+- On an expired-owner restart, active/ambiguous provider attempts are finalized as `FAILED` with an explicit interruption reason. A still-active outer stage is finalized as failed, then the resumed stage is appended with the next attempt number rather than reusing attempt 1.
+- The restart fixture verifies attempt finalization and numbering, and unit tests verify persisted cursor fields and that analyze/convergence boundaries observe spent counters.
+- `go test ./internal/store ./internal/workflow -count=1`, `go vet ./internal/store ./internal/workflow`, and `git diff --check` passed. T087 remains open: Resume currently replays the whole active outer stage instead of dispatching the stored inner cursor. Process-exit/resume tests for approval, analyze remediation, local checks, and appended-task convergence are still required before marking complete.

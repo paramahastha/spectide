@@ -51,13 +51,6 @@ func (e *Engine) liveConvergenceHooks(run model.Run, phase string, decisions map
 			if err := e.store.Event(ctx, run.ID, "converge", "convergence.report", "info", map[string]any{"converged": result.Converged, "appended_tasks": result.Appended, "execution": "LIVE"}); err != nil {
 				return "", err
 			}
-			workflowStage := "converge"
-			if phase == "final_review" {
-				workflowStage = "final_review"
-			}
-			if err := e.loopControlBoundary(ctx, run, workflowStage, featureDir, budget); err != nil {
-				return "", err
-			}
 			return output, nil
 		},
 		Implement: func(ctx context.Context, tasks []string) error {
@@ -72,11 +65,14 @@ func (e *Engine) liveConvergenceHooks(run model.Run, phase string, decisions map
 			if err != nil {
 				return err
 			}
+			return nil
+		},
+		Boundary: func(ctx context.Context, operation string, tasks []string, position int) error {
 			workflowStage := "converge"
 			if phase == "final_review" {
 				workflowStage = "final_review"
 			}
-			return e.loopControlBoundary(ctx, run, workflowStage, featureDir, budget)
+			return e.loopControlBoundaryAt(ctx, run, workflowStage, featureDir, budget, checkpointCursor{Phase: phase, Operation: operation, Tasks: tasks, Position: position})
 		},
 		Test: func(ctx context.Context) (map[string]string, error) {
 			verdicts, err := e.runTestRepairLoop(ctx, run, phase, decisions, installation, featureDir, budget)
@@ -139,9 +135,6 @@ func (e *Engine) runLiveFinalReviewLoop(ctx context.Context, run model.Run, deci
 			for _, finding := range analysis.Findings {
 				findings = append(findings, security.Redact(fmt.Sprintf("%s %s %s: %s; resolution: %s", finding.ID, finding.Severity, finding.Location, finding.Summary, finding.Resolution)))
 			}
-			if err := e.loopControlBoundary(ctx, run, "final_review", featureDir, budget); err != nil {
-				return nil, err
-			}
 			return findings, nil
 		},
 		Fix: func(ctx context.Context, findings []string) error {
@@ -159,7 +152,10 @@ func (e *Engine) runLiveFinalReviewLoop(ctx context.Context, run model.Run, deci
 			if err != nil {
 				return err
 			}
-			return e.loopControlBoundary(ctx, run, "final_review", featureDir, budget)
+			return nil
+		},
+		Boundary: func(ctx context.Context, operation string, tasks []string, position int) error {
+			return e.loopControlBoundaryAt(ctx, run, "final_review", featureDir, budget, checkpointCursor{Phase: "final_review", Operation: operation, Tasks: tasks, Position: position})
 		},
 	}
 	converged, err := RunFinalReviewWithBudget(ctx, hooks, budget, budget.Limits())

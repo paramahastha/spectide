@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -53,6 +54,39 @@ func TestRunAnalyzeGateExcludesBaselineAndRemediatesThenReanalyzes(t *testing.T)
 	analysis, err := RunAnalyzeGate(context.Background(), hooks, DefaultLoopLimits())
 	if err != nil || len(BlockingAnalysisFindings(analysis)) != 0 || analyzeCalls != 2 || remediationCalls != 1 {
 		t.Fatalf("analysis=%+v err=%v analyzes=%d remediations=%d", analysis, err, analyzeCalls, remediationCalls)
+	}
+}
+
+func TestAnalyzeContinuationBoundarySeesSpentRemediationBudget(t *testing.T) {
+	artifactHash := "artifact-0"
+	analyzeCalls := 0
+	budget, err := NewLoopBudget(DefaultLoopLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundaryCalls := 0
+	hooks := AnalyzeHooks{
+		ArtifactHash: func(context.Context) (string, error) { return artifactHash, nil },
+		Analyze: func(context.Context) (string, error) {
+			analyzeCalls++
+			if analyzeCalls == 1 {
+				return blockingAnalysis, nil
+			}
+			return cleanAnalysis, nil
+		},
+		Remediate: func(context.Context, speckit.Finding) error { artifactHash = "artifact-1"; return nil },
+		Boundary: func(_ context.Context, operation string) error {
+			if operation == "continue_after_remediation" {
+				boundaryCalls++
+				if budget.Counts().AnalyzeRemediations != 1 {
+					return fmt.Errorf("checkpoint preceded budget update: %+v", budget.Counts())
+				}
+			}
+			return nil
+		},
+	}
+	if _, err = RunAnalyzeGateWithBudget(context.Background(), hooks, budget, budget.Limits()); err != nil || boundaryCalls != 1 {
+		t.Fatalf("analysis err=%v boundary_calls=%d", err, boundaryCalls)
 	}
 }
 

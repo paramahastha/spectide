@@ -127,6 +127,59 @@ func (s *Store) CompleteExecutionAttempt(ctx context.Context, attempt model.Exec
 	return tx.Commit()
 }
 
+// InterruptRunningAttempts finalizes provider invocations left open by an
+// owner-process exit. Their result is ambiguous, so they are recorded as
+// FAILED with an explicit interruption reason and never rewritten later.
+func (s *Store) InterruptRunningAttempts(ctx context.Context, runID, reason string) error {
+	if runID == "" {
+		return fmt.Errorf("RUN_ID_REQUIRED")
+	}
+	reason = security.Redact(reason)
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT id,stage,phase,iteration,started_at FROM execution_attempts WHERE run_id=? AND result='RUNNING' ORDER BY started_at,id`, runID)
+	if err != nil {
+		return err
+	}
+	type interrupted struct {
+		id, stage, phase, started string
+		iteration                 int
+	}
+	var pending []interrupted
+	for rows.Next() {
+		var item interrupted
+		if err = rows.Scan(&item.id, &item.stage, &item.phase, &item.iteration, &item.started); err != nil {
+			rows.Close()
+			return err
+		}
+		pending = append(pending, item)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	for _, item := range pending {
+		finished := now()
+		sequence, seqErr := nextEventSequence(ctx, tx, runID)
+		if seqErr != nil {
+			return seqErr
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE execution_attempts SET finished_at=?,completion_event_seq=?,result='FAILED',error=? WHERE id=? AND result='RUNNING'`, finished.Format(time.RFC3339Nano), sequence, reason, item.id); err != nil {
+			return err
+		}
+		if err = appendEvent(ctx, tx, runID, item.stage, "execution.attempt_interrupted", "error", map[string]any{"attempt_id": item.id, "phase": item.phase, "iteration": item.iteration, "result": "FAILED", "reason": reason}); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func isLowerHex(value string) bool {
 	decoded, err := hex.DecodeString(value)
 	return err == nil && hex.EncodeToString(decoded) == value
