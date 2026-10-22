@@ -11,6 +11,7 @@ import (
 	"github.com/spectide/spectide/internal/store"
 	"github.com/spectide/spectide/internal/webassets"
 	"github.com/spectide/spectide/internal/workflow"
+	workspaceguard "github.com/spectide/spectide/internal/workspace"
 	"io"
 	"io/fs"
 	"net"
@@ -257,6 +258,12 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				apiError(w, http.StatusUnprocessableEntity, "ROUTE_PREVIEW_BLOCKED", err.Error())
 				return
+			}
+			if len(cfg.AllowedScopes) > 0 {
+				if _, err = workspaceguard.Canonical(root, cfg.AllowedScopes); err != nil {
+					apiError(w, http.StatusUnprocessableEntity, "ROUTE_PREVIEW_BLOCKED", err.Error())
+					return
+				}
 			}
 			decisions := make([]config.Decision, 0, len(config.StageKeys))
 			for _, stage := range config.StageKeys {

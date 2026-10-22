@@ -343,6 +343,11 @@
 - Checkpoints are cursor evidence only. The hash does not cover workspace contents; lease-expired restart resume remains denied until T034 verifies checkpointed artifacts, Git HEAD, and managed paths.
 - Focused `go test ./internal/workflow ./internal/store` and full `make verify` passed. T011's foundational transition and checkpoint work is complete. Latest SC-001 measurement is 17.148 ms on the reference host.
 
+### Route-preview policy follow-up
+
+- API route preview now applies effective `allowed_scopes` through the same canonical-root check used by workflow start. Out-of-scope previews return `ROUTE_PREVIEW_BLOCKED`, persist no run, and do not claim execution.
+- `go test ./internal/api ./internal/workspace` and full `make verify` passed. T024 remains open for profile/capability validation and launch policy integration. Latest SC-001 measurement is 17.993 ms on the reference host.
+
 ### Phase checkpoint — durable run-owner leases
 
 - Added migration 6 and per-run heartbeat leases. The workflow writes its owner lease atomically with the workspace lock, refreshes it while the worker is alive, and removes it at finish.

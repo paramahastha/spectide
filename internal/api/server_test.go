@@ -160,6 +160,33 @@ func TestDryRunRejectsProjectConfigSymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestDryRunRejectsWorkspaceOutsideConfiguredScopes(t *testing.T) {
+	s := testServer(t)
+	project, allowed := t.TempDir(), t.TempDir()
+	cfg := config.Default()
+	cfg.AllowedScopes = []string{allowed}
+	if err := config.Save(config.ProjectPath(project), cfg); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(map[string]any{"project": project, "prompt": "inspect", "dry_run": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs", strings.NewReader(string(body)))
+	r.Host = "127.0.0.1"
+	r.Header.Set("X-SpecTide-CSRF", s.CSRF)
+	r.Header.Set("Idempotency-Key", "preview-scope-123")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "PERMISSION_DENIED") {
+		t.Fatalf("outside-scope preview status=%d body=%s", w.Code, w.Body.String())
+	}
+	runs, err := s.Store.Runs(context.Background())
+	if err != nil || len(runs) != 0 {
+		t.Fatalf("rejected preview created records: runs=%d err=%v", len(runs), err)
+	}
+}
+
 func TestCreateAndListProfile(t *testing.T) {
 	s := testServer(t)
 	r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/profiles", strings.NewReader(`{"name":"fake","provider":"fake","executable":"fake","allowed_scopes":["personal-public"]}`))
