@@ -124,7 +124,7 @@ func ValidateRouteCapability(stage string, route config.Route, profile model.Pro
 	if route.Effort != "" && capability.EffortOverride != "verified" {
 		return fmt.Errorf("EFFORT_OVERRIDE_UNSUPPORTED: %s", profile.Name)
 	}
-	if stage == "analyze" && !capability.ReadOnlyExecution {
+	if (stage == "analyze" || stage == "final_review") && !capability.ReadOnlyExecution {
 		return fmt.Errorf("READ_ONLY_EXECUTION_UNVERIFIED: %s", profile.Name)
 	}
 	if stage == "implement" && !capability.WorkspaceWrite {

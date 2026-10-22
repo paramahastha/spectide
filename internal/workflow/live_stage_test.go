@@ -27,6 +27,8 @@ func (liveFixtureAdapter) Build(request adapters.Request) (runner.Invocation, er
 	output := "{\"type\":\"message\"}"
 	if request.Stage == "analyze" {
 		output = "## Specification Analysis Report\n- Coverage: 100%\n"
+	} else if request.Stage == "converge" {
+		output = "✅ Converged — required gates pass."
 	}
 	return runner.Invocation{Binary: "/usr/bin/printf", Args: []string{"%s", output}, Dir: request.ProjectRoot}, nil
 }
@@ -68,7 +70,7 @@ func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *t
 	commandFiles := make(map[string]string)
 	commandHashes := make(map[string]string)
 	commands := make(map[string]string)
-	for _, stage := range []string{"plan", "analyze", "implement"} {
+	for _, stage := range []string{"plan", "analyze", "implement", "converge"} {
 		rel := ".opencode/commands/speckit." + stage + ".md"
 		commandPath := filepath.Join(project, filepath.FromSlash(rel))
 		if err = os.MkdirAll(filepath.Dir(commandPath), 0o700); err != nil {
@@ -85,9 +87,11 @@ func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *t
 	}
 	cfg := config.Default()
 	cfg.StageRoutes = map[string]config.Route{
-		"plan":      {Provider: "codex", Profile: "fixture"},
-		"analyze":   {Provider: "codex", Profile: "fixture"},
-		"implement": {Provider: "codex", Profile: "fixture"},
+		"plan":         {Provider: "codex", Profile: "fixture"},
+		"analyze":      {Provider: "codex", Profile: "fixture"},
+		"implement":    {Provider: "codex", Profile: "fixture"},
+		"converge":     {Provider: "codex", Profile: "fixture"},
+		"final_review": {Provider: "codex", Profile: "fixture"},
 	}
 	if err = config.Save(config.ProjectPath(project), cfg); err != nil {
 		t.Fatal(err)
@@ -132,6 +136,8 @@ func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *t
 	}
 	var requiredTests string
 	var analyzeClean string
+	var converged string
+	var finalReview string
 	var blockedFinalReview bool
 	for _, gate := range report.Gates {
 		switch gate.Key {
@@ -140,8 +146,11 @@ func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *t
 		case "required_tests":
 			requiredTests = gate.Verdict
 		case "final_review":
+			finalReview = gate.Verdict
 			blockedFinalReview = gate.Verdict == "BLOCKED"
-		case "converged", "simulated_e2e":
+		case "converged":
+			converged = gate.Verdict
+		case "simulated_e2e":
 			if gate.Verdict != "BLOCKED" {
 				t.Fatalf("live workflow claimed simulated quality verdict: %+v", gate)
 			}
@@ -153,8 +162,17 @@ func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *t
 	if requiredTests != "PASS" {
 		t.Fatalf("registered local checks did not pass: %+v", report.Gates)
 	}
-	if !blockedFinalReview {
-		t.Fatalf("incomplete live final review was not blocked: %+v", report.Gates)
+	if converged != "PASS" || finalReview != "PASS" || blockedFinalReview {
+		t.Fatalf("live convergence/final review did not pass: %+v", report.Gates)
+	}
+	var persistedLoopCounts bool
+	for _, checkpoint := range report.Checkpoints {
+		if checkpoint.Stage == "final_review" && strings.Contains(checkpoint.StateJSON, `"loop_counts"`) {
+			persistedLoopCounts = true
+		}
+	}
+	if !persistedLoopCounts {
+		t.Fatalf("shared loop budget counts were not persisted in the final-review checkpoint: %+v", report.Checkpoints)
 	}
 }
 

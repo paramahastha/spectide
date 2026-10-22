@@ -124,7 +124,7 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 				blockedStage, blockedReason = stage, installationErr.Error()
 			} else if !installation.Verified {
 				blockedStage, blockedReason = stage, "SPEC_KIT_INTEGRATION_UNVERIFIED"
-			} else if _, requireErr := speckit.RequireStage(installation, stage); requireErr != nil {
+			} else if _, requireErr := speckit.RequireStage(installation, liveSpecKitStage(stage)); requireErr != nil {
 				blockedStage, blockedReason = stage, requireErr.Error()
 			} else if featureDir == "" {
 				blockedStage, blockedReason = stage, "SPECIFICATION_NOT_FOUND"
@@ -184,11 +184,18 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 
 func officialStage(stage string) bool {
 	switch stage {
-	case "constitution", "specify", "clarify", "plan", "checklist", "tasks", "analyze", "implement", "converge":
+	case "constitution", "specify", "clarify", "plan", "checklist", "tasks", "analyze", "implement", "converge", "final_review":
 		return true
 	default:
 		return false
 	}
+}
+
+func liveSpecKitStage(stage string) string {
+	if stage == "final_review" {
+		return "analyze"
+	}
+	return stage
 }
 
 func (e *Engine) blockUnavailableStage(ctx context.Context, run model.Run, stage string, decision config.Decision, reason string) (model.Run, error) {
@@ -479,6 +486,12 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 		e.finish(r.ID)
 		return
 	}
+	loopBudget, err := NewLoopBudget(DefaultLoopLimits())
+	if err != nil {
+		_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
+		e.finish(r.ID)
+		return
+	}
 	hasLiveStages := false
 	runGateVerdicts := make(map[string]string)
 	for _, decision := range decisions {
@@ -521,13 +534,37 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			return
 		}
 		_ = e.store.Event(ctx, r.ID, key, "stage.started", "info", map[string]any{"attempt": 1, "read_only": key == "analyze"})
+		if key == "converge" && hasLiveStages && d.Provider != "fake" {
+			if err := e.store.SetStage(ctx, st.ID, model.StageRun); err != nil {
+				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
+				e.finish(r.ID)
+				return
+			}
+			err := e.runLiveConvergenceLoop(ctx, r, decisions, installation, featureDir, runGateVerdicts, loopBudget)
+			if err != nil {
+				e.failLiveQualityStage(ctx, r.ID, key, st.ID, "converged", err, ctx)
+				e.finish(r.ID)
+				return
+			}
+			runGateVerdicts["converged"] = "PASS"
+			next := ""
+			if i+1 < len(stages) {
+				next = stages[i+1]
+			}
+			if err := e.completeLiveQualityStage(ctx, r.ID, st.ID, key, next, configuration.SHA256, "converged", "bounded append-only convergence completed with passing required gates", loopBudget); err != nil {
+				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
+				e.finish(r.ID)
+				return
+			}
+			continue
+		}
 		if key == "analyze" && hasLiveStages && d.Provider != "fake" {
 			if err := e.store.SetStage(ctx, st.ID, model.StageRun); err != nil {
 				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
 				e.finish(r.ID)
 				return
 			}
-			analysis, analyzeErr := e.runLiveAnalyzeLoop(ctx, r, decisions, installation, featureDir)
+			analysis, analyzeErr := e.runLiveAnalyzeLoop(ctx, r, decisions, installation, featureDir, loopBudget)
 			if analyzeErr != nil {
 				if ctx.Err() != nil {
 					e.cancelRun(r.ID, key, st.ID)
@@ -549,7 +586,7 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			if i+1 < len(stages) {
 				next = stages[i+1]
 			}
-			state, marshalErr := json.Marshal(map[string]any{"completed_stage": key, "next_stage": next, "configuration_sha256": configuration.SHA256, "cursor_only": true, "execution": "LIVE"})
+			state, marshalErr := json.Marshal(map[string]any{"completed_stage": key, "next_stage": next, "configuration_sha256": configuration.SHA256, "cursor_only": true, "execution": "LIVE", "loop_counts": loopBudget.Counts()})
 			if marshalErr != nil {
 				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
 				e.finish(r.ID)
@@ -569,7 +606,7 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 				e.finish(r.ID)
 				return
 			}
-			verdicts, testErr := e.runTestRepairLoop(ctx, r, decisions, installation, featureDir)
+			verdicts, testErr := e.runTestRepairLoop(ctx, r, decisions, installation, featureDir, loopBudget)
 			persistTestVerdicts(ctx, e.store, r.ID, verdicts)
 			if testErr != nil {
 				_ = e.store.SetStage(context.Background(), st.ID, model.StageFail)
@@ -586,7 +623,7 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			if i+1 < len(stages) {
 				next = stages[i+1]
 			}
-			state, marshalErr := json.Marshal(map[string]any{"completed_stage": key, "next_stage": next, "configuration_sha256": configuration.SHA256, "cursor_only": true, "execution": "LOCAL"})
+			state, marshalErr := json.Marshal(map[string]any{"completed_stage": key, "next_stage": next, "configuration_sha256": configuration.SHA256, "cursor_only": true, "execution": "LOCAL", "loop_counts": loopBudget.Counts()})
 			if marshalErr != nil {
 				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
 				e.finish(r.ID)
@@ -594,6 +631,30 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			}
 			checkpoint := model.Checkpoint{RunID: r.ID, Stage: key, StateJSON: string(state), WorkspaceFingerprint: workspaceIdentityFingerprint(r.Project)}
 			if _, checkpointErr := e.store.SaveCheckpoint(ctx, checkpoint); checkpointErr != nil {
+				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
+				e.finish(r.ID)
+				return
+			}
+			continue
+		}
+		if key == "final_review" && hasLiveStages && d.Provider != "fake" {
+			if err := e.store.SetStage(ctx, st.ID, model.StageRun); err != nil {
+				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
+				e.finish(r.ID)
+				return
+			}
+			err := e.runLiveFinalReviewLoop(ctx, r, decisions, installation, featureDir, runGateVerdicts, loopBudget)
+			if err != nil {
+				e.failLiveQualityStage(ctx, r.ID, key, st.ID, "final_review", err, ctx)
+				e.finish(r.ID)
+				return
+			}
+			runGateVerdicts["final_review"] = "PASS"
+			next := ""
+			if i+1 < len(stages) {
+				next = stages[i+1]
+			}
+			if err := e.completeLiveQualityStage(ctx, r.ID, st.ID, key, next, configuration.SHA256, "final_review", "read-only final review and any bounded fix/test/convergence cycle completed", loopBudget); err != nil {
 				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
 				e.finish(r.ID)
 				return

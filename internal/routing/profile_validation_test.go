@@ -60,6 +60,10 @@ func TestValidateProfileCapabilitiesRequiresVerifiedAuthorization(t *testing.T) 
 	if err := ValidateProfileCapabilities(cfg, []model.Profile{profile}); err == nil || !strings.Contains(err.Error(), "READ_ONLY_EXECUTION_UNVERIFIED") {
 		t.Fatalf("unverified read-only error=%v", err)
 	}
+	cfg.StageRoutes = map[string]config.Route{"final_review": {Provider: "codex", Profile: "local-codex"}}
+	if err := ValidateProfileCapabilities(cfg, []model.Profile{profile}); err == nil || !strings.Contains(err.Error(), "READ_ONLY_EXECUTION_UNVERIFIED") {
+		t.Fatalf("unverified final-review read-only error=%v", err)
+	}
 }
 
 func TestFallbackProfilesAreAuthorizedAndRemainWithinProjectBoundary(t *testing.T) {

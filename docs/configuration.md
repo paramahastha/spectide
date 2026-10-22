@@ -31,7 +31,7 @@ Example project configuration:
 
 Routing modes are `manual`, `hybrid`, and `automatic`. Manual mode requires explicit routes for each stage; hybrid mode uses stage overrides and otherwise the default; automatic mode uses a deterministic risk explanation and the configured default. Supported providers are `fake`, `claude`, `codex`, and `opencode`.
 
-A route may list explicit fallbacks by adding `fallback_authorized: true` and a `fallback` array containing provider/profile routes. Each fallback must resolve to a stored profile for the same project scope and pass the same persisted capability checks as the primary route; nested fallbacks are rejected. The route preview and immutable run configuration retain this fallback intent for audit. Live provider execution and automatic switching to a fallback are not available until the live stage runner is integrated.
+A route may list explicit fallbacks by adding `fallback_authorized: true` and a `fallback` array containing provider/profile routes. Each fallback must resolve to a stored profile for the same project scope and pass the same persisted capability checks as the primary route; nested fallbacks are rejected. The route preview and immutable run configuration retain this fallback intent for audit. Automatic provider switching is not currently verified; a primary invocation failure remains a persisted failure rather than an unapproved fallback attempt.
 
 `allowed_scopes` is an optional list of existing canonical directory roots. When configured, workflow launch and route preview reject projects outside those roots. Stored non-fake profiles also need an allowed root containing the project. A route preview reports `NOT_RUN` and does not create a run.
 

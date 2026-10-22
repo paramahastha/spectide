@@ -14,10 +14,10 @@ import (
 	"github.com/spectide/spectide/internal/speckit"
 )
 
-func (e *Engine) runLiveAnalyzeLoop(ctx context.Context, run model.Run, decisions map[string]config.Decision, installation speckit.Installation, featureDir string) (speckit.Analysis, error) {
+func (e *Engine) runLiveAnalyzeLoop(ctx context.Context, run model.Run, decisions map[string]config.Decision, installation speckit.Installation, featureDir string, budget *LoopBudget) (speckit.Analysis, error) {
 	analysisRoute := decisions["analyze"].Route
 	implementRoute := decisions["implement"].Route
-	if analysisRoute.Provider == "fake" || implementRoute.Provider == "fake" {
+	if analysisRoute.Provider == "fake" {
 		return speckit.Analysis{}, fmt.Errorf("ANALYZE_REMEDIATION_ADAPTER_UNAVAILABLE")
 	}
 	hooks := AnalyzeHooks{
@@ -69,7 +69,7 @@ func (e *Engine) runLiveAnalyzeLoop(ctx context.Context, run model.Run, decision
 			return e.store.Event(ctx, run.ID, "analyze", "analysis.remediated", "info", map[string]any{"finding_id": finding.ID, "owner": finding.Owner, "severity": finding.Severity})
 		},
 	}
-	return RunAnalyzeGate(ctx, hooks, DefaultLoopLimits())
+	return RunAnalyzeGateWithBudget(ctx, hooks, budget, DefaultLoopLimits())
 }
 
 func validateOwnerArtifactChange(before, after map[string]string, owner string) error {

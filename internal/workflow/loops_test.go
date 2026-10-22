@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -44,6 +45,35 @@ func TestLoopBudgetAllowsFourTestRepairsThenExhausts(t *testing.T) {
 	}
 	if err := budget.TestRepair(); err == nil || !strings.Contains(err.Error(), "TEST_REPAIR_EXHAUSTED") {
 		t.Fatalf("fifth repair error=%v", err)
+	}
+}
+
+func TestSharedRunBudgetAppliesAcrossConvergenceAndFinalReviewStages(t *testing.T) {
+	budget, err := NewLoopBudget(DefaultLoopLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < DefaultLoopLimits().ConvergenceRounds; i++ {
+		if err := budget.ConvergenceRound("before", "after", nil, map[string]string{"tests": "PASS"}); err != nil {
+			t.Fatalf("round %d was rejected: %v", i+1, err)
+		}
+	}
+	hooks := ConvergenceHooks{
+		Snapshot: func(context.Context) (ConvergenceSnapshot, error) {
+			return ConvergenceSnapshot{SpecificationPath: "specs/001-build-spectide/spec.md", TaskLedger: "tasks", GateVerdicts: map[string]string{"required_tests": "PASS"}}, nil
+		},
+		Converge:  func(context.Context) (string, error) { return "✅ Converged — required gates pass.", nil },
+		Implement: func(context.Context, []string) error { return nil },
+		Test: func(context.Context) (map[string]string, error) {
+			return map[string]string{"required_tests": "PASS"}, nil
+		},
+	}
+	if _, err := RunConvergenceWithBudget(context.Background(), hooks, budget, DefaultLoopLimits()); err == nil || !strings.Contains(err.Error(), "CONVERGENCE_EXHAUSTED") {
+		t.Fatalf("later convergence stage reset the run budget: %v", err)
+	}
+	review := FinalReviewHooks{Convergence: hooks, Review: func(context.Context) ([]string, error) { return nil, nil }, Fix: func(context.Context, []string) error { return nil }}
+	if _, err := RunFinalReviewWithBudget(context.Background(), review, budget, DefaultLoopLimits()); err == nil || !strings.Contains(err.Error(), "CONVERGENCE_EXHAUSTED") {
+		t.Fatalf("final-review stage reset the run budget: %v", err)
 	}
 }
 

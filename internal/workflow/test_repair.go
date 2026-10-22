@@ -18,12 +18,19 @@ type TestRepairHooks struct {
 // number of repairs. A repair is useful only when the failing verdict set
 // changes; an unchanged failure set blocks immediately.
 func RunTestRepairGate(ctx context.Context, hooks TestRepairHooks, limits LoopLimits) (map[string]string, error) {
-	if hooks.Test == nil || hooks.Repair == nil {
-		return nil, fmt.Errorf("TEST_REPAIR_HOOKS_REQUIRED")
-	}
 	budget, err := NewLoopBudget(limits)
 	if err != nil {
 		return nil, err
+	}
+	return RunTestRepairGateWithBudget(ctx, hooks, budget, limits)
+}
+
+func RunTestRepairGateWithBudget(ctx context.Context, hooks TestRepairHooks, budget *LoopBudget, limits LoopLimits) (map[string]string, error) {
+	if hooks.Test == nil || hooks.Repair == nil {
+		return nil, fmt.Errorf("TEST_REPAIR_HOOKS_REQUIRED")
+	}
+	if budget == nil {
+		return nil, fmt.Errorf("TEST_REPAIR_BUDGET_REQUIRED")
 	}
 	verdicts, err := hooks.Test(ctx)
 	if err != nil {

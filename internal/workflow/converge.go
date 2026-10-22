@@ -34,12 +34,19 @@ type FinalReviewHooks struct {
 // enforcing append-only tasks, bounded progress, same-ledger implementation,
 // and a required test pass before it asks for another convergence report.
 func RunConvergence(ctx context.Context, hooks ConvergenceHooks, limits LoopLimits) (bool, error) {
-	if hooks.Snapshot == nil || hooks.Converge == nil || hooks.Implement == nil || hooks.Test == nil {
-		return false, fmt.Errorf("CONVERGENCE_HOOKS_REQUIRED")
-	}
 	budget, err := NewLoopBudget(limits)
 	if err != nil {
 		return false, err
+	}
+	return RunConvergenceWithBudget(ctx, hooks, budget, limits)
+}
+
+func RunConvergenceWithBudget(ctx context.Context, hooks ConvergenceHooks, budget *LoopBudget, limits LoopLimits) (bool, error) {
+	if hooks.Snapshot == nil || hooks.Converge == nil || hooks.Implement == nil || hooks.Test == nil {
+		return false, fmt.Errorf("CONVERGENCE_HOOKS_REQUIRED")
+	}
+	if budget == nil {
+		return false, fmt.Errorf("CONVERGENCE_BUDGET_REQUIRED")
 	}
 	return runConvergenceWithBudget(ctx, hooks, budget, limits)
 }
@@ -48,12 +55,19 @@ func RunConvergence(ctx context.Context, hooks ConvergenceHooks, limits LoopLimi
 // and convergence cycle used for appended tasks. All iterations must retain
 // the same product specification path and share one per-run convergence budget.
 func RunFinalReview(ctx context.Context, hooks FinalReviewHooks, limits LoopLimits) (bool, error) {
-	if hooks.Review == nil || hooks.Fix == nil || hooks.Convergence.Snapshot == nil || hooks.Convergence.Converge == nil || hooks.Convergence.Implement == nil || hooks.Convergence.Test == nil {
-		return false, fmt.Errorf("FINAL_REVIEW_HOOKS_REQUIRED")
-	}
 	budget, err := NewLoopBudget(limits)
 	if err != nil {
 		return false, err
+	}
+	return RunFinalReviewWithBudget(ctx, hooks, budget, limits)
+}
+
+func RunFinalReviewWithBudget(ctx context.Context, hooks FinalReviewHooks, budget *LoopBudget, limits LoopLimits) (bool, error) {
+	if hooks.Review == nil || hooks.Fix == nil || hooks.Convergence.Snapshot == nil || hooks.Convergence.Converge == nil || hooks.Convergence.Implement == nil || hooks.Convergence.Test == nil {
+		return false, fmt.Errorf("FINAL_REVIEW_HOOKS_REQUIRED")
+	}
+	if budget == nil {
+		return false, fmt.Errorf("FINAL_REVIEW_BUDGET_REQUIRED")
 	}
 	featurePath := ""
 	previousReviewFindings := ""

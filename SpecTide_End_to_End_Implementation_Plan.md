@@ -1498,15 +1498,15 @@ Implement scope as a deny-first policy. Explicit exceptions must be documented a
 - [x] Profile capability snapshots persist with redaction and profile-edit invalidation; route preview and launch deny unverified live profiles before creating a run.
 - [x] Complete T024 routing/capability validation, explicit fallback authorization, deny-first boundary checks, and dry-run evidence.
 - [x] Execute capability-authorized provider stages through verified Spec-Kit command templates; persist sanitized live events and reject analyze/converge artifact contract violations (T014).
-- [ ] Integrate analyze remediation, test-repair, convergence loops, and any fallback retries with persisted stage outcomes (T016, T035).
-- [ ] Integrate official Spec-Kit/provider stages and bounded analyze, test-repair, and convergence loops into persisted run outcomes (T014, T016, T035).
+- [x] Integrate bounded analyze remediation, test-repair, append-only convergence, and final-review loops into persisted stage outcomes with one shared per-run budget (T016, T035).
+- [x] Integrate capability-authorized provider stages through verified Spec-Kit templates and persist bounded analyze, test-repair, convergence, and final-review outcomes (T014, T016, T035); real provider authentication and official convergence execution remain tracked by T045.
 - [ ] Complete verified restart recovery and cross-layer failure/secret-leak acceptance (T034, T036).
 - [ ] Complete browser page/state and accessibility evidence, screenshots, and the final release report (T031, T046).
 - [ ] Run official Spec-Kit convergence and resolve any appended tasks (T045); no official converge result is claimed yet.
 
 The detailed phase checklists below remain the full blueprint. Their original bootstrap steps are not re-executed; use the canonical ledger for current task completion and resume at the next unchecked dependency.
 
-**T016 checkpoint (22 October 2026):** The live `analyze` stage now runs the bounded read-only analysis/remediation loop, restricts each remediation to its owning canonical artifact, and persists `analyze_clean`. The live `tests` stage runs and persists registered local quality verdicts, invokes the authorized implement route with failed-check-only repair prompts, and records `required_tests` plus a stage checkpoint. Focused workflow tests and full `make verify` pass. T016 remains unchecked until run-level convergence/final-review outcomes are integrated; see [implementation progress](docs/implementation-progress.md).
+**T016/T035 checkpoint (22 October 2026):** Live `analyze`, `tests`, `converge`, and `final_review` now run their bounded loops with a shared per-run budget. Analyze remediation is restricted to its owning canonical artifact; test verdicts, convergence reports, and final gates are persisted; appended tasks are validated and re-tested; the final review uses a verified read-only analyze route. The final-review checkpoint stores loop counts. Focused workflow tests and full `make verify` pass. This is fixture-backed workflow evidence; real provider authentication and official convergence remain T045. See [implementation progress](docs/implementation-progress.md).
 
 ### Phase 0 — Constitution, requirements, and repository setup
 

@@ -17,12 +17,19 @@ type AnalyzeHooks struct {
 // RunAnalyzeGate performs a read-only baseline analysis, then addresses one
 // blocking finding per owning-artifact change and read-only re-analysis.
 func RunAnalyzeGate(ctx context.Context, hooks AnalyzeHooks, limits LoopLimits) (speckit.Analysis, error) {
-	if hooks.ArtifactHash == nil || hooks.Analyze == nil || hooks.Remediate == nil {
-		return speckit.Analysis{}, fmt.Errorf("ANALYZE_HOOKS_REQUIRED")
-	}
 	budget, err := NewLoopBudget(limits)
 	if err != nil {
 		return speckit.Analysis{}, err
+	}
+	return RunAnalyzeGateWithBudget(ctx, hooks, budget, limits)
+}
+
+func RunAnalyzeGateWithBudget(ctx context.Context, hooks AnalyzeHooks, budget *LoopBudget, limits LoopLimits) (speckit.Analysis, error) {
+	if hooks.ArtifactHash == nil || hooks.Analyze == nil || hooks.Remediate == nil {
+		return speckit.Analysis{}, fmt.Errorf("ANALYZE_HOOKS_REQUIRED")
+	}
+	if budget == nil {
+		return speckit.Analysis{}, fmt.Errorf("ANALYZE_BUDGET_REQUIRED")
 	}
 	analysis, artifactHash, err := readOnlyAnalysis(ctx, hooks)
 	if err != nil {

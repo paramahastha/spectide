@@ -13,7 +13,7 @@ import (
 	"github.com/spectide/spectide/internal/speckit"
 )
 
-func (e *Engine) runTestRepairLoop(ctx context.Context, run model.Run, decisions map[string]config.Decision, installation speckit.Installation, featureDir string) (map[string]string, error) {
+func (e *Engine) runTestRepairLoop(ctx context.Context, run model.Run, decisions map[string]config.Decision, installation speckit.Installation, featureDir string, budget *LoopBudget) (map[string]string, error) {
 	latest := map[string]string{}
 	hooks := TestRepairHooks{
 		Test: func(ctx context.Context) (map[string]string, error) {
@@ -52,7 +52,7 @@ func (e *Engine) runTestRepairLoop(ctx context.Context, run model.Run, decisions
 			return nil
 		},
 	}
-	verdicts, err := RunTestRepairGate(ctx, hooks, DefaultLoopLimits())
+	verdicts, err := RunTestRepairGateWithBudget(ctx, hooks, budget, DefaultLoopLimits())
 	if err != nil {
 		return verdicts, err
 	}

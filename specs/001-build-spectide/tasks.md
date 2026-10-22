@@ -38,7 +38,7 @@
 - [x] T013 [US1] Implement deterministic fake stage execution and quality evidence, keeping simulated outcomes visibly distinct from official Spec-Kit command results, in `internal/workflow/engine.go`
 - [x] T014 [US1] Implement Spec-Kit discovery, canonical-stage invocation only through verified installed commands, blocked outcomes for missing or unusable integrations, artifact inspection, and analyze/converge parsing in `internal/speckit/`
 - [x] T015 [US1] Implement required test registry and evidence collection in `internal/quality/`
-- [ ] T016 [US1] Implement the FR-009 defaults of at most 3 analyze remediation rounds (excluding the initial baseline; only critical/high findings and medium findings that leave security, acceptance, or prerequisites unsatisfied block; a round is one owning-artifact change followed by one read-only re-analysis), 4 test repair attempts, and 5 convergence rounds per run; add tests for each configured default, each exhaustion boundary, and the no-progress stop condition in `internal/workflow/`
+- [x] T016 [US1] Implement the FR-009 defaults of at most 3 analyze remediation rounds (excluding the initial baseline; only critical/high findings and medium findings that leave security, acceptance, or prerequisites unsatisfied block; a round is one owning-artifact change followed by one read-only re-analysis), 4 test repair attempts, and 5 convergence rounds per run; add tests for each configured default, each exhaustion boundary, and the no-progress stop condition in `internal/workflow/`
 - [x] T017 [US1] Implement CLI run, status, list, logs, report, and exit-code behavior in `internal/cli/`
 
 ## Phase 4: User Story 2 — Authorized profile routing (P1)
@@ -81,7 +81,7 @@
 - [x] T032 [P] [US4] Add state-machine transition and workspace lock contention tests in `internal/workflow/` and `internal/workspace/`
 - [x] T033 [P] [US4] Add malformed stream, timeout, cancellation, and redaction adapter fixture tests in `internal/adapters/`, `internal/runner/`, and `internal/security/`
 - [ ] T034 [US4] Implement pause/resume/cancel at safe stage boundaries and checkpoint recovery; test resume only after canonical workspace identity and exclusive lock checks, immutable configuration hash match, checkpoint identity match, checkpointed artifact path/content hashes match, and Git HEAD plus managed-path hashes match; on mismatch preserve evidence, block with `WORKSPACE_DRIFT`, and require explicit verified recovery without overwriting in `internal/workflow/`
-- [ ] T035 [US4] Implement append-only convergence task validation and final-review return loop, with tests proving remediation/retries preserve the same product specification path and never create a replacement spec, in `internal/speckit/` and `internal/workflow/`
+- [x] T035 [US4] Implement append-only convergence task validation and final-review return loop, with tests proving remediation/retries preserve the same product specification path and never create a replacement spec, in `internal/speckit/` and `internal/workflow/`
 - [ ] T036 [US4] Add recovery and secret-leak end-to-end scenarios; verify exhaustion at 3 analyze remediation rounds, 4 test repair attempts, and 5 convergence rounds, plus no-progress termination, in `internal/workflow/` and `internal/api/`
 - [x] T049 [US4] Add a 20-run deterministic simulated lifecycle acceptance test proving SC-002 in `internal/workflow/`
 
