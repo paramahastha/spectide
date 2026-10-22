@@ -185,6 +185,18 @@
 
 - Failure injection, bounded remediation, convergence additions, and restart recovery scenarios remain open under T016 and T034–T036.
 
+### Phase checkpoint — isolated offline smoke scripts
+
+**Verified in this checkpoint**
+
+- Added `scripts/demo.sh` and `scripts/smoke.sh`; both use a temporary SQLite database and remove its database/WAL files on exit.
+- Updated `make demo` and `make smoke` to use the scripts. Smoke checks run `doctor`, complete the demo, and assert the output explicitly says `SIMULATED`.
+- `make smoke` passed. T039 is checked complete.
+
+**Remaining**
+
+- The demo remains a deterministic simulated lifecycle; it does not invoke a live provider or official Spec-Kit stages.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified

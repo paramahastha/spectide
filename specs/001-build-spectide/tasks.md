@@ -90,7 +90,7 @@
 
 - [ ] T037 [P] [US5] Implement Cobra root command, doctor, init, serve, dashboard, demo, and configuration command tree in `cmd/spectide/` and `internal/cli/`
 - [ ] T038 [P] [US5] Create fake-provider demo workspace and deterministic fixtures in `examples/fake-provider-demo/` and `testdata/`
-- [ ] T039 [US5] Add offline smoke validation in `scripts/smoke.sh`, `scripts/demo.sh`, and `Makefile`
+- [x] T039 [US5] Add offline smoke validation in `scripts/smoke.sh`, `scripts/demo.sh`, and `Makefile`
 - [ ] T040 [US5] Write verified user, architecture, configuration, provider, security, recovery, troubleshooting, and OpenAPI documentation in `docs/`
 - [ ] T041 [US5] Add release-ready repository policy, contribution, security, changelog, CI, and no-secret checks in root files and `.github/`
 

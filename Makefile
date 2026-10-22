@@ -22,8 +22,7 @@ build:
 	go build -o $(BIN) ./cmd/spectide
 
 demo: build
-	$(BIN) demo --project ./examples/fake-provider-demo
+	./scripts/demo.sh
 
 smoke: build
-	$(BIN) doctor
-	$(BIN) demo --project ./examples/fake-provider-demo
+	./scripts/smoke.sh
