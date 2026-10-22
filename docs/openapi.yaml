@@ -29,11 +29,57 @@ paths:
       operationId: version
       responses:
         '200': { description: Version and provider readiness }
+  /api/v1/capabilities:
+    get:
+      operationId: listPersistedCapabilities
+      responses:
+        '200':
+          description: Persisted non-secret provider/profile capability observations; this endpoint does not probe providers
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CapabilityResponse' }
+        '405': { $ref: '#/components/responses/ContractError' }
+  /api/v1/config/validate:
+    post:
+      operationId: validateProjectConfiguration
+      parameters:
+        - { in: header, name: X-SpecTide-CSRF, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [project, prompt]
+              additionalProperties: false
+              properties:
+                project: { type: string, minLength: 1 }
+                prompt: { type: string, minLength: 1 }
+      responses:
+        '200': { description: Validated route preview; no run is created }
+        '400': { $ref: '#/components/responses/ContractError' }
+        '422': { $ref: '#/components/responses/ContractError' }
   /api/v1/runs:
     get:
       operationId: listRuns
+      parameters:
+        - { in: query, name: limit, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 100 } }
+        - { in: query, name: offset, required: false, schema: { type: integer, minimum: 0, maximum: 1000000, default: 0 } }
       responses:
-        '200': { description: Persisted local runs }
+        '200':
+          description: Bounded page of persisted runs, newest first
+          headers:
+            X-Total-Count: { schema: { type: integer } }
+            X-Page-Limit: { schema: { type: integer } }
+            X-Page-Offset: { schema: { type: integer } }
+            X-Has-More: { schema: { type: string, enum: ["true", "false"] } }
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 100
+                items: { $ref: '#/components/schemas/RunSummary' }
+        '400': { $ref: '#/components/responses/ContractError' }
     post:
       operationId: createRunOrPreview
       parameters:
@@ -68,27 +114,62 @@ paths:
       parameters:
         - { in: path, name: id, required: true, schema: { type: string } }
       responses:
-        '200': { description: Persisted run and evidence snapshot }
-        '404': { description: Run not found }
+        '200':
+          description: Persisted run report snapshot
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RunReport' }
+        '404': { $ref: '#/components/responses/ContractError' }
   /api/v1/runs/{id}/report:
     get:
       operationId: getRunReportDocument
       parameters:
         - { in: path, name: id, required: true, schema: { type: string } }
       responses:
-        '200': { description: Persisted report snapshot }
+        '200':
+          description: Persisted report snapshot with explicit stage, gate, attempt, quality, artifact, approval, and acceptance projections
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RunReport' }
+  /api/v1/runs/{id}/stages:
+    get:
+      operationId: listRunStages
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Ordered persisted stage attempts
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Stage' } }
+        '404': { $ref: '#/components/responses/ContractError' }
+  /api/v1/runs/{id}/artifacts:
+    get:
+      operationId: listRunArtifacts
+      parameters:
+        - { in: path, name: id, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Registered artifact metadata; file contents are not returned
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Artifact' } }
+        '404': { $ref: '#/components/responses/ContractError' }
   /api/v1/runs/{id}/events:
     get:
       operationId: streamRunEvents
       parameters:
         - { in: path, name: id, required: true, schema: { type: string } }
         - { in: query, name: after, required: false, schema: { type: integer, minimum: 0 } }
+        - { in: header, name: Last-Event-ID, required: false, schema: { type: integer, minimum: 0 } }
       responses:
         '200':
           description: Ordered server-sent event stream
           content:
             text/event-stream:
               schema: { type: string }
+        '400': { $ref: '#/components/responses/ContractError' }
+        '404': { $ref: '#/components/responses/ContractError' }
   /api/v1/runs/{id}/{action}:
     post:
       operationId: controlRun
@@ -173,13 +254,97 @@ paths:
         '200': { description: Effective non-secret configuration }
         '403': { description: Canonical path or config boundary changed }
 components:
+  responses:
+    ContractError:
+      description: Sanitized API error correlated with the response X-Request-ID header
+      headers:
+        X-Request-ID: { schema: { type: string, minLength: 32, maxLength: 32 } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
   schemas:
-    Error:
+    ErrorEnvelope:
       type: object
+      required: [error, request_id]
       properties:
         error:
           type: object
-          required: [code, message]
+          required: [code, message, details, request_id]
           properties:
             code: { type: string }
             message: { type: string }
+            details: { type: object, additionalProperties: true }
+            request_id: { type: string, minLength: 32, maxLength: 32 }
+        request_id: { type: string, minLength: 32, maxLength: 32 }
+    RunSummary:
+      type: object
+      required: [id, project, prompt, state, execution, created_at]
+      properties:
+        id: { type: string }
+        project: { type: string }
+        prompt: { type: string }
+        state: { type: string, enum: [CREATED, RUNNING, PAUSED, COMPLETED, BLOCKED, FAILED, CANCELLED] }
+        execution: { type: string, enum: [SIMULATED, LIVE, MIXED, UNKNOWN] }
+        created_at: { type: string, format: date-time }
+    Stage:
+      type: object
+      required: [id, run_id, key, position, state, provider, profile, model, effort, attempt]
+      properties:
+        id: { type: string }
+        run_id: { type: string }
+        key: { type: string }
+        position: { type: integer }
+        state: { type: string }
+        provider: { type: string }
+        profile: { type: string }
+        model: { type: string }
+        effort: { type: string }
+        attempt: { type: integer }
+    Artifact:
+      type: object
+      required: [id, run_id, stage, path, kind, sha256, observed_at]
+      properties:
+        id: { type: string }
+        run_id: { type: string }
+        stage: { type: string }
+        path: { type: string }
+        kind: { type: string }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        observed_at: { type: string, format: date-time }
+    RunReport:
+      type: object
+      required: [run, acceptance, stages, execution_attempts, quality_executions, routing_decisions, gates, artifacts, checkpoints, approvals]
+      properties:
+        run: { $ref: '#/components/schemas/RunSummary' }
+        acceptance: { type: object, required: [verdict, execution, required_gates], properties: { verdict: { type: string }, execution: { type: string, enum: [SIMULATED, LIVE, MIXED] }, required_gates: { type: array, items: { type: object } }, simulation_gates: { type: array, items: { type: object } } } }
+        stages: { type: array, items: { $ref: '#/components/schemas/Stage' } }
+        execution_attempts: { type: array, items: { type: object } }
+        quality_executions: { type: array, items: { type: object } }
+        routing_decisions: { type: array, items: { type: object } }
+        gates: { type: array, items: { type: object } }
+        artifacts: { type: array, items: { $ref: '#/components/schemas/Artifact' } }
+        checkpoints: { type: array, items: { type: object } }
+        approvals: { type: array, items: { type: object } }
+    CapabilityResponse:
+      type: object
+      required: [providers, profiles]
+      properties:
+        providers: { type: object, additionalProperties: { type: string } }
+        profiles:
+          type: array
+          items:
+            type: object
+            required: [profile, provider, executable_found, authenticated, read_only_execution, workspace_write]
+            properties:
+              profile: { type: string }
+              provider: { type: string }
+              executable_found: { type: boolean }
+              authenticated: { type: string }
+              read_only_execution: { type: boolean }
+              workspace_write: { type: boolean }
+              model_catalog_status: { type: string }
+              models: { type: array, items: { type: string } }
+              effort_values: { type: array, items: { type: string } }
+              safety_modes: { type: array, items: { type: string } }
+              command_capabilities: { type: array, items: { type: string } }
+              observed_at: { type: string, format: date-time }

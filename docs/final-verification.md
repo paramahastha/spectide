@@ -13,7 +13,7 @@
 - Architecture: arm64
 - Build command: `make build` (`go build -o bin/spectide ./cmd/spectide`)
 - Startup/health command: `make smoke` (`scripts/smoke.sh` starts `spectide serve --port 0`, then requests `/healthz`)
-- Measurement: latest `make verify` run measured 21.562 ms from the monotonic timestamp immediately before `Popen` through the first HTTP 200 from `/healthz`; acceptance limit is 2,000 ms. Earlier measurements are retained in the implementation checkpoint history.
+- Measurement: latest `make verify` run measured 22.359 ms from the monotonic timestamp immediately before `Popen` through the first HTTP 200 from `/healthz`; acceptance limit is 2,000 ms. Earlier measurements are retained in the implementation checkpoint history.
 - The same smoke run completed the offline demo and reported `SIMULATED`.
 
 ## Other verification executed
@@ -39,6 +39,7 @@
 | Terminal required-gate inventory | PASS, store/workflow fixtures | `make verify`; schema migration 10 persists six inventory keys on every run, terminal acceptance is atomic with state changes, and tests assert PASS/FAIL/BLOCKED/NOT_RUN for missing integration, early failure, cancellation, interruption, simulated success, and live success (T072). |
 | Dashboard event replay and recovery | PASS, component fixtures | `make verify`; two viewers receive provider, approval, quality, and failure events in sequence, reconnect from the last event cursor, deduplicate a replay duplicate, refresh the same persisted report snapshot, and clear the disconnected state on stream recovery (T073). Actual browser E2E remains open under T077. |
 | Immutable execution labels | PASS, store/CLI/component fixtures | `make verify`; run history and reports derive execution class from immutable route snapshots; simulated/live/mixed/unknown rows render before selection, CLI status includes the class and acceptance verdict, and stage details include effort and attempt (T074). Live account execution and browser rendering remain NOT_RUN. |
+| Local API contract completion | PASS | `make verify`; API tests cover safe persisted capabilities, configuration validation without run creation, default 100-run pagination and metadata, exact route/method handling, request-ID-correlated sanitized errors, and explicit stage/artifact/report projections (T075). `ruby -e 'require "yaml"; YAML.load_file("docs/openapi.yaml")'` parses the updated OpenAPI contract. |
 | Runner timeout/output/cancellation | PASS | `go test ./internal/runner -count=1` |
 | Deterministic repeated lifecycle | PASS | `TestTwentyDeterministicRunsCompleteWithRequiredEvidence` (20 runs) |
 | Workspace path/scope enforcement | PASS | Focused `go test ./internal/workflow ./internal/api ./internal/workspace`; missing paths and disallowed roots rejected before run creation, canonical symlink path accepted within scope |

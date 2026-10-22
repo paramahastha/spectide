@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
+	"github.com/spectide/spectide/internal/security"
 	"github.com/spectide/spectide/internal/store"
 	"github.com/spectide/spectide/internal/workflow"
 	"net/http"
@@ -52,6 +54,155 @@ func TestAPIJSONAndErrorResponsesRedactNestedSecrets(t *testing.T) {
 	apiError(errorResponse, http.StatusBadRequest, "TEST_ERROR", "password="+secret)
 	if strings.Contains(errorResponse.Body.String(), secret) || !strings.Contains(errorResponse.Body.String(), "[REDACTED]") {
 		t.Fatalf("API error leaked or failed to redact secret: %s", errorResponse.Body.String())
+	}
+}
+
+func TestAPIErrorEnvelopeIncludesCorrelatedRequestIdentity(t *testing.T) {
+	s := testServer(t)
+	r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/v1/runs?limit=invalid", nil)
+	r.Host = "127.0.0.1"
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	var body struct {
+		Error struct {
+			Code      string         `json:"code"`
+			Message   string         `json:"message"`
+			Details   map[string]any `json:"details"`
+			RequestID string         `json:"request_id"`
+		} `json:"error"`
+		RequestID string `json:"request_id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if w.Code != http.StatusBadRequest || body.Error.Code != "INVALID_PAGE" || len(body.Error.RequestID) != 32 || body.Error.RequestID != w.Header().Get("X-Request-ID") || body.Error.RequestID != body.RequestID || body.Error.Details == nil {
+		t.Fatalf("request-correlated error response=%+v header=%q status=%d", body, w.Header().Get("X-Request-ID"), w.Code)
+	}
+}
+
+func TestRunHistoryPaginationIsBoundedAndReportsMetadata(t *testing.T) {
+	s := testServer(t)
+	for i := 0; i < 105; i++ {
+		if _, err := s.Store.CreateRun(context.Background(), filepath.Join(t.TempDir(), "project"), fmt.Sprintf("run-%03d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	call := func(target string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1"+target, nil)
+		r.Host = "127.0.0.1"
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		return w
+	}
+	first := call("/api/v1/runs")
+	var page []model.Run
+	if err := json.Unmarshal(first.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if first.Code != http.StatusOK || len(page) != 100 || first.Header().Get("X-Total-Count") != "105" || first.Header().Get("X-Page-Limit") != "100" || first.Header().Get("X-Page-Offset") != "0" || first.Header().Get("X-Has-More") != "true" {
+		t.Fatalf("default page count=%d status=%d headers=%v", len(page), first.Code, first.Header())
+	}
+	second := call("/api/v1/runs?limit=10&offset=100")
+	if err := json.Unmarshal(second.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if second.Code != http.StatusOK || len(page) != 5 || second.Header().Get("X-Has-More") != "false" {
+		t.Fatalf("last page count=%d status=%d headers=%v", len(page), second.Code, second.Header())
+	}
+	if invalid := call("/api/v1/runs?limit=101"); invalid.Code != http.StatusBadRequest {
+		t.Fatalf("oversized page status=%d body=%s", invalid.Code, invalid.Body.String())
+	}
+}
+
+func TestCapabilitiesEndpointExposesOnlyPersistedNonSecretEvidence(t *testing.T) {
+	s := testServer(t)
+	profile := model.Profile{Name: "safe-codex", Provider: "codex", Executable: "/bin/sh", AllowedScopes: []string{"/workspace"}}
+	if _, err := s.Store.SaveProfile(context.Background(), profile); err != nil {
+		t.Fatal(err)
+	}
+	reference, err := security.ResolveExecutableReference(profile.Executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilityEvidence := model.ProfileCapability{Provider: "codex", ExecutableFound: true, ApprovedExecutablePath: reference.Path, ExecutableSHA256: reference.SHA256, Authenticated: "AUTHENTICATED", ReadOnlyExecution: true, WorkspaceWrite: true, ModelCatalogStatus: "VERIFIED", ModelValues: []string{"gpt-test"}, EffortValues: []string{"high"}, ObservedAt: time.Now().UTC()}
+	if _, err = s.Store.SaveProfileCapability(context.Background(), profile.Name, capabilityEvidence); err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/v1/capabilities", nil)
+	r.Host = "127.0.0.1"
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"authenticated":"AUTHENTICATED"`) || !strings.Contains(w.Body.String(), `"models":["gpt-test"]`) || !strings.Contains(w.Body.String(), `"fake":"SIMULATED_READY"`) || strings.Contains(w.Body.String(), "/private/provider-bin") || strings.Contains(w.Body.String(), strings.Repeat("a", 64)) {
+		t.Fatalf("capability response status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestConfigurationValidationEndpointUsesRoutePreviewWithoutRunCreation(t *testing.T) {
+	s := testServer(t)
+	project := t.TempDir()
+	r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/config/validate", strings.NewReader(`{"project":"`+project+`","prompt":"inspect"}`))
+	r.Host = "127.0.0.1"
+	r.Header.Set("X-SpecTide-CSRF", s.CSRF)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"valid":true`) || !strings.Contains(w.Body.String(), `"execution":"NOT_RUN"`) {
+		t.Fatalf("validation status=%d body=%s", w.Code, w.Body.String())
+	}
+	if runs, err := s.Store.Runs(context.Background()); err != nil || len(runs) != 0 {
+		t.Fatalf("validation created runs=%d err=%v", len(runs), err)
+	}
+}
+
+func TestAPIRejectsWrongMethodsAndExtraResourceSegments(t *testing.T) {
+	s := testServer(t)
+	run, err := s.Store.CreateRun(context.Background(), t.TempDir(), "route methods")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		method, path string
+		want         int
+	}{
+		{http.MethodPost, "/api/v1/runs/" + run.ID, http.StatusMethodNotAllowed},
+		{http.MethodPost, "/api/v1/runs/" + run.ID + "/report", http.StatusMethodNotAllowed},
+		{http.MethodPost, "/api/v1/runs/" + run.ID + "/events", http.StatusMethodNotAllowed},
+		{http.MethodGet, "/api/v1/runs/" + run.ID + "/cancel/extra", http.StatusNotFound},
+		{http.MethodPost, "/api/v1/capabilities", http.StatusMethodNotAllowed},
+		{http.MethodGet, "/api/v1/not-a-resource", http.StatusNotFound},
+	} {
+		r := httptest.NewRequest(tc.method, "http://127.0.0.1"+tc.path, nil)
+		r.Host = "127.0.0.1"
+		r.Header.Set("X-SpecTide-CSRF", s.CSRF)
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		if w.Code != tc.want {
+			t.Errorf("%s %s status=%d want=%d body=%s", tc.method, tc.path, w.Code, tc.want, w.Body.String())
+		}
+	}
+}
+
+func TestRunStageArtifactAndReportProjectionsAreExplicit(t *testing.T) {
+	s := testServer(t)
+	run, err := s.Store.CreateRun(context.Background(), t.TempDir(), "project projections")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Store.AddStage(context.Background(), model.Stage{ID: "projection-stage", RunID: run.ID, Key: "analyze", Position: 1, State: model.Pending, Provider: "fake", Profile: "offline", Model: "", Effort: "", Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.Store.SaveArtifact(context.Background(), model.Artifact{RunID: run.ID, Stage: "analyze", Path: "specs/001/spec.md", Kind: "markdown", SHA256: strings.Repeat("a", 64)}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ path, expected string }{
+		{"stages", `"key":"analyze"`}, {"artifacts", `"path":"specs/001/spec.md"`}, {"report", `"acceptance":`},
+	} {
+		r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/v1/runs/"+run.ID+"/"+tc.path, nil)
+		r.Host = "127.0.0.1"
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), tc.expected) {
+			t.Errorf("%s projection status=%d body=%s", tc.path, w.Code, w.Body.String())
+		}
 	}
 }
 func TestRunNeedsCSRF(t *testing.T) {

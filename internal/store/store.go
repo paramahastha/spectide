@@ -241,6 +241,12 @@ func (s *Store) CreateRunWithConfiguration(ctx context.Context, key, project, pr
 			}
 			existing.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 			existing.StartedAt, existing.EndedAt = parse(started), parse(ended)
+			var existingConfig string
+			if configErr := tx.QueryRowContext(ctx, `SELECT config_json FROM run_configurations WHERE run_id=?`, existing.ID).Scan(&existingConfig); configErr == nil {
+				existing.Execution = executionFromConfiguration(existingConfig)
+			} else if configErr != sql.ErrNoRows {
+				return model.Run{}, false, configErr
+			}
 			return existing, true, nil
 		} else if err != sql.ErrNoRows {
 			return model.Run{}, false, err
@@ -269,6 +275,7 @@ func (s *Store) CreateRunWithConfiguration(ctx context.Context, key, project, pr
 	if err = initializeGateInventoryTx(ctx, tx, r.ID); err != nil {
 		return r, false, err
 	}
+	r.Execution = executionFromConfiguration(string(configJSON))
 	return r, false, tx.Commit()
 }
 
@@ -609,7 +616,27 @@ func (s *Store) GetRun(ctx context.Context, id string) (model.Run, error) {
 	return run, nil
 }
 func (s *Store) Runs(ctx context.Context) ([]model.Run, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT r.id,r.project,r.prompt,r.state,r.created_at,COALESCE(r.started_at,''),COALESCE(r.ended_at,''),COALESCE(c.config_json,''),COALESCE((SELECT group_concat(provider, ',') FROM routing_decisions d WHERE d.run_id=r.id),''),COALESCE((SELECT group_concat(provider, ',') FROM stages st WHERE st.run_id=r.id),'') FROM runs r LEFT JOIN run_configurations c ON c.run_id=r.id ORDER BY r.created_at DESC`)
+	return s.runs(ctx, 0, 0)
+}
+
+func (s *Store) RunsPage(ctx context.Context, limit, offset int) ([]model.Run, error) {
+	if limit < 1 || limit > 100 || offset < 0 {
+		return nil, fmt.Errorf("RUN_PAGE_INVALID")
+	}
+	return s.runs(ctx, limit, offset)
+}
+
+func (s *Store) RunCount(ctx context.Context) (int, error) {
+	var count int
+	err := s.DB.QueryRowContext(ctx, `SELECT count(*) FROM runs`).Scan(&count)
+	return count, err
+}
+
+func (s *Store) runs(ctx context.Context, limit, offset int) ([]model.Run, error) {
+	if limit == 0 {
+		limit = -1
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT r.id,r.project,r.prompt,r.state,r.created_at,COALESCE(r.started_at,''),COALESCE(r.ended_at,''),COALESCE(c.config_json,''),COALESCE((SELECT group_concat(provider, ',') FROM routing_decisions d WHERE d.run_id=r.id),''),COALESCE((SELECT group_concat(provider, ',') FROM stages st WHERE st.run_id=r.id),'') FROM runs r LEFT JOIN run_configurations c ON c.run_id=r.id ORDER BY r.created_at DESC,r.id DESC LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -982,6 +1009,30 @@ func (s *Store) Report(ctx context.Context, id string) (model.Report, error) {
 	qualityExecutions, e := s.QualityExecutions(ctx, id)
 	if e != nil {
 		return model.Report{}, e
+	}
+	if st == nil {
+		st = []model.Stage{}
+	}
+	if g == nil {
+		g = []model.Gate{}
+	}
+	if a == nil {
+		a = []model.Artifact{}
+	}
+	if cp == nil {
+		cp = []model.Checkpoint{}
+	}
+	if ap == nil {
+		ap = []model.Approval{}
+	}
+	if d == nil {
+		d = []model.RoutingDecision{}
+	}
+	if attempts == nil {
+		attempts = []model.ExecutionAttempt{}
+	}
+	if qualityExecutions == nil {
+		qualityExecutions = []model.QualityExecution{}
 	}
 	var configuration *model.RunConfiguration
 	c, configErr := s.RunConfiguration(ctx, id)

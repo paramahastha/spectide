@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -46,11 +47,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/healthz", s.health)
 	mux.HandleFunc("/api/v1/readyz", s.health)
 	mux.HandleFunc("/api/v1/version", s.version)
+	mux.HandleFunc("/api/v1/capabilities", s.capabilities)
+	mux.HandleFunc("/api/v1/config/validate", s.validateConfig)
 	mux.HandleFunc("/api/v1/runs", s.runs)
 	mux.HandleFunc("/api/v1/runs/", s.run)
 	mux.HandleFunc("/api/v1/profiles", s.profiles)
 	mux.HandleFunc("/api/v1/projects", s.projects)
 	mux.HandleFunc("/api/v1/projects/", s.project)
+	mux.HandleFunc("/api/v1/", func(w http.ResponseWriter, _ *http.Request) {
+		apiError(w, http.StatusNotFound, "NOT_FOUND", "API endpoint not found")
+	})
+	mux.HandleFunc("/api/v1", func(w http.ResponseWriter, _ *http.Request) {
+		apiError(w, http.StatusNotFound, "NOT_FOUND", "API endpoint not found")
+	})
 	assets, _ := fs.Sub(webassets.Static, "static")
 	mux.Handle("/", http.FileServer(http.FS(assets)))
 	return s.secure(mux)
@@ -81,12 +90,138 @@ func (s *Server) profiles(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) capabilities(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		apiError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+		return
+	}
+	profiles, err := s.Store.Profiles(r.Context())
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
+		return
+	}
+	type capability struct {
+		Profile             string    `json:"profile"`
+		Provider            string    `json:"provider"`
+		ExecutableFound     bool      `json:"executable_found"`
+		Authenticated       string    `json:"authenticated"`
+		ReadOnlyExecution   bool      `json:"read_only_execution"`
+		WorkspaceWrite      bool      `json:"workspace_write"`
+		ModelCatalogStatus  string    `json:"model_catalog_status,omitempty"`
+		Models              []string  `json:"models,omitempty"`
+		EffortValues        []string  `json:"effort_values,omitempty"`
+		SafetyModes         []string  `json:"safety_modes,omitempty"`
+		CommandCapabilities []string  `json:"command_capabilities,omitempty"`
+		ObservedAt          time.Time `json:"observed_at,omitempty"`
+	}
+	items := make([]capability, 0, len(profiles))
+	providerStatus := map[string]string{"fake": "SIMULATED_READY", "claude": "PROFILE_NOT_CONFIGURED", "codex": "PROFILE_NOT_CONFIGURED", "opencode": "PROFILE_NOT_CONFIGURED"}
+	for _, profile := range profiles {
+		if profile.Capability == nil {
+			providerStatus[string(profile.Provider)] = "PROFILE_REGISTERED_NOT_PROBED"
+			continue
+		}
+		providerStatus[string(profile.Provider)] = "PROFILE_READINESS_RECORDED"
+		c := profile.Capability
+		items = append(items, capability{Profile: profile.Name, Provider: profile.Provider, ExecutableFound: c.ExecutableFound, Authenticated: c.Authenticated, ReadOnlyExecution: c.ReadOnlyExecution, WorkspaceWrite: c.WorkspaceWrite, ModelCatalogStatus: c.ModelCatalogStatus, Models: append([]string(nil), c.ModelValues...), EffortValues: append([]string(nil), c.EffortValues...), SafetyModes: append([]string(nil), c.SafetyModes...), CommandCapabilities: append([]string(nil), c.CommandCapabilities...), ObservedAt: c.ObservedAt})
+	}
+	jsonOut(w, http.StatusOK, map[string]any{"providers": providerStatus, "profiles": items})
+}
+
+func (s *Server) validateConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		apiError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+		return
+	}
+	var input struct {
+		Project string `json:"project"`
+		Prompt  string `json:"prompt"`
+	}
+	if err := decodeRequest(w, r, 32<<10, &input); err != nil || strings.TrimSpace(input.Project) == "" || strings.TrimSpace(input.Prompt) == "" {
+		apiError(w, http.StatusBadRequest, "INVALID_REQUEST", "project and prompt are required")
+		return
+	}
+	preview, err := s.previewProject(r.Context(), input.Project, input.Prompt)
+	if err != nil {
+		apiError(w, http.StatusUnprocessableEntity, "CONFIGURATION_INVALID", err.Error())
+		return
+	}
+	jsonOut(w, http.StatusOK, map[string]any{"valid": true, "preview": preview})
+}
+
+func (s *Server) previewProject(ctx context.Context, project, prompt string) (map[string]any, error) {
+	root, err := canonicalProject(project)
+	if err != nil {
+		return nil, err
+	}
+	configPath, err := safeProjectConfigPath(root)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := config.LoadEffective(config.GlobalPath(), configPath)
+	if err != nil {
+		return nil, err
+	}
+	if len(cfg.AllowedScopes) > 0 {
+		if _, err = workspaceguard.Canonical(root, cfg.AllowedScopes); err != nil {
+			return nil, err
+		}
+	}
+	profiles, err := s.Store.Profiles(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err = routing.ValidateProfileRoutes(cfg, root, profiles); err != nil {
+		return nil, err
+	}
+	if err = routing.ValidateProfileCapabilities(cfg, profiles); err != nil {
+		return nil, err
+	}
+	decisions := make([]config.Decision, 0, len(config.StageKeys))
+	for _, stage := range config.StageKeys {
+		decision, resolveErr := cfg.Resolve(stage, prompt)
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
+		decisions = append(decisions, decision)
+	}
+	return map[string]any{"dry_run": true, "valid": true, "execution": "NOT_RUN", "mode": cfg.RoutingMode, "decisions": decisions}, nil
+}
+
+func queryInteger(r *http.Request, name string, fallback int) (int, error) {
+	values, exists := r.URL.Query()[name]
+	if !exists {
+		return fallback, nil
+	}
+	if len(values) != 1 || values[0] == "" {
+		return 0, fmt.Errorf("invalid %s", name)
+	}
+	return strconv.Atoi(values[0])
+}
+
 var idempotencyPattern = regexp.MustCompile(`^[A-Za-z0-9:_-]{8,128}$`)
 
 const sseReplayPageSize = 512
 
 func apiError(w http.ResponseWriter, status int, code, message string) {
-	jsonOut(w, status, map[string]any{"error": map[string]string{"code": code, "message": security.Redact(message)}})
+	requestID := w.Header().Get("X-Request-ID")
+	if requestID == "" {
+		requestID = newRequestID()
+		w.Header().Set("X-Request-ID", requestID)
+	}
+	jsonOut(w, status, contractError(code, message, requestID))
+}
+
+func contractError(code, message, requestID string) map[string]any {
+	return map[string]any{"error": map[string]any{"code": code, "message": security.Redact(message), "details": map[string]any{}, "request_id": requestID}, "request_id": requestID}
+}
+
+func newRequestID() string {
+	value := make([]byte, 16)
+	if _, err := rand.Read(value); err != nil {
+		panic("secure random source unavailable: " + err.Error())
+	}
+	return hex.EncodeToString(value)
 }
 
 func decodeRequest(w http.ResponseWriter, r *http.Request, limit int64, target any) error {
@@ -160,8 +295,12 @@ func (s *Server) projects(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) project(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/projects/"), "/"), "/")
-	if len(parts) != 2 || parts[1] != "config" || r.Method != http.MethodGet {
+	if len(parts) != 2 || parts[1] != "config" {
 		apiError(w, 404, "NOT_FOUND", "project endpoint not found")
+		return
+	}
+	if r.Method != http.MethodGet {
+		apiError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
 	}
 	project, err := s.Store.Project(r.Context(), parts[0])
@@ -188,6 +327,8 @@ func (s *Server) project(w http.ResponseWriter, r *http.Request) {
 }
 func (s *Server) secure(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Request-ID", newRequestID())
+		w.Header().Set("X-Content-Type-Options", "nosniff")
 		host, _, _ := net.SplitHostPort(r.Host)
 		if host == "" {
 			host = r.Host
@@ -217,26 +358,67 @@ func jsonOut(w http.ResponseWriter, status int, v any) {
 	encoded, err := json.Marshal(events.SanitizePayload(v))
 	if err != nil {
 		status = http.StatusInternalServerError
-		encoded = []byte(`{"error":{"code":"SERIALIZATION_FAILED","message":"response serialization failed"}}`)
+		requestID := w.Header().Get("X-Request-ID")
+		if requestID == "" {
+			requestID = newRequestID()
+			w.Header().Set("X-Request-ID", requestID)
+		}
+		encoded, _ = json.Marshal(contractError("SERIALIZATION_FAILED", "response serialization failed", requestID))
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write([]byte(security.Redact(string(encoded) + "\n")))
 }
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		apiError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+		return
+	}
 	jsonOut(w, 200, map[string]any{"status": "ok", "local_only": true})
 }
 func (s *Server) version(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		apiError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+		return
+	}
 	jsonOut(w, 200, map[string]any{"version": "0.1.0-dev", "csrf_token": s.CSRF, "providers": map[string]string{"fake": "SIMULATED", "claude": "NOT_PROBED", "codex": "NOT_PROBED", "opencode": "NOT_PROBED"}})
 }
 func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
-		rs, e := s.Store.Runs(r.Context())
+		for key := range r.URL.Query() {
+			if key != "limit" && key != "offset" {
+				apiError(w, http.StatusBadRequest, "INVALID_PAGE", "only limit and offset are supported")
+				return
+			}
+		}
+		limit, err := queryInteger(r, "limit", 100)
+		if err != nil || limit < 1 || limit > 100 {
+			apiError(w, http.StatusBadRequest, "INVALID_PAGE", "limit must be between 1 and 100")
+			return
+		}
+		offset, err := queryInteger(r, "offset", 0)
+		if err != nil || offset < 0 || offset > 1_000_000 {
+			apiError(w, http.StatusBadRequest, "INVALID_PAGE", "offset must be between 0 and 1000000")
+			return
+		}
+		rs, e := s.Store.RunsPage(r.Context(), limit, offset)
 		if e != nil {
 			apiError(w, http.StatusInternalServerError, "STORE_ERROR", e.Error())
 			return
 		}
+		if rs == nil {
+			rs = []model.Run{}
+		}
+		total, e := s.Store.RunCount(r.Context())
+		if e != nil {
+			apiError(w, http.StatusInternalServerError, "STORE_ERROR", e.Error())
+			return
+		}
+		w.Header().Set("X-Total-Count", strconv.Itoa(total))
+		w.Header().Set("X-Page-Limit", strconv.Itoa(limit))
+		w.Header().Set("X-Page-Offset", strconv.Itoa(offset))
+		w.Header().Set("X-Has-More", strconv.FormatBool(offset+len(rs) < total))
 		jsonOut(w, 200, rs)
 	case "POST":
 		idempotencyKey := r.Header.Get("Idempotency-Key")
@@ -254,50 +436,12 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if in.DryRun {
-			root, err := canonicalProject(in.Project)
+			preview, err := s.previewProject(r.Context(), in.Project, in.Prompt)
 			if err != nil {
 				apiError(w, http.StatusUnprocessableEntity, "ROUTE_PREVIEW_BLOCKED", err.Error())
 				return
 			}
-			configPath, err := safeProjectConfigPath(root)
-			if err != nil {
-				apiError(w, http.StatusUnprocessableEntity, "ROUTE_PREVIEW_BLOCKED", err.Error())
-				return
-			}
-			cfg, err := config.LoadEffective(config.GlobalPath(), configPath)
-			if err != nil {
-				apiError(w, http.StatusUnprocessableEntity, "ROUTE_PREVIEW_BLOCKED", err.Error())
-				return
-			}
-			if len(cfg.AllowedScopes) > 0 {
-				if _, err = workspaceguard.Canonical(root, cfg.AllowedScopes); err != nil {
-					apiError(w, http.StatusUnprocessableEntity, "ROUTE_PREVIEW_BLOCKED", err.Error())
-					return
-				}
-			}
-			profiles, profileErr := s.Store.Profiles(r.Context())
-			if profileErr != nil {
-				apiError(w, http.StatusInternalServerError, "STORE_ERROR", profileErr.Error())
-				return
-			}
-			if err = routing.ValidateProfileRoutes(cfg, root, profiles); err != nil {
-				apiError(w, http.StatusUnprocessableEntity, "ROUTE_PREVIEW_BLOCKED", err.Error())
-				return
-			}
-			if err = routing.ValidateProfileCapabilities(cfg, profiles); err != nil {
-				apiError(w, http.StatusUnprocessableEntity, "ROUTE_PREVIEW_BLOCKED", err.Error())
-				return
-			}
-			decisions := make([]config.Decision, 0, len(config.StageKeys))
-			for _, stage := range config.StageKeys {
-				decision, resolveErr := cfg.Resolve(stage, in.Prompt)
-				if resolveErr != nil {
-					apiError(w, http.StatusUnprocessableEntity, "ROUTE_PREVIEW_BLOCKED", resolveErr.Error())
-					return
-				}
-				decisions = append(decisions, decision)
-			}
-			jsonOut(w, http.StatusOK, map[string]any{"dry_run": true, "execution": "NOT_RUN", "mode": cfg.RoutingMode, "decisions": decisions})
+			jsonOut(w, http.StatusOK, preview)
 			return
 		}
 		run, reused, e := s.Engine.StartIdempotent(r.Context(), idempotencyKey, in.Project, in.Prompt)
@@ -355,6 +499,10 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(parts) == 1 {
+		if r.Method != http.MethodGet {
+			apiError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+			return
+		}
 		report, e := s.Store.Report(r.Context(), id)
 		if e != nil {
 			apiError(w, http.StatusNotFound, "RUN_NOT_FOUND", "run not found")
@@ -367,8 +515,52 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 		s.approvals(w, r, id, parts[2:])
 		return
 	}
+	if len(parts) != 2 {
+		apiError(w, http.StatusNotFound, "NOT_FOUND", "run endpoint not found")
+		return
+	}
 	switch parts[1] {
+	case "stages":
+		if r.Method != http.MethodGet {
+			apiError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+			return
+		}
+		if _, err := s.Store.GetRun(r.Context(), id); err != nil {
+			apiError(w, http.StatusNotFound, "RUN_NOT_FOUND", "run not found")
+			return
+		}
+		stages, err := s.Store.Stages(r.Context(), id)
+		if err != nil {
+			apiError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
+			return
+		}
+		if stages == nil {
+			stages = []model.Stage{}
+		}
+		jsonOut(w, http.StatusOK, stages)
+	case "artifacts":
+		if r.Method != http.MethodGet {
+			apiError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+			return
+		}
+		if _, err := s.Store.GetRun(r.Context(), id); err != nil {
+			apiError(w, http.StatusNotFound, "RUN_NOT_FOUND", "run not found")
+			return
+		}
+		artifacts, err := s.Store.Artifacts(r.Context(), id)
+		if err != nil {
+			apiError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
+			return
+		}
+		if artifacts == nil {
+			artifacts = []model.Artifact{}
+		}
+		jsonOut(w, http.StatusOK, artifacts)
 	case "events":
+		if r.Method != http.MethodGet {
+			apiError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+			return
+		}
 		s.events(w, r, id)
 	case "cancel":
 		if r.Method != "POST" {
@@ -397,6 +589,10 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 		}
 		jsonOut(w, http.StatusAccepted, map[string]string{"status": parts[1] + " requested"})
 	case "report":
+		if r.Method != http.MethodGet {
+			apiError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+			return
+		}
 		rep, e := s.Store.Report(r.Context(), id)
 		if e != nil {
 			apiError(w, http.StatusNotFound, "RUN_NOT_FOUND", "run not found")
