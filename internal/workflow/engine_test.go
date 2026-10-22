@@ -38,7 +38,7 @@ func TestFakeLifecyclePersistsEvidence(t *testing.T) {
 			if err != nil || len(configuration.SHA256) != 64 || !strings.Contains(configuration.ConfigJSON, `"simulated":true`) {
 				t.Fatalf("effective run configuration=%+v err=%v", configuration, err)
 			}
-			if len(rep.Stages) != 12 || len(rep.Decisions) != 12 || len(rep.Gates) != 5 || len(rep.Checkpoints) != 13 {
+			if len(rep.Stages) != 12 || len(rep.Decisions) != 12 || len(rep.Gates) != 6 || len(rep.Checkpoints) != 13 {
 				t.Fatalf("stages=%d decisions=%d gates=%d checkpoints=%d", len(rep.Stages), len(rep.Decisions), len(rep.Gates), len(rep.Checkpoints))
 			}
 			for index, checkpoint := range rep.Checkpoints {
@@ -94,8 +94,8 @@ func TestWorkflowDoesNotCompleteWhenQualityEventPersistenceFails(t *testing.T) {
 		t.Fatalf("workflow claimed success after quality event failure: run=%+v err=%v", result, err)
 	}
 	gates, err := s.Gates(ctx, run.ID)
-	if err != nil || len(gates) != 0 {
-		t.Fatalf("failed quality transaction left gate rows: gates=%+v err=%v", gates, err)
+	if err != nil || len(gates) != 6 || gateForTest(gates, "workflow_execution").Verdict != "FAIL" {
+		t.Fatalf("failed quality transaction did not preserve terminal inventory: gates=%+v err=%v", gates, err)
 	}
 }
 
@@ -127,11 +127,11 @@ func TestTwentyDeterministicRunsCompleteWithRequiredEvidence(t *testing.T) {
 		if err != nil {
 			t.Fatalf("report run %d: %v", i, err)
 		}
-		if len(report.Stages) != 12 || len(report.Decisions) != 12 || len(report.Gates) != 5 {
+		if len(report.Stages) != 12 || len(report.Decisions) != 12 || len(report.Gates) != 6 {
 			t.Fatalf("run %d evidence counts stages=%d decisions=%d gates=%d", i, len(report.Stages), len(report.Decisions), len(report.Gates))
 		}
 		for _, gate := range report.Gates {
-			if gate.Verdict != "PASS" || !strings.Contains(strings.ToLower(gate.Evidence), "simulated") {
+			if gate.Verdict != "PASS" || gate.Key != "workflow_execution" && !strings.Contains(strings.ToLower(gate.Evidence), "simulated") {
 				t.Fatalf("run %d has unevidenced simulated gate: %+v", i, gate)
 			}
 		}
@@ -318,7 +318,7 @@ func TestEngineDoesNotSilentlySimulateLiveRoute(t *testing.T) {
 		t.Fatalf("unavailable live route should create durable blocked evidence: state=%s runs=%+v", run.State, runs)
 	}
 	report, err := s.Report(context.Background(), run.ID)
-	if err != nil || len(report.Stages) != 1 || report.Stages[0].State != model.Skipped || len(report.Gates) != 1 || report.Gates[0].Verdict != "BLOCKED" {
+	if err != nil || len(report.Stages) != 1 || report.Stages[0].State != model.Skipped || len(report.Gates) != 7 || gateForTest(report.Gates, "stage_execution_available").Verdict != "BLOCKED" || gateForTest(report.Gates, "workflow_execution").Verdict != "BLOCKED" {
 		t.Fatalf("blocked live-route evidence=%+v err=%v", report, err)
 	}
 	configuration, err := s.RunConfiguration(context.Background(), run.ID)
@@ -335,6 +335,15 @@ func TestEngineDoesNotSilentlySimulateLiveRoute(t *testing.T) {
 	if err != nil || configuredConfiguration.SchemaVersion != 1 || len(configuredConfiguration.Stages) == 0 || configuredConfiguration.Stages[0].Stage != "constitution" || configuredConfiguration.Stages[0].Simulated {
 		t.Fatalf("live route was marked simulated: configuration=%+v stages=%+v err=%v", configuration, configuredConfiguration, err)
 	}
+}
+
+func gateForTest(gates []model.Gate, key string) model.Gate {
+	for _, gate := range gates {
+		if gate.Key == key {
+			return gate
+		}
+	}
+	return model.Gate{}
 }
 
 func TestEngineRejectsConfiguredProfileOutsideItsAllowedScope(t *testing.T) {

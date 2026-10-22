@@ -584,6 +584,13 @@
 - `go test ./internal/workflow -run TestCLISubprocessResumeWaitsForDurableTerminalEvidence -count=1` passed. Full `make verify` will be recorded after the remaining tasks at the next verification gate.
 - T071 is complete; T072 is next. T031, T045, and T046 remain open. Authenticated provider execution remains `NOT_RUN`.
 
+### T072 — Durable terminal gate inventory — 2026-10-23
+
+- Every run now persists six gate rows from creation: `analyze_clean`, `required_tests`, `converged`, `final_review`, `simulated_e2e`, and `workflow_execution`, all initially `NOT_RUN`. Migration 10 backfills existing run history and records inventory initialization.
+- Terminal state writes update `workflow_execution` to PASS, FAIL, or BLOCKED and append the acceptance summary in the same transaction. Abandoned and drift-blocked recovery also records terminal acceptance. Reports classify execution from the immutable route snapshot when stage routing decisions are incomplete, while preserving unfinished required gates as `NOT_RUN`.
+- The store terminal matrix covers missing integration, early provider failure, cancellation, interruption, simulated success, and live success. Full `make verify` passed: Go vet/tests, dashboard typecheck, 27 frontend tests, production build, secret scan, and simulated smoke. SC-001: 23.425 ms.
+- T072 is complete; T073 is next. T031, T045, and T046 remain open. Live account checks remain `NOT_RUN`.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified

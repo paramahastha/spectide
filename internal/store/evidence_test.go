@@ -223,8 +223,13 @@ func TestStateMutationsRollbackWhenTheirOrderedEventCannotBeWritten(t *testing.T
 	}
 	remove()
 	gates, err := s.Gates(ctx, run.ID)
-	if err != nil || len(gates) != 0 {
+	if err != nil || len(gates) != len(requiredGateInventory) {
 		t.Fatalf("quality gate mutation was not rolled back: gates=%+v err=%v", gates, err)
+	}
+	for _, gate := range gates {
+		if gate.Key == "required_tests" && gate.Verdict != "NOT_RUN" {
+			t.Fatalf("failed gate transaction changed inventory row: %+v", gate)
+		}
 	}
 
 	remove = rejectEvent("routing.resolved")

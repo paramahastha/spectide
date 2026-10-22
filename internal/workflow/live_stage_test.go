@@ -492,10 +492,10 @@ func TestRunLiveStageUsesVerifiedCommandAndPersistsSanitizedEvidence(t *testing.
 		t.Fatalf("remediation accepted source-code mutation outside its owning artifact: %v", err)
 	}
 	events, err := state.Events(ctx, run.ID, 0)
-	if err != nil || len(events) != 10 {
+	if err != nil || len(events) != 11 {
 		t.Fatalf("events=%+v err=%v", events, err)
 	}
-	providerEvent := events[2]
+	providerEvent := events[3]
 	if providerEvent.Type != "provider.codex.message" || providerEvent.Payload["execution"] != "LIVE" {
 		t.Fatalf("unexpected persisted provider event: %+v", providerEvent)
 	}

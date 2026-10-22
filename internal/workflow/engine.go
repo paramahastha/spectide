@@ -1083,10 +1083,6 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			return
 		}
 		acceptance := model.SummarizeAcceptance(acceptanceDecisions(decisions), gates)
-		if err := e.store.Event(ctx, r.ID, "", "run.acceptance", "info", map[string]any{"acceptance": acceptance}); err != nil {
-			e.failPersistence(r.ID)
-			return
-		}
 		terminal := model.Blocked
 		eventType := "run.blocked"
 		severity := "warning"
@@ -1115,17 +1111,7 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			return
 		}
 	}
-	gates, gateErr := e.store.Gates(ctx, r.ID)
-	if gateErr != nil {
-		e.failPersistence(r.ID)
-		return
-	}
-	acceptance := model.SummarizeAcceptance(acceptanceDecisions(decisions), gates)
-	if err := e.store.Event(ctx, r.ID, "", "run.acceptance", "info", map[string]any{"acceptance": acceptance}); err != nil {
-		e.failPersistence(r.ID)
-		return
-	}
-	if err := e.store.Event(ctx, r.ID, "", "run.completed", "info", map[string]any{"execution": acceptance.Execution, "verdict": acceptance.Verdict}); err != nil {
+	if err := e.store.Event(ctx, r.ID, "", "run.completed", "info", map[string]any{"execution": "SIMULATED", "verdict": "SIMULATED"}); err != nil {
 		e.failPersistence(r.ID)
 		return
 	}

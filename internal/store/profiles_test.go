@@ -97,10 +97,10 @@ func TestVersionedSchemaContainsRecoveryEntities(t *testing.T) {
 	if err = s.DB.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 9 {
+	if version != 10 {
 		t.Fatalf("schema version=%d", version)
 	}
-	for _, table := range []string{"projects", "routing_decisions", "artifacts", "checkpoints", "approvals", "workspace_locks", "idempotency_keys", "run_controls", "run_configurations", "run_owners", "profile_capabilities", "execution_attempts", "quality_executions", "quality_results"} {
+	for _, table := range []string{"projects", "routing_decisions", "artifacts", "checkpoints", "approvals", "workspace_locks", "idempotency_keys", "run_controls", "run_configurations", "run_owners", "profile_capabilities", "execution_attempts", "quality_executions", "quality_results", "quality_gates"} {
 		var found string
 		err = s.DB.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&found)
 		if err != nil {
@@ -201,6 +201,10 @@ func TestEventPagesStayWithinCapturedHighWater(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	afterInitialization, err := s.EventHighWater(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 4; i++ {
 		if err = s.Event(ctx, run.ID, "stage", "event", "info", map[string]any{"index": i}); err != nil {
 			t.Fatal(err)
@@ -213,12 +217,12 @@ func TestEventPagesStayWithinCapturedHighWater(t *testing.T) {
 	if err = s.Event(ctx, run.ID, "stage", "later", "info", nil); err != nil {
 		t.Fatal(err)
 	}
-	page, err := s.EventsPage(ctx, run.ID, 0, high, 2)
-	if err != nil || len(page) != 2 || page[1].Seq != 2 {
+	page, err := s.EventsPage(ctx, run.ID, afterInitialization, high, 2)
+	if err != nil || len(page) != 2 || page[1].Seq != afterInitialization+2 {
 		t.Fatalf("page=%+v err=%v", page, err)
 	}
 	page, err = s.EventsPage(ctx, run.ID, page[1].Seq, high, 20)
-	if err != nil || len(page) != 3 || page[len(page)-1].Seq != high {
+	if err != nil || len(page) != 2 || page[len(page)-1].Seq != high {
 		t.Fatalf("remainder=%+v err=%v", page, err)
 	}
 }

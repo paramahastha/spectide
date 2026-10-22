@@ -142,6 +142,9 @@ func (s *Store) BlockPausedRunForWorkspaceDrift(ctx context.Context, runID, reas
 	if changed != 1 {
 		return fmt.Errorf("RUN_CONTROL_NOT_ALLOWED: drift block requires a paused run")
 	}
+	if err = finalizeTerminalGatesTx(ctx, tx, runID, model.Blocked); err != nil {
+		return err
+	}
 	if err = appendEvent(ctx, tx, runID, "", "run.interrupted", "warning", map[string]any{"reason": "WORKSPACE_DRIFT: " + reason}); err != nil {
 		return err
 	}
@@ -220,7 +223,10 @@ func (s *Store) RecoverAbandonedRuns(ctx context.Context, at time.Time) error {
 			var changed int64
 			changed, txErr = result.RowsAffected()
 			if txErr == nil && changed == 1 {
-				txErr = appendEvent(ctx, tx, item.id, "", "run.interrupted", "warning", map[string]any{"reason": "WORKSPACE_DRIFT: owner lease expired without verified checkpoint, artifact, and Git fingerprint recovery"})
+				txErr = finalizeTerminalGatesTx(ctx, tx, item.id, model.Blocked)
+				if txErr == nil {
+					txErr = appendEvent(ctx, tx, item.id, "", "run.interrupted", "warning", map[string]any{"reason": "WORKSPACE_DRIFT: owner lease expired without verified checkpoint, artifact, and Git fingerprint recovery"})
+				}
 			}
 		}
 		if txErr == nil {

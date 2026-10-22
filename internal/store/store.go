@@ -143,6 +143,14 @@ func (s *Store) migrate() error {
 			return err
 		}
 	}
+	if version < 10 {
+		if _, err = tx.Exec(schemaV10); err != nil {
+			return fmt.Errorf("apply schema migration 10: %w", err)
+		}
+		if _, err = tx.Exec(`INSERT INTO schema_migrations(version,applied_at) VALUES(10,?)`, now().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 
@@ -172,6 +180,9 @@ var schemaV8 string
 
 //go:embed migrations/009_execution_attempts.sql
 var schemaV9 string
+
+//go:embed migrations/010_gate_inventory.sql
+var schemaV10 string
 
 func now() time.Time { return time.Now().UTC().Round(0) }
 func parse(v string) *time.Time {
@@ -255,6 +266,9 @@ func (s *Store) CreateRunWithConfiguration(ctx context.Context, key, project, pr
 	if err = appendEvent(ctx, tx, r.ID, "", "run.created", "info", map[string]any{"project": project}); err != nil {
 		return r, false, err
 	}
+	if err = initializeGateInventoryTx(ctx, tx, r.ID); err != nil {
+		return r, false, err
+	}
 	return r, false, tx.Commit()
 }
 
@@ -322,6 +336,11 @@ func (s *Store) SetRunState(ctx context.Context, id string, state model.RunState
 	_, err = tx.ExecContext(ctx, `UPDATE runs SET state=?, started_at=COALESCE(started_at,?), ended_at=COALESCE(?,ended_at) WHERE id=?`, state, started, ended, id)
 	if err != nil {
 		return err
+	}
+	if state == model.Completed || state == model.Blocked || state == model.Failed || state == model.Cancelled {
+		if err = finalizeTerminalGatesTx(ctx, tx, id, state); err != nil {
+			return err
+		}
 	}
 	if err = appendEvent(ctx, tx, id, "", "run."+string(state), "info", map[string]any{"state": state}); err != nil {
 		return err
@@ -924,5 +943,9 @@ func (s *Store) Report(ctx context.Context, id string) (model.Report, error) {
 	} else if configErr != sql.ErrNoRows {
 		return model.Report{}, configErr
 	}
-	return model.Report{Run: r, Acceptance: model.SummarizeAcceptance(d, g), Configuration: configuration, Stages: st, Attempts: attempts, QualityExecutions: qualityExecutions, Decisions: d, Gates: g, Artifacts: a, Checkpoints: cp, Approvals: ap}, nil
+	acceptanceDecisions, decisionErr := acceptanceDecisionsTx(ctx, s.DB, id)
+	if decisionErr != nil {
+		return model.Report{}, decisionErr
+	}
+	return model.Report{Run: r, Acceptance: model.SummarizeAcceptance(acceptanceDecisions, g), Configuration: configuration, Stages: st, Attempts: attempts, QualityExecutions: qualityExecutions, Decisions: d, Gates: g, Artifacts: a, Checkpoints: cp, Approvals: ap}, nil
 }

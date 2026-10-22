@@ -51,10 +51,22 @@ func TestDeniedSensitiveApprovalBlocksBeforeWorkspaceWrite(t *testing.T) {
 		t.Fatalf("stages=%+v err=%v", stages, err)
 	}
 	gates, err := state.Gates(ctx, run.ID)
-	if err != nil || len(gates) != 1 || gates[0].Key != "sensitive_action_authorized" || gates[0].Verdict != "BLOCKED" {
+	if err != nil || len(gates) != 7 {
 		t.Fatalf("gates=%+v err=%v", gates, err)
+	}
+	if gateByKey(gates, "sensitive_action_authorized").Verdict != "BLOCKED" || gateByKey(gates, "workflow_execution").Verdict != "BLOCKED" {
+		t.Fatalf("denial and terminal gate verdicts=%+v", gates)
 	}
 	if _, err = state.DB.ExecContext(ctx, "SELECT 1"); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func gateByKey(gates []model.Gate, key string) model.Gate {
+	for _, gate := range gates {
+		if gate.Key == key {
+			return gate
+		}
+	}
+	return model.Gate{}
 }
