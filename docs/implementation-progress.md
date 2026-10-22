@@ -197,6 +197,18 @@
 
 - The demo remains a deterministic simulated lifecycle; it does not invoke a live provider or official Spec-Kit stages.
 
+### Phase checkpoint — functional requirement traceability
+
+**Verified in this checkpoint**
+
+- Added `docs/acceptance-ledger.md` with rows for FR-001 through FR-030 and SC-001 through SC-008, each showing current evidence and an honest acceptance status.
+- The ledger explicitly records unresolved product behavior and analysis finding G1 (SC-008 has no defined P0 set). It does not label partial requirements as accepted.
+- T042 is checked complete as a traceability artifact; `git diff --check` passed.
+
+**Remaining**
+
+- Open/partial rows require implementation and their linked evidence before release acceptance.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified

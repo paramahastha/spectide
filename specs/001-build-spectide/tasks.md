@@ -96,7 +96,7 @@
 
 ## Phase 8: Cross-cutting verification and convergence
 
-- [ ] T042 [P] Link FR-001 through FR-030 to automated evidence in `docs/acceptance-ledger.md`
+- [x] T042 [P] Link FR-001 through FR-030 to automated evidence in `docs/acceptance-ledger.md`
 - [ ] T043 [P] Run format, static analysis, unit, integration, fake E2E, security, dashboard, and smoke checks through `Makefile` and CI
 - [ ] T043a [P] Measure local SSE visibility p95 and slow-client behavior with the 10,000-event fixture in `internal/api/`
 - [ ] T045 Run implementation verification and official converge; implement appended work and repeat until converged or a documented blocker in `docs/implementation-progress.md`
