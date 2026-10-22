@@ -87,8 +87,11 @@ func (p Policy) allowed(stage string, r Route) error {
 			if !ok || !capability.ExecutableFound || capability.Version == "" {
 				return fmt.Errorf("CAPABILITY_NOT_VERIFIED: %s", r.Profile)
 			}
-			if capability.Authenticated == "UNAUTHENTICATED" {
-				return fmt.Errorf("PROFILE_UNAUTHENTICATED: %s", r.Profile)
+			if capability.Authenticated != "AUTHENTICATED" {
+				if capability.Authenticated == "UNAUTHENTICATED" {
+					return fmt.Errorf("PROFILE_UNAUTHENTICATED: %s", r.Profile)
+				}
+				return fmt.Errorf("PROFILE_AUTHENTICATION_NOT_VERIFIED: %s", r.Profile)
 			}
 			if r.Model != "" && !capability.ModelOverride {
 				return fmt.Errorf("MODEL_OVERRIDE_UNSUPPORTED: %s", r.Profile)

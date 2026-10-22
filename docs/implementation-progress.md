@@ -377,6 +377,11 @@
 - Added `speckit.ExecuteStage`, which expands only a verified command template, builds an explicit provider adapter invocation rooted at the canonical project, enforces provider/profile match, applies read-only mode to analyze, runs through the bounded runner, and normalizes output. No workflow starts this live path until authenticated capability checks are integrated.
 - Focused `go test ./internal/speckit ./internal/workflow` and full `make verify` passed; the doctor smoke reports Spec-Kit `READY`. T014 remains open for workflow-level capability-backed adapter orchestration. Latest SC-001 measurement is 19.514 ms on the reference host.
 
+### Fail-closed unprobed profile authentication
+
+- Tightened the routing capability policy to accept only the explicit `AUTHENTICATED` state. Empty and `NOT_PROBED` states now block route resolution instead of passing through; the policy continues to reject explicit unauthenticated profiles.
+- Focused `go test ./internal/routing` and full `make verify` passed. T024 remains open for persisting capabilities and wiring this policy to workflow launch. Latest SC-001 measurement is 18.958 ms on the reference host.
+
 ### Phase checkpoint — durable run-owner leases
 
 - Added migration 6 and per-run heartbeat leases. The workflow writes its owner lease atomically with the workspace lock, refreshes it while the worker is alive, and removes it at finish.
