@@ -521,6 +521,48 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			return
 		}
 		_ = e.store.Event(ctx, r.ID, key, "stage.started", "info", map[string]any{"attempt": 1, "read_only": key == "analyze"})
+		if key == "analyze" && hasLiveStages && d.Provider != "fake" {
+			if err := e.store.SetStage(ctx, st.ID, model.StageRun); err != nil {
+				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
+				e.finish(r.ID)
+				return
+			}
+			analysis, analyzeErr := e.runLiveAnalyzeLoop(ctx, r, decisions, installation, featureDir)
+			if analyzeErr != nil {
+				if ctx.Err() != nil {
+					e.cancelRun(r.ID, key, st.ID)
+					e.finish(r.ID)
+					return
+				}
+				_ = e.store.SetStage(context.Background(), st.ID, model.StageFail)
+				_ = e.store.Gate(context.Background(), r.ID, "analyze_clean", "FAIL", safeStageError(analyzeErr))
+				_ = e.store.Event(context.Background(), r.ID, key, "analysis.failed", "error", map[string]any{"reason": safeStageError(analyzeErr), "execution": "LIVE"})
+				_ = e.store.SetRunState(context.Background(), r.ID, model.Blocked)
+				e.finish(r.ID)
+				return
+			}
+			runGateVerdicts["analyze_clean"] = "PASS"
+			_ = e.store.Gate(ctx, r.ID, "analyze_clean", "PASS", fmt.Sprintf("read-only analysis passed after %d blocking findings", len(analysis.Findings)))
+			_ = e.store.SetStage(ctx, st.ID, model.Succeeded)
+			_ = e.store.Event(ctx, r.ID, key, "analysis.clean", "info", map[string]any{"execution": "LIVE", "finding_count": len(analysis.Findings), "critical": analysis.Critical, "high": analysis.High, "medium": analysis.Medium})
+			next := ""
+			if i+1 < len(stages) {
+				next = stages[i+1]
+			}
+			state, marshalErr := json.Marshal(map[string]any{"completed_stage": key, "next_stage": next, "configuration_sha256": configuration.SHA256, "cursor_only": true, "execution": "LIVE"})
+			if marshalErr != nil {
+				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
+				e.finish(r.ID)
+				return
+			}
+			checkpoint := model.Checkpoint{RunID: r.ID, Stage: key, StateJSON: string(state), WorkspaceFingerprint: workspaceIdentityFingerprint(r.Project)}
+			if _, checkpointErr := e.store.SaveCheckpoint(ctx, checkpoint); checkpointErr != nil {
+				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
+				e.finish(r.ID)
+				return
+			}
+			continue
+		}
 		if key == "tests" && hasLiveStages {
 			if err := e.store.SetStage(ctx, st.ID, model.StageRun); err != nil {
 				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)

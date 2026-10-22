@@ -24,7 +24,11 @@ func (liveFixtureAdapter) Probe(context.Context, adapters.Profile) (adapters.Cap
 	return adapters.Capability{}, nil
 }
 func (liveFixtureAdapter) Build(request adapters.Request) (runner.Invocation, error) {
-	return runner.Invocation{Binary: "/usr/bin/printf", Args: []string{"{\"type\":\"message\"}"}, Dir: request.ProjectRoot}, nil
+	output := "{\"type\":\"message\"}"
+	if request.Stage == "analyze" {
+		output = "## Specification Analysis Report\n- Coverage: 100%\n"
+	}
+	return runner.Invocation{Binary: "/usr/bin/printf", Args: []string{"%s", output}, Dir: request.ProjectRoot}, nil
 }
 
 func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *testing.T) {
@@ -61,18 +65,30 @@ func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *t
 	if err = os.WriteFile(filepath.Join(internalDir, "fixture.go"), []byte("package internal\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rel := ".opencode/commands/speckit.plan.md"
-	commandPath := filepath.Join(project, filepath.FromSlash(rel))
-	if err = os.MkdirAll(filepath.Dir(commandPath), 0o700); err != nil {
-		t.Fatal(err)
+	commandFiles := make(map[string]string)
+	commandHashes := make(map[string]string)
+	commands := make(map[string]string)
+	for _, stage := range []string{"plan", "analyze", "implement"} {
+		rel := ".opencode/commands/speckit." + stage + ".md"
+		commandPath := filepath.Join(project, filepath.FromSlash(rel))
+		if err = os.MkdirAll(filepath.Dir(commandPath), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		command := []byte("Run the " + stage + " stage for: $ARGUMENTS")
+		if err = os.WriteFile(commandPath, command, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		digest := sha256.Sum256(command)
+		commandFiles[stage] = rel
+		commandHashes[stage] = hex.EncodeToString(digest[:])
+		commands[stage] = "/speckit." + stage
 	}
-	command := []byte("Create a plan for: $ARGUMENTS")
-	if err = os.WriteFile(commandPath, command, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	digest := sha256.Sum256(command)
 	cfg := config.Default()
-	cfg.StageRoutes = map[string]config.Route{"plan": {Provider: "codex", Profile: "fixture"}}
+	cfg.StageRoutes = map[string]config.Route{
+		"plan":      {Provider: "codex", Profile: "fixture"},
+		"analyze":   {Provider: "codex", Profile: "fixture"},
+		"implement": {Provider: "codex", Profile: "fixture"},
+	}
 	if err = config.Save(config.ProjectPath(project), cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -87,9 +103,7 @@ func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *t
 	engine.discover = func(root string) (speckit.Installation, error) {
 		return speckit.Installation{
 			ProjectRoot: root, Verified: true,
-			Commands:      map[string]string{"plan": "/speckit.plan"},
-			CommandFiles:  map[string]string{"plan": rel},
-			CommandHashes: map[string]string{"plan": hex.EncodeToString(digest[:])},
+			Commands: commands, CommandFiles: commandFiles, CommandHashes: commandHashes,
 		}, nil
 	}
 	run, err := engine.Start(ctx, project, "implement a bounded cache")
@@ -117,18 +131,24 @@ func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *t
 		t.Fatalf("live workflow did not persist local quality evidence: %+v", report.Gates)
 	}
 	var requiredTests string
+	var analyzeClean string
 	var blockedFinalReview bool
 	for _, gate := range report.Gates {
 		switch gate.Key {
+		case "analyze_clean":
+			analyzeClean = gate.Verdict
 		case "required_tests":
 			requiredTests = gate.Verdict
 		case "final_review":
 			blockedFinalReview = gate.Verdict == "BLOCKED"
-		case "analyze_clean", "converged", "simulated_e2e":
+		case "converged", "simulated_e2e":
 			if gate.Verdict != "BLOCKED" {
 				t.Fatalf("live workflow claimed simulated quality verdict: %+v", gate)
 			}
 		}
+	}
+	if analyzeClean != "PASS" {
+		t.Fatalf("verified live analysis did not pass: %+v", report.Gates)
 	}
 	if requiredTests != "PASS" {
 		t.Fatalf("registered local checks did not pass: %+v", report.Gates)
