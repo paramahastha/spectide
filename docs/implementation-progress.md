@@ -162,6 +162,18 @@
 - Full Go validation, lint, frontend tests/build, production Go build, and `git diff --check` passed for this checkpoint.
 - T034 remains open because process reconciliation, safe restart resume, and checkpoint drift detection are not implemented.
 
+### Phase checkpoint — runner cancellation cleanup
+
+**Verified in this checkpoint**
+
+- Unix provider subprocesses now run in their own process group. Context cancellation kills the group and waits for pipe cleanup; other supported platforms fall back to killing the direct child.
+- Added a cancellation cleanup test proving a spawned child cannot finish a delayed file write after cancellation. Existing tests cover timeout behavior and the 1 MiB output cap.
+- `go test ./internal/runner` passed. T048 is checked complete.
+
+**Remaining**
+
+- Provider stage orchestration and end-to-end retry/recovery evidence remain open.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified

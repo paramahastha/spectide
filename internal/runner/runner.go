@@ -66,6 +66,7 @@ func Run(ctx context.Context, in Invocation) (Result, error) {
 	}
 	start := time.Now()
 	cmd := exec.CommandContext(ctx, in.Binary, in.Args...)
+	configureProcessGroup(cmd)
 	cmd.Dir = in.Dir
 	home, _ := os.UserHomeDir()
 	cmd.Env = []string{"PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin", "HOME=" + home, "USERPROFILE=" + home, "TMPDIR=" + os.TempDir()}
@@ -82,6 +83,8 @@ func Run(ctx context.Context, in Invocation) (Result, error) {
 		cmd.Env = append(cmd.Env, value)
 	}
 	cmd.Stdin = bytes.NewReader(in.Stdin)
+	cmd.Cancel = func() error { return killProcessGroup(cmd) }
+	cmd.WaitDelay = 2 * time.Second
 	out, errOut := &cappedBuffer{remaining: maxOutputBytes}, &cappedBuffer{remaining: maxOutputBytes}
 	cmd.Stdout = out
 	cmd.Stderr = errOut
