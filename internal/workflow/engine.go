@@ -109,7 +109,7 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 		if resolveErr != nil {
 			return model.Run{}, false, resolveErr
 		}
-		if decision.Route.Provider == "fake" {
+		if decision.Route.Provider == "fake" || engineOwnedLocalStage(stage) {
 			continue
 		}
 		installation, installationErr = e.discover(workspace)
@@ -123,7 +123,7 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 		if resolveErr != nil {
 			return model.Run{}, false, resolveErr
 		}
-		if decision.Route.Provider != "fake" && blockedStage == "" {
+		if decision.Route.Provider != "fake" && !engineOwnedLocalStage(stage) && blockedStage == "" {
 			if _, found := e.adapters[adapters.ProviderName(decision.Route.Provider)]; !found {
 				blockedStage, blockedReason = stage, "PROVIDER_ADAPTER_UNAVAILABLE: "+decision.Route.Provider
 			} else if !officialStage(stage) {
@@ -217,6 +217,10 @@ func officialStage(stage string) bool {
 	default:
 		return false
 	}
+}
+
+func engineOwnedLocalStage(stage string) bool {
+	return stage == "tests" || stage == "report"
 }
 
 func liveSpecKitStage(stage string) string {
@@ -718,8 +722,8 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 	for key, verdict := range restoredGates {
 		runGateVerdicts[key] = verdict
 	}
-	for _, decision := range decisions {
-		if decision.Route.Provider != "fake" {
+	for stage, decision := range decisions {
+		if !engineOwnedLocalStage(stage) && decision.Route.Provider != "fake" {
 			hasLiveStages = true
 			break
 		}
@@ -752,6 +756,12 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			return
 		}
 		d := decisions[key].Route
+		decision := decisions[key]
+		if engineOwnedLocalStage(key) && (d.Provider != "fake" || hasLiveStages) {
+			d.Provider = "local"
+			d.Profile = "engine"
+			decision.Route = d
+		}
 		stageAttempt := 1
 		if i == startAt && firstStageAttempt > 1 {
 			stageAttempt = firstStageAttempt
@@ -761,7 +771,6 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			e.failPersistence(r.ID)
 			return
 		}
-		decision := decisions[key]
 		stageSimulated := d.Provider == "fake" && !(key == "tests" && hasLiveStages)
 		if err := e.store.SaveRoutingDecision(ctx, r.ID, key, d.Provider, d.Profile, d.Model, d.Effort, decision.Mode, decision.Explanation, stageSimulated); err != nil {
 			e.failPersistence(r.ID)
@@ -889,7 +898,7 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			}
 			continue
 		}
-		if key == "tests" && hasLiveStages {
+		if key == "tests" && (hasLiveStages || d.Provider == "local") {
 			if err := e.store.SetStage(ctx, st.ID, model.StageRun); err != nil {
 				e.failPersistence(r.ID)
 				return
@@ -944,6 +953,39 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 				next = stages[i+1]
 			}
 			if checkpointErr := e.saveCursorCheckpoint(ctx, r, featureDir, key, next, configuration.SHA256, "LOCAL", loopBudget.Counts()); checkpointErr != nil {
+				e.failPersistence(r.ID)
+				return
+			}
+			continue
+		}
+		if key == "report" && d.Provider == "local" {
+			if err := e.store.SetStage(ctx, st.ID, model.StageRun); err != nil {
+				e.failPersistence(r.ID)
+				return
+			}
+			report, reportErr := e.store.Report(ctx, r.ID)
+			if reportErr != nil {
+				_ = e.store.SetStage(context.Background(), st.ID, model.StageFail)
+				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
+				e.finish(r.ID)
+				return
+			}
+			encoded, marshalErr := json.Marshal(report)
+			if marshalErr != nil {
+				_ = e.store.SetStage(context.Background(), st.ID, model.StageFail)
+				e.failPersistence(r.ID)
+				return
+			}
+			digest := sha256.Sum256(encoded)
+			if err := e.store.Event(ctx, r.ID, key, "report.generated", "info", map[string]any{"execution": "LOCAL", "projection_sha256": hex.EncodeToString(digest[:]), "stage_count": len(report.Stages), "gate_count": len(report.Gates), "artifact_count": len(report.Artifacts)}); err != nil {
+				e.failPersistence(r.ID)
+				return
+			}
+			if err := e.store.SetStage(ctx, st.ID, model.Succeeded); err != nil {
+				e.failPersistence(r.ID)
+				return
+			}
+			if err := e.saveCursorCheckpoint(ctx, r, featureDir, key, "", configuration.SHA256, "LOCAL", loopBudget.Counts()); err != nil {
 				e.failPersistence(r.ID)
 				return
 			}

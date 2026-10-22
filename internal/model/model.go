@@ -94,6 +94,9 @@ type AcceptanceSummary struct {
 func SummarizeAcceptance(decisions []RoutingDecision, gates []Gate) AcceptanceSummary {
 	hasLive, hasSimulated := false, false
 	for _, decision := range decisions {
+		if decision.Stage == "tests" || decision.Stage == "report" || decision.Provider == "local" {
+			continue
+		}
 		if decision.Provider == "fake" {
 			hasSimulated = true
 		} else {

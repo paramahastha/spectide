@@ -184,6 +184,9 @@ func TestEngineCompletesVerifiedMixedRunWithApplicableEvidence(t *testing.T) {
 		commands[stage] = "/speckit." + stage
 	}
 	cfg := config.Default()
+	// Engine-owned tests/report inherit the live default route, but must run
+	// locally without requiring synthetic Spec-Kit provider commands.
+	cfg.DefaultRoute = config.Route{Provider: "codex", Profile: "fixture", Model: "fixture/model", Effort: "medium"}
 	cfg.Execution.StageTimeoutSeconds = map[string]int{"plan": 42}
 	cfg.StageRoutes = map[string]config.Route{
 		"constitution": {Provider: "codex", Profile: "fixture"},
@@ -193,6 +196,9 @@ func TestEngineCompletesVerifiedMixedRunWithApplicableEvidence(t *testing.T) {
 		"implement":    {Provider: "codex", Profile: "fixture"},
 		"converge":     {Provider: "codex", Profile: "fixture"},
 		"final_review": {Provider: "codex", Profile: "fixture"},
+		"clarify":      {Provider: "fake", Profile: "fake-demo"},
+		"checklist":    {Provider: "fake", Profile: "fake-demo"},
+		"tasks":        {Provider: "fake", Profile: "fake-demo"},
 	}
 	cfg.StageRoutes["plan"] = config.Route{Provider: "codex", Profile: "fixture", Model: "fixture/model", Effort: "medium"}
 	if err = config.Save(config.ProjectPath(project), cfg); err != nil {
@@ -297,6 +303,31 @@ func TestEngineCompletesVerifiedMixedRunWithApplicableEvidence(t *testing.T) {
 	}
 	if report.Acceptance.Verdict != "PASS" || report.Acceptance.Execution != "MIXED" {
 		t.Fatalf("mixed-run acceptance=%+v", report.Acceptance)
+	}
+	for _, key := range []string{"tests", "report"} {
+		var foundLocal bool
+		for _, stage := range report.Stages {
+			if stage.Key == key {
+				foundLocal = stage.Provider == "local"
+			}
+		}
+		if !foundLocal {
+			t.Fatalf("engine-owned stage %q was not recorded as local: %+v", key, report.Stages)
+		}
+		for _, attempt := range report.Attempts {
+			if attempt.Stage == key {
+				t.Fatalf("engine-owned stage %q fabricated a provider attempt: %+v", key, attempt)
+			}
+		}
+	}
+	var localReportEvent bool
+	for _, event := range reportEvents(t, state, run.ID) {
+		if event.Type == "report.generated" && event.Stage == "report" && event.Payload["execution"] == "LOCAL" {
+			localReportEvent = true
+		}
+	}
+	if !localReportEvent {
+		t.Fatal("engine-owned report stage did not persist local report generation evidence")
 	}
 	if len(report.Checkpoints) == 0 {
 		t.Fatal("live feature scope has no checkpoint")

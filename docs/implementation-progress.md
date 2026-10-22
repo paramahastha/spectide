@@ -721,3 +721,10 @@
 - Added schema version 11 with persisted `required` and `applicable` gate policy. Gate reports and events expose the policy; live execution marks the simulation-only gate inapplicable.
 - Acceptance now includes `workflow_execution` and every applicable required gate. Failed/cancelled/blocked terminal workflow outcomes cannot report PASS, and `SetRunState(COMPLETED)` rejects any unsatisfied required gate. The engine evaluates a candidate successful terminal verdict before completing either live/mixed or simulated runs.
 - Tests cover terminal failure/cancellation, extra required blocked gates, optional and inapplicable gates, and live/mixed/simulated report matrices. `go test ./... -count=1`, `go vet ./...`, and `git diff --check` passed. T089 is complete; T087 remains the current partial item.
+
+### T090 — Engine-owned local tests and report stages — 2026-10-23
+
+- Preflight now excludes engine-owned `tests`/`report` from Spec-Kit provider discovery and unsupported-command checks. Live/mixed runs persist these stages with the local engine route; local tests still use the quality runner and local report generation persists a projection hash/count event without inventing a provider attempt.
+- Acceptance classification, configuration-derived execution labels, and simulated-gate applicability omit these engine-owned stages so a non-fake default does not misclassify them as provider work or trigger a false simulation-only gate.
+- The verified mixed-run fixture now uses a non-fake default for tests/report and confirms local stage labels, no provider attempts for either stage, local report-generation evidence, and final acceptance PASS.
+- The focused mixed-engine fixture, `go test ./internal/workflow ./internal/store ./internal/model -count=1`, `go vet ./internal/workflow ./internal/store ./internal/model`, and `git diff --check` passed. T090 is complete; T091 is next. T087/T088 remain partial.

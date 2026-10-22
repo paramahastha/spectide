@@ -18,6 +18,7 @@ var requiredGateInventory = []string{"analyze_clean", "required_tests", "converg
 func executionFromConfiguration(encoded string) string {
 	var snapshot struct {
 		Stages []struct {
+			Stage    string `json:"stage"`
 			Decision struct {
 				Route struct {
 					Provider string `json:"provider"`
@@ -30,6 +31,9 @@ func executionFromConfiguration(encoded string) string {
 	}
 	hasLive, hasSimulated := false, false
 	for _, stage := range snapshot.Stages {
+		if stage.Stage == "tests" || stage.Stage == "report" {
+			continue
+		}
 		if stage.Decision.Route.Provider == "fake" {
 			hasSimulated = true
 		} else if stage.Decision.Route.Provider != "" {
@@ -54,7 +58,9 @@ func executionFromRouteEvidence(encoded, routingProviders, stageProviders string
 	}
 	hasLive, hasSimulated := false, false
 	for _, provider := range strings.Split(routingProviders+","+stageProviders, ",") {
-		if provider == "fake" {
+		if provider == "local" {
+			continue
+		} else if provider == "fake" {
 			hasSimulated = true
 		} else if provider != "" {
 			hasLive = true
@@ -213,6 +219,9 @@ func acceptanceDecisionsTx(ctx context.Context, tx acceptanceQueryer, runID stri
 		name := stage.Decision.Stage
 		if name == "" {
 			name = stage.Stage
+		}
+		if name == "tests" || name == "report" {
+			continue
 		}
 		route := stage.Decision.Route
 		decisions = append(decisions, model.RoutingDecision{Stage: name, Provider: route.Provider, Profile: route.Profile, Model: route.Model, Effort: route.Effort, Policy: stage.Decision.Mode, Explanation: stage.Decision.Explanation})

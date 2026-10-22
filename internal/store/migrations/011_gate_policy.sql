@@ -8,5 +8,6 @@ WHERE gate_key='simulated_e2e'
     SELECT DISTINCT c.run_id
     FROM run_configurations AS c,
          json_each(c.config_json, '$.stages') AS stage
-    WHERE json_extract(stage.value, '$.decision.route.provider') != 'fake'
+    WHERE json_extract(stage.value, '$.stage') NOT IN ('tests','report')
+      AND json_extract(stage.value, '$.decision.route.provider') != 'fake'
   );
