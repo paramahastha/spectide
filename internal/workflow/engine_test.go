@@ -73,6 +73,31 @@ func TestFakeLifecyclePersistsEvidence(t *testing.T) {
 	t.Fatal("workflow did not complete")
 }
 
+func TestWorkflowDoesNotCompleteWhenQualityEventPersistenceFails(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err = s.DB.Exec(`CREATE TRIGGER reject_quality_event BEFORE INSERT ON events WHEN NEW.type='quality.gate_recorded' BEGIN SELECT RAISE(ABORT,'injected quality event failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	engine := New(s)
+	run, err := engine.Start(ctx, t.TempDir(), "do not claim success without quality evidence")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := engine.Wait(ctx, run.ID)
+	if err != nil || result.State != model.Failed {
+		t.Fatalf("workflow claimed success after quality event failure: run=%+v err=%v", result, err)
+	}
+	gates, err := s.Gates(ctx, run.ID)
+	if err != nil || len(gates) != 0 {
+		t.Fatalf("failed quality transaction left gate rows: gates=%+v err=%v", gates, err)
+	}
+}
+
 func TestTwentyDeterministicRunsCompleteWithRequiredEvidence(t *testing.T) {
 	s, err := store.Open(filepath.Join(t.TempDir(), "spectide.db"))
 	if err != nil {

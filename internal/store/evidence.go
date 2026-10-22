@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -143,6 +144,9 @@ func (s *Store) CreateApproval(ctx context.Context, a model.Approval) (model.App
 	if err != nil {
 		return a, err
 	}
+	if err = appendEvent(ctx, tx, a.RunID, "", "approval.created", "info", map[string]any{"approval_id": a.ID, "action": a.Action, "status": a.Status}); err != nil {
+		return a, err
+	}
 	return a, tx.Commit()
 }
 
@@ -155,6 +159,13 @@ func (s *Store) ResolveApproval(ctx context.Context, id, decision string) error 
 		return err
 	}
 	defer tx.Rollback()
+	var runID string
+	if err = tx.QueryRowContext(ctx, `SELECT run_id FROM approvals WHERE id=? AND status=?`, id, model.ApprovalPending).Scan(&runID); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("APPROVAL_NOT_PENDING")
+		}
+		return err
+	}
 	res, err := tx.ExecContext(ctx, `UPDATE approvals SET status=?,decision=?,resolved_at=? WHERE id=? AND status=?`, decision, decision, now().Format(time.RFC3339Nano), id, model.ApprovalPending)
 	if err != nil {
 		return err
@@ -165,6 +176,9 @@ func (s *Store) ResolveApproval(ctx context.Context, id, decision string) error 
 	}
 	if changed != 1 {
 		return fmt.Errorf("APPROVAL_NOT_PENDING")
+	}
+	if err = appendEvent(ctx, tx, runID, "", "approval.resolved", "info", map[string]any{"approval_id": id, "decision": decision}); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

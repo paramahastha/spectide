@@ -417,14 +417,30 @@ func (s *Store) ReleaseWorkspaceLock(ctx context.Context, path, runID string) er
 	return tx.Commit()
 }
 
-func (s *Store) SaveRoutingDecision(ctx context.Context, runID, stage, provider, profile, modelName, effort, policy, explanation string) error {
+func (s *Store) SaveRoutingDecision(ctx context.Context, runID, stage, provider, profile, modelName, effort, policy, explanation string, simulatedOverride ...bool) error {
 	for _, identity := range []string{provider, profile, modelName, effort, policy} {
 		if security.Redact(identity) != identity {
 			return fmt.Errorf("ROUTING_SECRET_REFERENCE_REJECTED")
 		}
 	}
-	_, err := s.DB.ExecContext(ctx, `INSERT INTO routing_decisions(run_id,stage,provider,profile,model,effort,policy,explanation,created_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(run_id,stage) DO UPDATE SET provider=excluded.provider,profile=excluded.profile,model=excluded.model,effort=excluded.effort,policy=excluded.policy,explanation=excluded.explanation,created_at=excluded.created_at`, runID, stage, provider, profile, modelName, effort, policy, security.Redact(explanation), now().Format(time.RFC3339Nano))
-	return err
+	explanation = security.Redact(explanation)
+	simulated := provider == "fake"
+	if len(simulatedOverride) > 0 {
+		simulated = simulatedOverride[0]
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `INSERT INTO routing_decisions(run_id,stage,provider,profile,model,effort,policy,explanation,created_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(run_id,stage) DO UPDATE SET provider=excluded.provider,profile=excluded.profile,model=excluded.model,effort=excluded.effort,policy=excluded.policy,explanation=excluded.explanation,created_at=excluded.created_at`, runID, stage, provider, profile, modelName, effort, policy, explanation, now().Format(time.RFC3339Nano))
+	if err != nil {
+		return err
+	}
+	if err = appendEvent(ctx, tx, runID, stage, "routing.resolved", "info", map[string]any{"provider": provider, "profile": profile, "model": modelName, "effort": effort, "policy": policy, "explanation": explanation, "simulated": simulated}); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) RoutingDecisions(ctx context.Context, runID string) ([]model.RoutingDecision, error) {
@@ -477,6 +493,9 @@ func (s *Store) AddStage(ctx context.Context, st model.Stage) error {
 	if _, err = tx.ExecContext(ctx, `INSERT INTO stages VALUES(?,?,?,?,?,?,?,?,?,?)`, st.ID, st.RunID, st.Key, st.Position, st.State, st.Provider, st.Profile, st.Model, st.Effort, st.Attempt); err != nil {
 		return err
 	}
+	if err = appendEvent(ctx, tx, st.RunID, st.Key, "stage.created", "info", map[string]any{"attempt": st.Attempt, "state": st.State, "provider": st.Provider, "profile": st.Profile, "model": st.Model, "effort": st.Effort}); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 func (s *Store) SetStage(ctx context.Context, id string, state model.StageState) error {
@@ -486,7 +505,9 @@ func (s *Store) SetStage(ctx context.Context, id string, state model.StageState)
 	}
 	defer tx.Rollback()
 	var current model.StageState
-	if err = tx.QueryRowContext(ctx, `SELECT state FROM stages WHERE id=?`, id).Scan(&current); err != nil {
+	var runID, stageKey string
+	var attempt int
+	if err = tx.QueryRowContext(ctx, `SELECT state,run_id,stage_key,attempt FROM stages WHERE id=?`, id).Scan(&current, &runID, &stageKey, &attempt); err != nil {
 		return err
 	}
 	allowed := false
@@ -499,7 +520,18 @@ func (s *Store) SetStage(ctx context.Context, id string, state model.StageState)
 	if !allowed {
 		return fmt.Errorf("INVALID_STAGE_TRANSITION: %s -> %s", current, state)
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE stages SET state=? WHERE id=? AND state=?`, state, id, current); err != nil {
+	result, err := tx.ExecContext(ctx, `UPDATE stages SET state=? WHERE id=? AND state=?`, state, id, current)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return fmt.Errorf("INVALID_STAGE_TRANSITION: stage changed concurrently")
+	}
+	if err = appendEvent(ctx, tx, runID, stageKey, "stage.transition", "info", map[string]any{"attempt": attempt, "from_state": current, "state": state}); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -607,8 +639,22 @@ func (s *Store) EventsPage(ctx context.Context, runID string, after, through int
 }
 func (s *Store) Gate(ctx context.Context, runID, key, verdict, evidence string) error {
 	evidence = security.Redact(evidence)
-	_, err := s.DB.ExecContext(ctx, `INSERT INTO quality_gates VALUES(?,?,?,?) ON CONFLICT(run_id,gate_key) DO UPDATE SET verdict=excluded.verdict,evidence=excluded.evidence`, runID, key, verdict, evidence)
-	return err
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `INSERT INTO quality_gates VALUES(?,?,?,?) ON CONFLICT(run_id,gate_key) DO UPDATE SET verdict=excluded.verdict,evidence=excluded.evidence`, runID, key, verdict, evidence); err != nil {
+		return err
+	}
+	severity := "info"
+	if verdict != "PASS" {
+		severity = "warning"
+	}
+	if err = appendEvent(ctx, tx, runID, "", "quality.gate_recorded", severity, map[string]any{"gate_key": key, "verdict": verdict, "evidence": evidence}); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func (s *Store) Gates(ctx context.Context, runID string) ([]model.Gate, error) {
 	rows, err := s.DB.QueryContext(ctx, `SELECT gate_key,verdict,evidence FROM quality_gates WHERE run_id=? ORDER BY gate_key`, runID)

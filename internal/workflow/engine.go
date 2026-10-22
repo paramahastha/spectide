@@ -222,7 +222,7 @@ func (e *Engine) blockUnavailableStage(ctx context.Context, run model.Run, stage
 	if err := e.store.AddStage(ctx, attempt); err != nil {
 		return model.Run{}, err
 	}
-	if err := e.store.SaveRoutingDecision(ctx, run.ID, stage, route.Provider, route.Profile, route.Model, route.Effort, decision.Mode, decision.Explanation); err != nil {
+	if err := e.store.SaveRoutingDecision(ctx, run.ID, stage, route.Provider, route.Profile, route.Model, route.Effort, decision.Mode, decision.Explanation, route.Provider == "fake"); err != nil {
 		return model.Run{}, err
 	}
 	if err := e.store.Event(ctx, run.ID, stage, "stage.blocked", "warning", map[string]any{"reason": reason, "execution": "NOT_RUN"}); err != nil {
@@ -488,7 +488,10 @@ func (e *Engine) pauseUntilResume(ctx context.Context, runID, stage string, resu
 	if err := e.store.SetRunState(ctx, runID, model.Paused); err != nil {
 		return false
 	}
-	_ = e.store.Event(ctx, runID, stage, "run.paused", "info", map[string]any{"stage": stage})
+	if err := e.store.Event(ctx, runID, stage, "run.paused", "info", map[string]any{"stage": stage}); err != nil {
+		_ = e.store.SetRunState(context.Background(), runID, model.Failed)
+		return false
+	}
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -518,7 +521,10 @@ func (e *Engine) markResumed(ctx context.Context, runID, stage string) bool {
 	if err := e.store.SetRunState(ctx, runID, model.Running); err != nil {
 		return false
 	}
-	_ = e.store.Event(ctx, runID, stage, "run.resumed", "info", map[string]any{"stage": stage})
+	if err := e.store.Event(ctx, runID, stage, "run.resumed", "info", map[string]any{"stage": stage}); err != nil {
+		_ = e.store.SetRunState(context.Background(), runID, model.Failed)
+		return false
+	}
 	return true
 }
 
@@ -535,16 +541,25 @@ func (e *Engine) pausePoint(ctx context.Context, runID, stage string, resume <-c
 	return ctx.Err() == nil
 }
 
-func (e *Engine) cancelRun(runID, stage, stageID string) {
+func (e *Engine) cancelRun(runID, stage, stageID string) error {
 	ctx := context.Background()
 	if run, err := e.store.GetRun(ctx, runID); err == nil && run.State == model.Blocked {
-		return
+		return nil
 	}
 	if stageID != "" {
-		_ = e.store.SetStage(ctx, stageID, model.Skipped)
+		if err := e.store.SetStage(ctx, stageID, model.Skipped); err != nil {
+			return err
+		}
 	}
-	_ = e.store.Event(ctx, runID, stage, "stage.cancelled", "warning", map[string]any{"reason": "cancellation requested"})
-	_ = e.store.SetRunState(ctx, runID, model.Cancelled)
+	if err := e.store.Event(ctx, runID, stage, "stage.cancelled", "warning", map[string]any{"reason": "cancellation requested"}); err != nil {
+		return err
+	}
+	return e.store.SetRunState(ctx, runID, model.Cancelled)
+}
+
+func (e *Engine) failPersistence(runID string) {
+	_ = e.store.SetRunState(context.Background(), runID, model.Failed)
+	e.finish(runID)
 }
 
 func (e *Engine) waitStage(ctx context.Context, runID string, duration time.Duration) bool {
@@ -621,16 +636,25 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 		key := stages[i]
 		select {
 		case <-ctx.Done():
-			e.cancelRun(r.ID, key, "")
-			e.finish(r.ID)
+			if err := e.cancelRun(r.ID, key, ""); err != nil {
+				e.failPersistence(r.ID)
+			} else {
+				e.finish(r.ID)
+			}
 			return
 		default:
 		}
 		if !e.pausePoint(ctx, r.ID, key, resume) {
 			if ctx.Err() != nil {
-				e.cancelRun(r.ID, key, "")
+				if err := e.cancelRun(r.ID, key, ""); err != nil {
+					e.failPersistence(r.ID)
+					return
+				}
 			} else if action, _ := e.store.RunControl(context.Background(), r.ID); action == "cancel" {
-				e.cancelRun(r.ID, key, "")
+				if err := e.cancelRun(r.ID, key, ""); err != nil {
+					e.failPersistence(r.ID)
+					return
+				}
 			}
 			e.finish(r.ID)
 			return
@@ -638,29 +662,30 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 		d := decisions[key].Route
 		st := model.Stage{ID: uuid.NewString(), RunID: r.ID, Key: key, Position: i, State: model.Pending, Provider: d.Provider, Profile: d.Profile, Model: d.Model, Effort: d.Effort, Attempt: 1}
 		if err := e.store.AddStage(ctx, st); err != nil {
-			_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
-			e.finish(r.ID)
+			e.failPersistence(r.ID)
 			return
 		}
 		decision := decisions[key]
 		stageSimulated := d.Provider == "fake" && !(key == "tests" && hasLiveStages)
-		_ = e.store.Event(ctx, r.ID, key, "routing.resolved", "info", map[string]any{"provider": d.Provider, "profile": d.Profile, "model": d.Model, "effort": d.Effort, "policy": decision.Explanation, "simulated": stageSimulated})
-		if err := e.store.SaveRoutingDecision(ctx, r.ID, key, d.Provider, d.Profile, d.Model, d.Effort, decision.Mode, decision.Explanation); err != nil {
-			_ = e.store.SetStage(context.Background(), st.ID, model.StageFail)
-			_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
-			e.finish(r.ID)
+		if err := e.store.SaveRoutingDecision(ctx, r.ID, key, d.Provider, d.Profile, d.Model, d.Effort, decision.Mode, decision.Explanation, stageSimulated); err != nil {
+			e.failPersistence(r.ID)
 			return
 		}
-		_ = e.store.Event(ctx, r.ID, key, "stage.started", "info", map[string]any{"attempt": 1, "read_only": key == "analyze"})
+		if err := e.store.Event(ctx, r.ID, key, "stage.started", "info", map[string]any{"attempt": 1, "read_only": key == "analyze"}); err != nil {
+			e.failPersistence(r.ID)
+			return
+		}
 		if key == "converge" && hasLiveStages && d.Provider != "fake" {
 			if err := e.store.SetStage(ctx, st.ID, model.StageRun); err != nil {
-				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
-				e.finish(r.ID)
+				e.failPersistence(r.ID)
 				return
 			}
 			err := e.runLiveConvergenceLoop(ctx, r, decisions, installation, featureDir, runGateVerdicts, loopBudget)
 			if err != nil {
-				e.failLiveQualityStage(ctx, r.ID, key, st.ID, "converged", err, ctx)
+				if persistErr := e.failLiveQualityStage(ctx, r.ID, key, st.ID, "converged", err, ctx); persistErr != nil {
+					e.failPersistence(r.ID)
+					return
+				}
 				e.finish(r.ID)
 				return
 			}
@@ -678,78 +703,122 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 		}
 		if key == "analyze" && hasLiveStages && d.Provider != "fake" {
 			if err := e.store.SetStage(ctx, st.ID, model.StageRun); err != nil {
-				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
-				e.finish(r.ID)
+				e.failPersistence(r.ID)
 				return
 			}
 			analysis, analyzeErr := e.runLiveAnalyzeLoop(ctx, r, decisions, installation, featureDir, loopBudget)
 			if analyzeErr != nil {
 				if ctx.Err() != nil {
-					e.cancelRun(r.ID, key, st.ID)
-					e.finish(r.ID)
+					if persistErr := e.cancelRun(r.ID, key, st.ID); persistErr != nil {
+						e.failPersistence(r.ID)
+					} else {
+						e.finish(r.ID)
+					}
 					return
 				}
-				_ = e.store.SetStage(context.Background(), st.ID, model.StageFail)
-				_ = e.store.Gate(context.Background(), r.ID, "analyze_clean", "FAIL", safeStageError(analyzeErr))
-				_ = e.store.Event(context.Background(), r.ID, key, "analysis.failed", "error", map[string]any{"reason": safeStageError(analyzeErr), "execution": "LIVE"})
-				_ = e.store.SetRunState(context.Background(), r.ID, model.Blocked)
+				if persistErr := e.store.SetStage(context.Background(), st.ID, model.StageFail); persistErr != nil {
+					e.failPersistence(r.ID)
+					return
+				}
+				if persistErr := e.store.Gate(context.Background(), r.ID, "analyze_clean", "FAIL", safeStageError(analyzeErr)); persistErr != nil {
+					e.failPersistence(r.ID)
+					return
+				}
+				if persistErr := e.store.Event(context.Background(), r.ID, key, "analysis.failed", "error", map[string]any{"reason": safeStageError(analyzeErr), "execution": "LIVE"}); persistErr != nil {
+					e.failPersistence(r.ID)
+					return
+				}
+				if persistErr := e.store.SetRunState(context.Background(), r.ID, model.Blocked); persistErr != nil {
+					e.failPersistence(r.ID)
+					return
+				}
 				e.finish(r.ID)
 				return
 			}
 			runGateVerdicts["analyze_clean"] = "PASS"
-			_ = e.store.Gate(ctx, r.ID, "analyze_clean", "PASS", fmt.Sprintf("read-only analysis passed after %d blocking findings", len(analysis.Findings)))
-			_ = e.store.SetStage(ctx, st.ID, model.Succeeded)
-			_ = e.store.Event(ctx, r.ID, key, "analysis.clean", "info", map[string]any{"execution": "LIVE", "finding_count": len(analysis.Findings), "critical": analysis.Critical, "high": analysis.High, "medium": analysis.Medium})
+			if err := e.store.Gate(ctx, r.ID, "analyze_clean", "PASS", fmt.Sprintf("read-only analysis passed after %d blocking findings", len(analysis.Findings))); err != nil {
+				e.failPersistence(r.ID)
+				return
+			}
+			if err := e.store.SetStage(ctx, st.ID, model.Succeeded); err != nil {
+				e.failPersistence(r.ID)
+				return
+			}
+			if err := e.store.Event(ctx, r.ID, key, "analysis.clean", "info", map[string]any{"execution": "LIVE", "finding_count": len(analysis.Findings), "critical": analysis.Critical, "high": analysis.High, "medium": analysis.Medium}); err != nil {
+				e.failPersistence(r.ID)
+				return
+			}
 			next := ""
 			if i+1 < len(stages) {
 				next = stages[i+1]
 			}
 			if checkpointErr := e.saveCursorCheckpoint(ctx, r, featureDir, key, next, configuration.SHA256, "LIVE", loopBudget.Counts()); checkpointErr != nil {
-				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
-				e.finish(r.ID)
+				e.failPersistence(r.ID)
 				return
 			}
 			continue
 		}
 		if key == "tests" && hasLiveStages {
 			if err := e.store.SetStage(ctx, st.ID, model.StageRun); err != nil {
+				e.failPersistence(r.ID)
+				return
+			}
+			verdicts, testErr := e.runTestRepairLoop(ctx, r, decisions, installation, featureDir, loopBudget)
+			if persistErr := persistTestVerdicts(ctx, e.store, r.ID, verdicts); persistErr != nil {
 				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
 				e.finish(r.ID)
 				return
 			}
-			verdicts, testErr := e.runTestRepairLoop(ctx, r, decisions, installation, featureDir, loopBudget)
-			persistTestVerdicts(ctx, e.store, r.ID, verdicts)
 			if testErr != nil {
-				_ = e.store.SetStage(context.Background(), st.ID, model.StageFail)
-				_ = e.store.Gate(context.Background(), r.ID, "required_tests", "FAIL", safeStageError(testErr))
-				_ = e.store.Event(context.Background(), r.ID, key, "tests.failed", "error", map[string]any{"reason": safeStageError(testErr), "execution": "LIVE"})
-				_ = e.store.SetRunState(context.Background(), r.ID, model.Blocked)
+				if persistErr := e.store.SetStage(context.Background(), st.ID, model.StageFail); persistErr != nil {
+					e.failPersistence(r.ID)
+					return
+				}
+				if persistErr := e.store.Gate(context.Background(), r.ID, "required_tests", "FAIL", safeStageError(testErr)); persistErr != nil {
+					e.failPersistence(r.ID)
+					return
+				}
+				if persistErr := e.store.Event(context.Background(), r.ID, key, "tests.failed", "error", map[string]any{"reason": safeStageError(testErr), "execution": "LIVE"}); persistErr != nil {
+					e.failPersistence(r.ID)
+					return
+				}
+				if persistErr := e.store.SetRunState(context.Background(), r.ID, model.Blocked); persistErr != nil {
+					e.failPersistence(r.ID)
+					return
+				}
 				e.finish(r.ID)
 				return
 			}
 			runGateVerdicts["required_tests"] = "PASS"
-			_ = e.store.SetStage(ctx, st.ID, model.Succeeded)
-			_ = e.store.Event(ctx, r.ID, key, "tests.passed", "info", map[string]any{"execution": "LOCAL", "check_count": len(verdicts)})
+			if err := e.store.SetStage(ctx, st.ID, model.Succeeded); err != nil {
+				e.failPersistence(r.ID)
+				return
+			}
+			if err := e.store.Event(ctx, r.ID, key, "tests.passed", "info", map[string]any{"execution": "LOCAL", "check_count": len(verdicts)}); err != nil {
+				e.failPersistence(r.ID)
+				return
+			}
 			next := ""
 			if i+1 < len(stages) {
 				next = stages[i+1]
 			}
 			if checkpointErr := e.saveCursorCheckpoint(ctx, r, featureDir, key, next, configuration.SHA256, "LOCAL", loopBudget.Counts()); checkpointErr != nil {
-				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
-				e.finish(r.ID)
+				e.failPersistence(r.ID)
 				return
 			}
 			continue
 		}
 		if key == "final_review" && hasLiveStages && d.Provider != "fake" {
 			if err := e.store.SetStage(ctx, st.ID, model.StageRun); err != nil {
-				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
-				e.finish(r.ID)
+				e.failPersistence(r.ID)
 				return
 			}
 			err := e.runLiveFinalReviewLoop(ctx, r, decisions, installation, featureDir, runGateVerdicts, loopBudget)
 			if err != nil {
-				e.failLiveQualityStage(ctx, r.ID, key, st.ID, "final_review", err, ctx)
+				if persistErr := e.failLiveQualityStage(ctx, r.ID, key, st.ID, "final_review", err, ctx); persistErr != nil {
+					e.failPersistence(r.ID)
+					return
+				}
 				e.finish(r.ID)
 				return
 			}
@@ -767,52 +836,73 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 		}
 		if d.Provider != "fake" {
 			if err := e.store.SetStage(ctx, st.ID, model.StageRun); err != nil {
-				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
-				e.finish(r.ID)
+				e.failPersistence(r.ID)
 				return
 			}
 			evidence, cancelled, runErr := e.runLiveStageWithControl(ctx, r, key, d, r.Prompt, installation, featureDir)
 			if runErr != nil {
 				if cancelled {
-					e.cancelRun(r.ID, key, st.ID)
-					e.finish(r.ID)
+					if persistErr := e.cancelRun(r.ID, key, st.ID); persistErr != nil {
+						e.failPersistence(r.ID)
+					} else {
+						e.finish(r.ID)
+					}
 					return
 				}
-				_ = e.store.SetStage(context.Background(), st.ID, model.StageFail)
-				_ = e.store.Event(context.Background(), r.ID, key, "stage.failed", "error", map[string]any{"reason": safeStageError(runErr), "execution": "LIVE"})
-				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
+				if persistErr := e.store.SetStage(context.Background(), st.ID, model.StageFail); persistErr != nil {
+					e.failPersistence(r.ID)
+					return
+				}
+				if persistErr := e.store.Event(context.Background(), r.ID, key, "stage.failed", "error", map[string]any{"reason": safeStageError(runErr), "execution": "LIVE"}); persistErr != nil {
+					e.failPersistence(r.ID)
+					return
+				}
+				if persistErr := e.store.SetRunState(context.Background(), r.ID, model.Failed); persistErr != nil {
+					e.failPersistence(r.ID)
+					return
+				}
 				e.finish(r.ID)
 				return
 			}
 			if err := e.store.SetStage(ctx, st.ID, model.Succeeded); err != nil {
-				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
-				e.finish(r.ID)
+				e.failPersistence(r.ID)
 				return
 			}
 			delete(evidence, "_stage_output")
 			evidence["execution"] = "LIVE"
-			_ = e.store.Event(ctx, r.ID, key, "stage.completed", "info", evidence)
+			if err := e.store.Event(ctx, r.ID, key, "stage.completed", "info", evidence); err != nil {
+				e.failPersistence(r.ID)
+				return
+			}
 			next := ""
 			if i+1 < len(stages) {
 				next = stages[i+1]
 			}
 			if checkpointErr := e.saveCursorCheckpoint(ctx, r, featureDir, key, next, configuration.SHA256, "LIVE", loopBudget.Counts()); checkpointErr != nil {
-				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
-				e.finish(r.ID)
+				e.failPersistence(r.ID)
 				return
 			}
 			continue
 		}
 		if !e.waitStage(ctx, r.ID, 90*time.Millisecond) {
 			if ctx.Err() != nil {
-				e.cancelRun(r.ID, key, st.ID)
+				if err := e.cancelRun(r.ID, key, st.ID); err != nil {
+					e.failPersistence(r.ID)
+					return
+				}
 			} else if action, _ := e.store.RunControl(context.Background(), r.ID); action == "cancel" {
-				e.cancelRun(r.ID, key, st.ID)
+				if err := e.cancelRun(r.ID, key, st.ID); err != nil {
+					e.failPersistence(r.ID)
+					return
+				}
 			}
 			e.finish(r.ID)
 			return
 		}
-		_ = e.store.SetStage(ctx, st.ID, model.Succeeded)
+		if err := e.store.SetStage(ctx, st.ID, model.Succeeded); err != nil {
+			e.failPersistence(r.ID)
+			return
+		}
 		typ := "stage.completed"
 		if key == "analyze" {
 			typ = "analysis.clean"
@@ -823,14 +913,16 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 		if key == "tests" {
 			typ = "tests.passed"
 		}
-		_ = e.store.Event(ctx, r.ID, key, typ, "info", map[string]any{"simulated": true, "evidence": "deterministic fake-provider fixture"})
+		if err := e.store.Event(ctx, r.ID, key, typ, "info", map[string]any{"simulated": true, "evidence": "deterministic fake-provider fixture"}); err != nil {
+			e.failPersistence(r.ID)
+			return
+		}
 		next := ""
 		if i+1 < len(stages) {
 			next = stages[i+1]
 		}
 		if checkpointErr := e.saveCursorCheckpoint(ctx, r, featureDir, key, next, configuration.SHA256, "SIMULATED", loopBudget.Counts()); checkpointErr != nil {
-			_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
-			e.finish(r.ID)
+			e.failPersistence(r.ID)
 			return
 		}
 	}
@@ -840,17 +932,32 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			if !ok {
 				verdict = "BLOCKED"
 			}
-			_ = e.store.Gate(ctx, r.ID, gate, verdict, "live stage outcomes remain incomplete for final acceptance")
+			if err := e.store.Gate(ctx, r.ID, gate, verdict, "live stage outcomes remain incomplete for final acceptance"); err != nil {
+				e.failPersistence(r.ID)
+				return
+			}
 		}
-		_ = e.store.Event(ctx, r.ID, "", "run.blocked", "warning", map[string]any{"reason": "LIVE_QUALITY_GATES_UNAVAILABLE", "execution": "LIVE"})
-		_ = e.store.SetRunState(ctx, r.ID, model.Blocked)
+		if err := e.store.Event(ctx, r.ID, "", "run.blocked", "warning", map[string]any{"reason": "LIVE_QUALITY_GATES_UNAVAILABLE", "execution": "LIVE"}); err != nil {
+			e.failPersistence(r.ID)
+			return
+		}
+		if err := e.store.SetRunState(ctx, r.ID, model.Blocked); err != nil {
+			e.failPersistence(r.ID)
+			return
+		}
 		e.finish(r.ID)
 		return
 	}
 	for _, g := range []string{"analyze_clean", "required_tests", "converged", "final_review", "simulated_e2e"} {
-		_ = e.store.Gate(ctx, r.ID, g, "PASS", "simulated deterministic workflow")
+		if err := e.store.Gate(ctx, r.ID, g, "PASS", "simulated deterministic workflow"); err != nil {
+			e.failPersistence(r.ID)
+			return
+		}
 	}
-	_ = e.store.SetRunState(ctx, r.ID, model.Completed)
+	if err := e.store.SetRunState(ctx, r.ID, model.Completed); err != nil {
+		e.failPersistence(r.ID)
+		return
+	}
 	e.finish(r.ID)
 }
 

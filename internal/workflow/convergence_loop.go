@@ -59,7 +59,9 @@ func (e *Engine) liveConvergenceHooks(run model.Run, decisions map[string]config
 		},
 		Test: func(ctx context.Context) (map[string]string, error) {
 			verdicts, err := e.runTestRepairLoop(ctx, run, decisions, installation, featureDir, budget)
-			persistTestVerdicts(ctx, e.store, run.ID, verdicts)
+			if persistErr := persistTestVerdicts(ctx, e.store, run.ID, verdicts); persistErr != nil {
+				return verdicts, persistErr
+			}
 			if err != nil {
 				return verdicts, err
 			}

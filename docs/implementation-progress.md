@@ -485,6 +485,12 @@
 - Provider invocations inherit the lock descriptor. Closing SpecTide’s descriptor does not explicitly unlock it; the kernel releases ownership only after provider children close their inherited copies. Resume refuses to claim while another process still holds the lock. A failed owner heartbeat cancels the worker and process group.
 - Tests cover lock exclusion across processes, child-held lifetime, stalled heartbeat recovery, owner identity loss, and two independent databases contending for one workspace. Focused `go test ./internal/workspace ./internal/runner ./internal/store ./internal/workflow -count=1` and full `make verify` passed, including Go vet/tests, dashboard typecheck/tests/build, binary build, secret scan, and offline smoke. Latest SC-001: 19.236 ms; smoke remained `SIMULATED`. T056 is complete; T057 is next. T031, T045, and T046 remain open.
 
+### Phase checkpoint — transactional evidence events (T057)
+
+- Stage creation and state transitions now emit `stage.created`/`stage.transition` in the same transaction as the row change. Routing decisions, quality-gate upserts, approval creation, and approval resolution likewise commit with their ordered events. Run state transitions were already transactional and remain covered by the append-only sequence.
+- Workflow persistence callers check stage, routing, quality, and event writes; a failed quality-event write cannot produce a completed simulated run. Test verdict persistence is deterministic by check key and propagates errors through test and convergence loops.
+- SQLite trigger-based fault injection verifies rollback for each target mutation when its event insert fails; replay tests verify contiguous sequence numbers. Focused store/workflow acceptance tests and full `make verify` passed, including Go vet/tests, dashboard typecheck/tests/build, binary build, secret scan, and offline smoke. Latest SC-001: 22.043 ms; smoke remained `SIMULATED`. T057 is complete; T058 is next. T031, T045, and T046 remain open.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified

@@ -23,15 +23,20 @@ func (e *Engine) completeLiveQualityStage(ctx context.Context, runID, stageID, s
 	return e.saveCursorCheckpoint(ctx, run, featureDir, stage, next, configHash, "LIVE", budget.Counts())
 }
 
-func (e *Engine) failLiveQualityStage(ctx context.Context, runID, stage, stageID, gate string, cause error, runCtx context.Context) {
+func (e *Engine) failLiveQualityStage(ctx context.Context, runID, stage, stageID, gate string, cause error, runCtx context.Context) error {
 	action, _ := e.store.RunControl(context.Background(), runID)
 	if runCtx.Err() != nil || action == "cancel" {
-		e.cancelRun(runID, stage, stageID)
-		return
+		return e.cancelRun(runID, stage, stageID)
 	}
 	reason := safeStageError(cause)
-	_ = e.store.SetStage(context.Background(), stageID, model.StageFail)
-	_ = e.store.Gate(context.Background(), runID, gate, "FAIL", reason)
-	_ = e.store.Event(context.Background(), runID, stage, stage+".failed", "error", map[string]any{"reason": reason, "execution": "LIVE"})
-	_ = e.store.SetRunState(context.Background(), runID, model.Blocked)
+	if err := e.store.SetStage(context.Background(), stageID, model.StageFail); err != nil {
+		return err
+	}
+	if err := e.store.Gate(context.Background(), runID, gate, "FAIL", reason); err != nil {
+		return err
+	}
+	if err := e.store.Event(context.Background(), runID, stage, stage+".failed", "error", map[string]any{"reason": reason, "execution": "LIVE"}); err != nil {
+		return err
+	}
+	return e.store.SetRunState(context.Background(), runID, model.Blocked)
 }

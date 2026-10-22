@@ -62,19 +62,26 @@ func (e *Engine) runTestRepairLoop(ctx context.Context, run model.Run, decisions
 
 func persistTestVerdicts(ctx context.Context, state interface {
 	Gate(context.Context, string, string, string, string) error
-}, runID string, verdicts map[string]string) {
+}, runID string, verdicts map[string]string) error {
 	allPassed := len(verdicts) > 0
-	for key, verdict := range verdicts {
+	keys := make([]string, 0, len(verdicts))
+	for key := range verdicts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		verdict := verdicts[key]
 		if verdict != "PASS" {
 			allPassed = false
 		}
-		_ = state.Gate(ctx, runID, "live_test_"+key, verdict, "registered local quality check")
+		if err := state.Gate(ctx, runID, "live_test_"+key, verdict, "registered local quality check"); err != nil {
+			return err
+		}
 	}
 	if allPassed {
-		_ = state.Gate(ctx, runID, "required_tests", "PASS", fmt.Sprintf("%d registered local checks passed", len(verdicts)))
+		return state.Gate(ctx, runID, "required_tests", "PASS", fmt.Sprintf("%d registered local checks passed", len(verdicts)))
 	} else if len(verdicts) > 0 {
-		_ = state.Gate(ctx, runID, "required_tests", "FAIL", "one or more registered local checks did not pass")
-	} else {
-		_ = state.Gate(ctx, runID, "required_tests", "BLOCKED", "no registered local check evidence was produced")
+		return state.Gate(ctx, runID, "required_tests", "FAIL", "one or more registered local checks did not pass")
 	}
+	return state.Gate(ctx, runID, "required_tests", "BLOCKED", "no registered local check evidence was produced")
 }
