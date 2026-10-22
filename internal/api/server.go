@@ -15,7 +15,6 @@ import (
 	"github.com/spectide/spectide/internal/store"
 	"github.com/spectide/spectide/internal/webassets"
 	"github.com/spectide/spectide/internal/workflow"
-	workspaceguard "github.com/spectide/spectide/internal/workspace"
 	"io"
 	"io/fs"
 	"net"
@@ -143,7 +142,7 @@ func (s *Server) validateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	preview, err := s.previewProject(r.Context(), input.Project, input.Prompt)
 	if err != nil {
-		apiError(w, http.StatusUnprocessableEntity, "CONFIGURATION_INVALID", err.Error())
+		apiPreviewBlocked(w, "CONFIGURATION_INVALID", err.Error())
 		return
 	}
 	jsonOut(w, http.StatusOK, map[string]any{"valid": true, "preview": preview})
@@ -162,28 +161,13 @@ func (s *Server) previewProject(ctx context.Context, project, prompt string) (ma
 	if err != nil {
 		return nil, err
 	}
-	if len(cfg.AllowedScopes) > 0 {
-		if _, err = workspaceguard.Canonical(root, cfg.AllowedScopes); err != nil {
-			return nil, err
-		}
-	}
 	profiles, err := s.Store.Profiles(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if err = routing.ValidateProfileRoutes(cfg, root, profiles); err != nil {
+	decisions, err := routing.ValidateLaunch(cfg, root, prompt, profiles)
+	if err != nil {
 		return nil, err
-	}
-	if err = routing.ValidateProfileCapabilities(cfg, profiles); err != nil {
-		return nil, err
-	}
-	decisions := make([]config.Decision, 0, len(config.StageKeys))
-	for _, stage := range config.StageKeys {
-		decision, resolveErr := cfg.Resolve(stage, prompt)
-		if resolveErr != nil {
-			return nil, resolveErr
-		}
-		decisions = append(decisions, decision)
 	}
 	return map[string]any{"dry_run": true, "valid": true, "execution": "NOT_RUN", "mode": cfg.RoutingMode, "decisions": decisions}, nil
 }
@@ -210,6 +194,19 @@ func apiError(w http.ResponseWriter, status int, code, message string) {
 		w.Header().Set("X-Request-ID", requestID)
 	}
 	jsonOut(w, status, contractError(code, message, requestID))
+}
+
+func apiPreviewBlocked(w http.ResponseWriter, code, message string) {
+	requestID := w.Header().Get("X-Request-ID")
+	if requestID == "" {
+		requestID = newRequestID()
+		w.Header().Set("X-Request-ID", requestID)
+	}
+	response := contractError(code, message, requestID)
+	response["execution"] = "NOT_RUN"
+	response["dry_run"] = true
+	response["blocked_reasons"] = []string{security.Redact(message)}
+	jsonOut(w, http.StatusUnprocessableEntity, response)
 }
 
 func contractError(code, message, requestID string) map[string]any {
@@ -438,7 +435,7 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 		if in.DryRun {
 			preview, err := s.previewProject(r.Context(), in.Project, in.Prompt)
 			if err != nil {
-				apiError(w, http.StatusUnprocessableEntity, "ROUTE_PREVIEW_BLOCKED", err.Error())
+				apiPreviewBlocked(w, "ROUTE_PREVIEW_BLOCKED", err.Error())
 				return
 			}
 			jsonOut(w, http.StatusOK, preview)

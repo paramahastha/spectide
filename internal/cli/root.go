@@ -21,6 +21,7 @@ import (
 	"github.com/spectide/spectide/internal/events"
 	"github.com/spectide/spectide/internal/model"
 	"github.com/spectide/spectide/internal/quality"
+	"github.com/spectide/spectide/internal/routing"
 	"github.com/spectide/spectide/internal/security"
 	"github.com/spectide/spectide/internal/speckit"
 	"github.com/spf13/cobra"
@@ -447,6 +448,37 @@ func Root() *cobra.Command {
 		return fmt.Errorf("PROFILE_NOT_FOUND: %s", args[0])
 	}})
 	root.AddCommand(models)
+	configCheck := func(c *cobra.Command) error {
+		path, _ := c.Flags().GetString("file")
+		project, _ := c.Flags().GetString("project")
+		prompt, _ := c.Flags().GetString("prompt")
+		cfg, e := config.LoadEffective(config.GlobalPath(), path)
+		if e != nil {
+			return e
+		}
+		state, e := open()
+		if e != nil {
+			return e
+		}
+		defer state.Close()
+		profiles, e := state.Store.Profiles(c.Context())
+		if e != nil {
+			return e
+		}
+		decisions, validationErr := routing.ValidateLaunch(cfg, project, prompt, profiles)
+		preview := map[string]any{"dry_run": true, "execution": "NOT_RUN", "mode": cfg.RoutingMode, "decisions": decisions}
+		result := map[string]any{"valid": validationErr == nil, "preview": preview}
+		if validationErr != nil {
+			result["blocked_reasons"] = []string{validationErr.Error()}
+		}
+		if e = writeJSON(c.OutOrStdout(), result); e != nil {
+			return e
+		}
+		if validationErr != nil {
+			return commandError(ExitBlocked, "ROUTE_PREVIEW_BLOCKED: "+validationErr.Error())
+		}
+		return nil
+	}
 	conf := &cobra.Command{Use: "config", Short: "Inspect or validate project configuration", RunE: func(c *cobra.Command, _ []string) error {
 		path, _ := c.Flags().GetString("file")
 		v, e := config.LoadEffective(config.GlobalPath(), path)
@@ -456,35 +488,14 @@ func Root() *cobra.Command {
 		return writeJSON(c.OutOrStdout(), v)
 	}}
 	conf.Flags().String("file", config.ProjectPath("."), "configuration file path")
-	conf.AddCommand(&cobra.Command{Use: "validate", RunE: func(c *cobra.Command, _ []string) error {
-		path, _ := c.Flags().GetString("file")
-		v, e := config.LoadEffective(config.GlobalPath(), path)
-		if e != nil {
-			return e
-		}
-		return writeJSON(c.OutOrStdout(), map[string]any{"valid": true, "config": v})
-	}})
-	conf.Commands()[0].Flags().String("file", config.ProjectPath("."), "configuration file path")
-	preview := &cobra.Command{Use: "preview", Short: "Preview deterministic routes without starting a run", RunE: func(c *cobra.Command, _ []string) error {
-		file, _ := c.Flags().GetString("file")
-		prompt, _ := c.Flags().GetString("prompt")
-		cfg, e := config.LoadEffective(config.GlobalPath(), file)
-		if e != nil {
-			return e
-		}
-		decisions := make([]config.Decision, 0, len(config.StageKeys))
-		for _, stage := range config.StageKeys {
-			d, e := cfg.Resolve(stage, prompt)
-			if e != nil {
-				return e
-			}
-			decisions = append(decisions, d)
-		}
-		return writeJSON(c.OutOrStdout(), map[string]any{"mode": cfg.RoutingMode, "decisions": decisions})
-	}}
-	preview.Flags().String("file", config.ProjectPath("."), "configuration file path")
-	preview.Flags().String("prompt", "", "task intent for automatic risk routing")
-	conf.AddCommand(preview)
+	validate := &cobra.Command{Use: "validate", RunE: func(c *cobra.Command, _ []string) error { return configCheck(c) }}
+	preview := &cobra.Command{Use: "preview", Short: "Preview launch-authorized routes without starting a run", RunE: func(c *cobra.Command, _ []string) error { return configCheck(c) }}
+	for _, command := range []*cobra.Command{validate, preview} {
+		command.Flags().String("file", config.ProjectPath("."), "configuration file path")
+		command.Flags().String("project", ".", "workspace directory to authorize")
+		command.Flags().String("prompt", "", "task intent for automatic risk routing")
+		conf.AddCommand(command)
+	}
 	root.AddCommand(conf)
 	initCmd := &cobra.Command{Use: "init", Short: "Initialize local SpecTide project settings", RunE: func(c *cobra.Command, _ []string) error {
 		rootPath, _ := c.Flags().GetString("project")

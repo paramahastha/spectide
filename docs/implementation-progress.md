@@ -783,3 +783,9 @@
 - Dashboard report types and panels now expose provider invocation records and local quality executions, including actual phase iteration, active invocation status, route/model/effort, quality verdicts, and available safe summaries. Stage rows use the latest invocation data.
 - SSE listeners now handle generic `provider.event`, provider start/result/failure records, and interruption records; visible activity rows show safe summary fields and never render raw event bodies. Successful run-list/profile refresh clears stale disconnected state even with no selected stream. Project or prompt edits invalidate route preview results, whose rows now expose model and effort.
 - Component coverage verifies invocation and quality projections, safe activity summaries, provider event replay, connection recovery, and preview invalidation. `npm run typecheck`, `npm test -- --run` (33 tests), and `npm run build` passed. Browser-rendered validation remains blocked under T077. T099 is complete; T100 is next. T087/T088 remain partial.
+
+### T100 — Share launch authorization across preview and validation — 2026-10-23
+
+- Added one routing-level launch validator used by API dry-run/validation and CLI `config preview`/`config validate`. It canonicalizes the workspace and checks project scope, configured direct/fallback profile registration and scope, persisted capability evidence, and stage route resolution without starting a workflow or probing a provider.
+- CLI blocked responses include an explicit `NOT_RUN` preview and blocked reasons; API preview and validation errors include the same intent and reason data in the standard error envelope. Tests cover unauthorized direct/fallback routes, missing profiles, unprobed capability, project boundary, and zero run creation.
+- `go test ./internal/routing ./internal/api ./internal/cli -count=1`, package vet, and `git diff --check` passed. T100 is complete; T101 is next. T087/T088 remain partial.

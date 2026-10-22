@@ -499,8 +499,19 @@ func TestDryRunBlocksLiveRouteWithoutAuthorizedStoredProfile(t *testing.T) {
 	r.Header.Set("Idempotency-Key", "preview-profile-123")
 	w := httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, r)
-	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "PROFILE_NOT_FOUND") {
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "PROFILE_NOT_FOUND") || !strings.Contains(w.Body.String(), `"execution":"NOT_RUN"`) || !strings.Contains(w.Body.String(), `"blocked_reasons":[`) {
 		t.Fatalf("unauthorized route preview status=%d body=%s", w.Code, w.Body.String())
+	}
+	validation := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/config/validate", strings.NewReader(`{"project":"`+project+`","prompt":"inspect"}`))
+	validation.Host = "127.0.0.1"
+	validation.Header.Set("X-SpecTide-CSRF", s.CSRF)
+	validationResponse := httptest.NewRecorder()
+	s.Handler().ServeHTTP(validationResponse, validation)
+	if validationResponse.Code != http.StatusUnprocessableEntity || !strings.Contains(validationResponse.Body.String(), "PROFILE_NOT_FOUND") || !strings.Contains(validationResponse.Body.String(), `"execution":"NOT_RUN"`) {
+		t.Fatalf("config validation did not match preview blocker: status=%d body=%s", validationResponse.Code, validationResponse.Body.String())
+	}
+	if runs, err := s.Store.Runs(context.Background()); err != nil || len(runs) != 0 {
+		t.Fatalf("blocked preview/validation created runs=%d err=%v", len(runs), err)
 	}
 }
 

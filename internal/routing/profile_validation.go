@@ -2,12 +2,52 @@ package routing
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
 	"github.com/spectide/spectide/internal/workspace"
 )
+
+// ValidateLaunch applies the same project boundary, registered-profile,
+// capability, and route-resolution checks used before a workflow may start.
+// It performs no provider invocation and returns resolved NOT_RUN decisions.
+func ValidateLaunch(cfg config.Config, project, prompt string, profiles []model.Profile) ([]config.Decision, error) {
+	root, err := filepath.Abs(project)
+	if err != nil {
+		return nil, fmt.Errorf("PROJECT_PATH_UNAVAILABLE")
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, fmt.Errorf("PROJECT_PATH_UNAVAILABLE")
+	}
+	info, err := os.Stat(root)
+	if err != nil || !info.IsDir() {
+		return nil, fmt.Errorf("PROJECT_NOT_DIRECTORY")
+	}
+	if len(cfg.AllowedScopes) > 0 {
+		if _, err = workspace.Canonical(root, cfg.AllowedScopes); err != nil {
+			return nil, err
+		}
+	}
+	if err = ValidateProfileRoutes(cfg, root, profiles); err != nil {
+		return nil, err
+	}
+	if err = ValidateProfileCapabilities(cfg, profiles); err != nil {
+		return nil, err
+	}
+	decisions := make([]config.Decision, 0, len(config.StageKeys))
+	for _, stage := range config.StageKeys {
+		decision, resolveErr := cfg.Resolve(stage, prompt)
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
+		decisions = append(decisions, decision)
+	}
+	return decisions, nil
+}
 
 // ValidateProfileRoutes ensures every configured non-simulated route resolves
 // to a matching stored profile authorized for the canonical project. It does

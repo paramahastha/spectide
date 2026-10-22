@@ -191,6 +191,90 @@ func TestUnprobedLiveRouteIsDeniedBeforeRun(t *testing.T) {
 	}
 }
 
+func TestConfigPreviewAndValidateUseLaunchAuthorizationWithoutStartingRuns(t *testing.T) {
+	type scenario struct {
+		name      string
+		configure func(string) (config.Config, []model.Profile)
+		want      string
+	}
+	scenarios := []scenario{
+		{
+			name: "unauthorized direct route",
+			configure: func(project string) (config.Config, []model.Profile) {
+				cfg := config.Default()
+				cfg.DefaultRoute = config.Route{Provider: "codex", Profile: "direct"}
+				return cfg, []model.Profile{{Name: "direct", Provider: "codex", Executable: "codex", AllowedScopes: []string{t.TempDir()}}}
+			},
+			want: "PROFILE_NOT_ALLOWED",
+		},
+		{
+			name: "missing profile",
+			configure: func(string) (config.Config, []model.Profile) {
+				cfg := config.Default()
+				cfg.DefaultRoute = config.Route{Provider: "codex", Profile: "missing"}
+				return cfg, nil
+			},
+			want: "PROFILE_NOT_FOUND",
+		},
+		{
+			name: "unsupported capability",
+			configure: func(project string) (config.Config, []model.Profile) {
+				cfg := config.Default()
+				cfg.DefaultRoute = config.Route{Provider: "codex", Profile: "unprobed"}
+				return cfg, []model.Profile{{Name: "unprobed", Provider: "codex", Executable: "codex", AllowedScopes: []string{project}}}
+			},
+			want: "PROFILE_CAPABILITY_NOT_PROBED",
+		},
+		{
+			name: "unauthorized fallback",
+			configure: func(string) (config.Config, []model.Profile) {
+				cfg := config.Default()
+				cfg.DefaultRoute = config.Route{Provider: "fake", Profile: "fake-demo", FallbackAuthorized: true, Fallback: []config.Route{{Provider: "claude", Profile: "backup"}}}
+				return cfg, []model.Profile{{Name: "backup", Provider: "claude", Executable: "claude", AllowedScopes: []string{t.TempDir()}}}
+			},
+			want: "FALLBACK_PROFILE_NOT_ALLOWED",
+		},
+	}
+	for _, test := range scenarios {
+		t.Run(test.name, func(t *testing.T) {
+			project := t.TempDir()
+			cfg, profiles := test.configure(project)
+			configPath := config.ProjectPath(project)
+			if err := config.Save(configPath, cfg); err != nil {
+				t.Fatal(err)
+			}
+			db := filepath.Join(t.TempDir(), "preview.db")
+			state, err := store.Open(db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, profile := range profiles {
+				if _, err = state.SaveProfile(context.Background(), profile); err != nil {
+					state.Close()
+					t.Fatal(err)
+				}
+			}
+			if err = state.Close(); err != nil {
+				t.Fatal(err)
+			}
+			for _, command := range []string{"preview", "validate"} {
+				output, runErr := executeCLI(t, db, "config", command, "--project", project, "--file", configPath)
+				if ExitCode(runErr) != ExitBlocked || !strings.Contains(output, test.want) || !strings.Contains(output, `"execution":"NOT_RUN"`) || !strings.Contains(output, `"blocked_reasons":[`) {
+					t.Fatalf("%s did not report launch blocker: output=%s err=%v", command, output, runErr)
+				}
+			}
+			state, err = store.Open(db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer state.Close()
+			if runs, err := state.Runs(context.Background()); err != nil || len(runs) != 0 {
+				t.Fatalf("configuration check created runs=%d err=%v", len(runs), err)
+			}
+		})
+	}
+}
+
 func TestProjectRegisterCanonicalizesAndLists(t *testing.T) {
 	db := filepath.Join(t.TempDir(), "spectide.db")
 	projectDir := t.TempDir()
