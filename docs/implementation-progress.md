@@ -524,6 +524,13 @@
 - Executable and configuration symlink retargets, binary replacement/content changes, unsafe file permissions, and working-directory changes fail closed. Profile reference drift removes the capability snapshot and records an ordered invalidation event in one transaction.
 - Focused security/runner/adapter/store/workflow tests and full `make verify` passed. Go vet/tests, dashboard typecheck/tests/build, binary build, secret scan, and offline smoke all passed. Latest SC-001: 18.126 ms; smoke remains `SIMULATED`. T062 is complete; T063 is next. T031, T045, and T046 remain open.
 
+### T063 — Initialize and preserve live Spec-Kit artifact lifecycle — 2026-10-22
+
+- Live preflight selects the sole feature directory containing any canonical artifact, supports a single incomplete/empty feature directory, and derives a stable `specs/001-<prompt-slug>` path for a fresh workspace. The selected directory is created only after route validation and workspace ownership succeed.
+- Existing constitution, specification, plan, and task owner artifacts are recorded as skipped/preserved; missing artifacts remain owned by their respective stages. This keeps specify create-once and prevents plan/tasks from recreating existing scope.
+- Cursor checkpoints persist the selected feature directory relative to the workspace. Restart uses that persisted path and validates containment rather than selecting again from whatever artifacts happen to exist later.
+- Acceptance tests cover fresh and partial directory selection, path escape rejection, preserving an existing constitution/specification, creating a missing plan, and checkpoint persistence. Full `make verify` passed: Go vet/tests, dashboard typecheck/tests/build, binary build, secret scan, and offline `SIMULATED` smoke. Latest SC-001: 21.319 ms. T063 is complete; T064 is next. T031, T045, and T046 remain open.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified

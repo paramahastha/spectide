@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,6 +73,18 @@ func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *t
 			t.Fatal(err)
 		}
 	}
+	constitution := filepath.Join(project, ".specify", "memory", "constitution.md")
+	if err = os.MkdirAll(filepath.Dir(constitution), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(constitution, []byte("existing constitution\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The plan owner stage should execute when plan.md is absent; the separate
+	// artifact lifecycle tests cover preserving an already-created plan.
+	if err = os.Remove(filepath.Join(feature, "plan.md")); err != nil {
+		t.Fatal(err)
+	}
 	if err = os.WriteFile(filepath.Join(project, "go.mod"), []byte("module fixture\n\ngo 1.27.2\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +105,7 @@ func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *t
 	commandFiles := make(map[string]string)
 	commandHashes := make(map[string]string)
 	commands := make(map[string]string)
-	for _, stage := range []string{"plan", "analyze", "implement", "converge"} {
+	for _, stage := range []string{"constitution", "specify", "plan", "analyze", "implement", "converge"} {
 		rel := ".opencode/commands/speckit." + stage + ".md"
 		commandPath := filepath.Join(project, filepath.FromSlash(rel))
 		if err = os.MkdirAll(filepath.Dir(commandPath), 0o700); err != nil {
@@ -109,6 +122,8 @@ func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *t
 	}
 	cfg := config.Default()
 	cfg.StageRoutes = map[string]config.Route{
+		"constitution": {Provider: "codex", Profile: "fixture"},
+		"specify":      {Provider: "codex", Profile: "fixture"},
 		"plan":         {Provider: "codex", Profile: "fixture"},
 		"analyze":      {Provider: "codex", Profile: "fixture"},
 		"implement":    {Provider: "codex", Profile: "fixture"},
@@ -144,6 +159,15 @@ func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(report.Checkpoints) == 0 {
+		t.Fatal("live feature scope has no checkpoint")
+	}
+	var checkpointFeature struct {
+		FeatureDirectory string `json:"feature_directory"`
+	}
+	if err = json.Unmarshal([]byte(report.Checkpoints[0].StateJSON), &checkpointFeature); err != nil || checkpointFeature.FeatureDirectory != "specs/001-product" {
+		t.Fatalf("selected product scope was not checkpointed: state=%s feature=%q err=%v", report.Checkpoints[0].StateJSON, checkpointFeature.FeatureDirectory, err)
+	}
 	var foundLivePlan bool
 	for _, event := range reportEvents(t, state, run.ID) {
 		if event.Type == "provider.codex.message" && event.Stage == "plan" {
@@ -152,6 +176,26 @@ func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *t
 	}
 	if !foundLivePlan {
 		t.Fatal("verified live plan stage produced no persisted provider event")
+	}
+	for _, stage := range []string{"constitution", "specify"} {
+		foundProviderEvent := false
+		for _, event := range reportEvents(t, state, run.ID) {
+			if event.Type == "provider.codex.message" && event.Stage == stage {
+				foundProviderEvent = true
+			}
+		}
+		if foundProviderEvent {
+			t.Fatalf("existing %s owner artifact was regenerated", stage)
+		}
+		foundSkipped := false
+		for _, stageReport := range report.Stages {
+			if stageReport.Key == stage && stageReport.State == model.Skipped {
+				foundSkipped = true
+			}
+		}
+		if !foundSkipped {
+			t.Fatalf("existing %s owner artifact was not recorded as preserved", stage)
+		}
 	}
 	if len(report.Gates) < 9 {
 		t.Fatalf("live workflow did not persist local quality evidence: %+v", report.Gates)

@@ -27,6 +27,7 @@ type cursorCheckpointState struct {
 	Execution          string            `json:"execution"`
 	CursorOnly         bool              `json:"cursor_only"`
 	WorkspacePath      string            `json:"workspace_path"`
+	FeatureDirectory   string            `json:"feature_directory,omitempty"`
 	WorkspaceIdentity  string            `json:"workspace_identity"`
 	GitHead            string            `json:"git_head"`
 	GitIndex           string            `json:"git_index"`
@@ -77,6 +78,21 @@ func (e *Engine) saveCursorCheckpoint(ctx context.Context, run model.Run, featur
 		Execution: execution, CursorOnly: true, WorkspacePath: filepath.Clean(run.Project),
 		WorkspaceIdentity: checkpoint.WorkspaceFingerprint, GitHead: gitHead, GitIndex: gitIndex,
 		ArtifactPathHashes: artifactHashes, ManagedPathHashes: managedHashes, LoopCounts: counts,
+	}
+	if featureDir != "" {
+		root, rootErr := filepath.EvalSymlinks(run.Project)
+		if rootErr != nil {
+			return rootErr
+		}
+		resolvedFeature, featureErr := filepath.EvalSymlinks(featureDir)
+		if featureErr != nil {
+			return featureErr
+		}
+		rel, relErr := filepath.Rel(root, resolvedFeature)
+		if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+			return fmt.Errorf("WORKSPACE_DRIFT: selected feature directory escapes workspace")
+		}
+		state.FeatureDirectory = filepath.ToSlash(rel)
 	}
 	encoded, err := json.Marshal(state)
 	if err != nil {
@@ -260,6 +276,20 @@ func (e *Engine) verifyRestartCheckpoint(ctx context.Context, run model.Run, con
 	}
 	if workspaceIdentityFingerprint(canonical) != state.WorkspaceIdentity || configuration.SHA256 != state.ConfigurationSHA {
 		return checkpoint, state, fmt.Errorf("WORKSPACE_DRIFT: workspace or immutable configuration identity changed")
+	}
+	if state.FeatureDirectory != "" {
+		featureDir := filepath.Clean(filepath.FromSlash(state.FeatureDirectory))
+		if filepath.IsAbs(featureDir) || featureDir == ".." || strings.HasPrefix(featureDir, ".."+string(filepath.Separator)) {
+			return checkpoint, state, fmt.Errorf("WORKSPACE_DRIFT: checkpoint feature directory escapes workspace")
+		}
+		resolved, resolveErr := filepath.EvalSymlinks(filepath.Join(canonical, featureDir))
+		if resolveErr != nil {
+			return checkpoint, state, fmt.Errorf("WORKSPACE_DRIFT: checkpoint feature directory is unavailable")
+		}
+		rel, relErr := filepath.Rel(canonical, resolved)
+		if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.ToSlash(rel) != filepath.ToSlash(featureDir) {
+			return checkpoint, state, fmt.Errorf("WORKSPACE_DRIFT: checkpoint feature directory changed")
+		}
 	}
 	if state.GitHead == "" || state.GitIndex == "" {
 		return checkpoint, state, fmt.Errorf("WORKSPACE_DRIFT: checkpoint has no verified Git HEAD and index")

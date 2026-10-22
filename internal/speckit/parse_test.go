@@ -174,3 +174,44 @@ func TestDiscoverFeatureDirectoryRequiresOneCompleteProductSpec(t *testing.T) {
 		t.Fatalf("ambiguous specs error=%v", err)
 	}
 }
+
+func TestSelectFeatureDirectorySupportsFreshAndIncompleteScopes(t *testing.T) {
+	root := t.TempDir()
+	selected, err := SelectFeatureDirectory(root, "Build a safe cache / API")
+	canonicalRoot, canonicalErr := filepath.EvalSymlinks(root)
+	if err != nil || canonicalErr != nil || selected != filepath.Join(canonicalRoot, "specs", "001-build-a-safe-cache-api") {
+		t.Fatalf("fresh feature selection=%q err=%v", selected, err)
+	}
+	if err = EnsureFeatureDirectory(root, selected); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(selected, "spec.md"), []byte("chosen product scope"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	again, err := SelectFeatureDirectory(root, "a different later prompt")
+	if err != nil || again != selected {
+		t.Fatalf("existing partial scope was not preserved: selected=%q err=%v", again, err)
+	}
+	if err = os.WriteFile(filepath.Join(selected, "plan.md"), []byte("existing plan"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.MkdirAll(filepath.Join(selected, "contracts"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if again, err = SelectFeatureDirectory(root, "do not create another scope"); err != nil || again != selected {
+		t.Fatalf("existing scope changed after owner artifacts were added: selected=%q err=%v", again, err)
+	}
+}
+
+func TestEnsureFeatureDirectoryRejectsSymlinkEscape(t *testing.T) {
+	root, outside := t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "specs"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "specs", "001-outside")); err != nil {
+		t.Skip(err)
+	}
+	if err := EnsureFeatureDirectory(root, filepath.Join(root, "specs", "001-outside")); err == nil {
+		t.Fatal("feature directory symlink escape accepted")
+	}
+}

@@ -106,7 +106,7 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 		}
 		installation, installationErr = e.discover(workspace)
 		if installationErr == nil {
-			featureDir, installationErr = speckit.DiscoverFeatureDirectory(workspace)
+			featureDir, installationErr = speckit.SelectFeatureDirectory(workspace, prompt)
 		}
 		break
 	}
@@ -176,6 +176,15 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 		_ = e.store.Event(context.Background(), r.ID, "", "workspace.lock_denied", "warning", map[string]any{"reason": "another run owns this workspace"})
 		_ = e.store.SetRunState(context.Background(), r.ID, model.Blocked)
 		return r, false, nil
+	}
+	if featureDir != "" {
+		if err = speckit.EnsureFeatureDirectory(workspace, featureDir); err != nil {
+			_ = e.store.Event(context.Background(), r.ID, "", "feature.directory_failed", "error", map[string]any{"reason": safeStageError(err)})
+			_ = e.store.SetRunState(context.Background(), r.ID, model.Blocked)
+			_ = e.store.ReleaseWorkspaceLock(context.Background(), workspace, r.ID)
+			_ = processLock.Close()
+			return r, false, err
+		}
 	}
 	configuration, err := e.store.RunConfiguration(ctx, r.ID)
 	if err == nil {
@@ -346,7 +355,11 @@ func (e *Engine) Resume(id string) error {
 		if parseErr != nil {
 			return e.blockUnverifiedRestart(run, parseErr)
 		}
-		installation, featureDir, discoverErr := e.resumeSpecKit(run.Project, decisions)
+		featureDir := ""
+		if checkpointState.FeatureDirectory != "" {
+			featureDir = filepath.Join(run.Project, filepath.FromSlash(checkpointState.FeatureDirectory))
+		}
+		installation, featureDir, discoverErr := e.resumeSpecKit(run.Project, decisions, featureDir)
 		if discoverErr != nil {
 			return e.blockUnverifiedRestart(run, discoverErr)
 		}
@@ -436,7 +449,7 @@ func (e *Engine) latestPausedStage(runID string) (string, error) {
 	return stage, nil
 }
 
-func (e *Engine) resumeSpecKit(project string, decisions map[string]config.Decision) (speckit.Installation, string, error) {
+func (e *Engine) resumeSpecKit(project string, decisions map[string]config.Decision, featureDir string) (speckit.Installation, string, error) {
 	for _, stage := range stages {
 		if decisions[stage].Route.Provider == "fake" {
 			continue
@@ -451,9 +464,11 @@ func (e *Engine) resumeSpecKit(project string, decisions map[string]config.Decis
 		if !installation.Verified {
 			return speckit.Installation{}, "", fmt.Errorf("SPEC_KIT_INTEGRATION_UNVERIFIED")
 		}
-		featureDir, err := speckit.DiscoverFeatureDirectory(project)
-		if err != nil {
-			return speckit.Installation{}, "", err
+		if featureDir == "" {
+			return speckit.Installation{}, "", fmt.Errorf("WORKSPACE_DRIFT: checkpoint has no selected feature directory")
+		}
+		if err = speckit.EnsureFeatureDirectory(project, featureDir); err != nil {
+			return speckit.Installation{}, "", fmt.Errorf("WORKSPACE_DRIFT: selected feature directory is unavailable")
 		}
 		for _, routedStage := range stages {
 			if decisions[routedStage].Route.Provider == "fake" || !officialStage(routedStage) {
@@ -674,6 +689,41 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 		if err := e.store.Event(ctx, r.ID, key, "stage.started", "info", map[string]any{"attempt": 1, "read_only": key == "analyze"}); err != nil {
 			e.failPersistence(r.ID)
 			return
+		}
+		if d.Provider != "fake" {
+			ownerPath, present, inspectErr := existingOwnerArtifact(r.Project, featureDir, key)
+			if inspectErr != nil {
+				if eventErr := e.store.Event(context.Background(), r.ID, key, "stage.owner_artifact_invalid", "error", map[string]any{"reason": safeStageError(inspectErr)}); eventErr != nil {
+					e.failPersistence(r.ID)
+					return
+				}
+				if stageErr := e.store.SetStage(context.Background(), st.ID, model.StageFail); stageErr != nil {
+					e.failPersistence(r.ID)
+					return
+				}
+				_ = e.store.SetRunState(context.Background(), r.ID, model.Blocked)
+				e.finish(r.ID)
+				return
+			}
+			if present {
+				if err := e.store.SetStage(ctx, st.ID, model.Skipped); err != nil {
+					e.failPersistence(r.ID)
+					return
+				}
+				if err := e.store.Event(ctx, r.ID, key, "stage.owner_artifact_present", "info", map[string]any{"path": ownerPath, "execution": "NOT_RUN"}); err != nil {
+					e.failPersistence(r.ID)
+					return
+				}
+				next := ""
+				if i+1 < len(stages) {
+					next = stages[i+1]
+				}
+				if err := e.saveCursorCheckpoint(ctx, r, featureDir, key, next, configuration.SHA256, "PRESERVED", loopBudget.Counts()); err != nil {
+					e.failPersistence(r.ID)
+					return
+				}
+				continue
+			}
 		}
 		if key == "converge" && hasLiveStages && d.Provider != "fake" {
 			if err := e.store.SetStage(ctx, st.ID, model.StageRun); err != nil {

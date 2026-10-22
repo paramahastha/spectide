@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 type Finding struct {
@@ -84,6 +85,140 @@ func DiscoverFeatureDirectory(projectRoot string) (string, error) {
 		}
 	}
 	return featureDirs[0], nil
+}
+
+// SelectFeatureDirectory chooses the one existing feature scope, including an
+// incomplete scope, or derives a stable initial path for a fresh workspace.
+// The selected path is persisted in the workflow checkpoint before execution.
+func SelectFeatureDirectory(projectRoot, prompt string) (string, error) {
+	root, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return "", err
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	specsRoot := filepath.Join(root, "specs")
+	entries, err := os.ReadDir(specsRoot)
+	if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
+	var artifactDirs, emptyDirs []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		dir := filepath.Join(specsRoot, entry.Name())
+		state, inspectErr := InspectArtifacts(dir)
+		if inspectErr != nil {
+			return "", inspectErr
+		}
+		if state.Present["spec"] || state.Present["plan"] || state.Present["tasks"] {
+			artifactDirs = append(artifactDirs, dir)
+		} else {
+			emptyDirs = append(emptyDirs, dir)
+		}
+	}
+	if len(artifactDirs) > 1 {
+		return "", fmt.Errorf("SPECIFICATION_AMBIGUOUS: found %d feature artifact directories", len(artifactDirs))
+	}
+	if len(artifactDirs) == 1 {
+		return artifactDirs[0], nil
+	}
+	if len(emptyDirs) > 1 {
+		return "", fmt.Errorf("SPECIFICATION_AMBIGUOUS: found %d empty feature directories", len(emptyDirs))
+	}
+	if len(emptyDirs) == 1 {
+		return emptyDirs[0], nil
+	}
+	name := featureDirectoryName(prompt)
+	return filepath.Join(specsRoot, name), nil
+}
+
+// EnsureFeatureDirectory creates the selected directory only after workflow
+// routing and workspace ownership have been validated.
+func EnsureFeatureDirectory(projectRoot, featureDir string) error {
+	root, err := filepath.EvalSymlinks(projectRoot)
+	if err != nil {
+		return err
+	}
+	root, err = filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	absolute, err := canonicalPathAllowMissing(featureDir)
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(root, absolute)
+	if err != nil || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.Clean(rel) == "." {
+		return fmt.Errorf("SPEC_KIT_FEATURE_PATH_ESCAPE")
+	}
+	if err = os.MkdirAll(absolute, 0o700); err != nil {
+		return err
+	}
+	resolved, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return err
+	}
+	resolvedRel, err := filepath.Rel(root, resolved)
+	if err != nil || resolvedRel == ".." || strings.HasPrefix(resolvedRel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("SPEC_KIT_FEATURE_PATH_ESCAPE")
+	}
+	return nil
+}
+
+func canonicalPathAllowMissing(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	abs = filepath.Clean(abs)
+	current := abs
+	var suffix []string
+	for {
+		resolved, resolveErr := filepath.EvalSymlinks(current)
+		if resolveErr == nil {
+			for i := len(suffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, suffix[i])
+			}
+			return filepath.Clean(resolved), nil
+		}
+		if !os.IsNotExist(resolveErr) {
+			return "", resolveErr
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", resolveErr
+		}
+		suffix = append(suffix, filepath.Base(current))
+		current = parent
+	}
+}
+
+func featureDirectoryName(prompt string) string {
+	var builder strings.Builder
+	separator := false
+	for _, r := range strings.ToLower(prompt) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			if separator && builder.Len() > 0 {
+				builder.WriteByte('-')
+			}
+			builder.WriteRune(r)
+			separator = false
+		} else {
+			separator = true
+		}
+		if builder.Len() >= 48 {
+			break
+		}
+	}
+	slug := strings.Trim(builder.String(), "-")
+	if slug == "" {
+		slug = "product"
+	}
+	return "001-" + slug
 }
 
 var coverageLine = regexp.MustCompile(`^- Coverage:\s*([0-9]+(?:\.[0-9]+)?%)?(?:\s*\(([0-9]+)\s*/\s*([0-9]+)(?:\s+[^)]*)?\))?(?:\s+.+)?$`)

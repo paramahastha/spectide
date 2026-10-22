@@ -13,7 +13,7 @@
 - Architecture: arm64
 - Build command: `make build` (`go build -o bin/spectide ./cmd/spectide`)
 - Startup/health command: `make smoke` (`scripts/smoke.sh` starts `spectide serve --port 0`, then requests `/healthz`)
-- Measurement: latest `make verify` run measured 18.126 ms from the monotonic timestamp immediately before `Popen` through the first HTTP 200 from `/healthz`; acceptance limit is 2,000 ms. Earlier measurements are retained in the implementation checkpoint history.
+- Measurement: latest `make verify` run measured 21.319 ms from the monotonic timestamp immediately before `Popen` through the first HTTP 200 from `/healthz`; acceptance limit is 2,000 ms. Earlier measurements are retained in the implementation checkpoint history.
 - The same smoke run completed the offline demo and reported `SIMULATED`.
 
 ## Other verification executed
@@ -38,6 +38,7 @@
 | Scoped route preview | PASS | Full `make verify`; API preview rejects workspace scope escapes without run creation |
 | Live route profile boundaries | PASS | Focused routing/workflow/API tests and full `make verify`; profile existence, provider match, and canonical allowed scope are required before preview or run creation; live invocation remains blocked |
 | Persisted capability and fallback authorization policy | PASS, partial requirement | Focused store/routing/workflow/API/CLI tests and full `make verify`; version-only probe evidence persists with authentication `NOT_PROBED`, stale snapshots invalidate after profile edits, explicit fallback intent stays within project boundaries, and preview/start fail closed. T024 is complete; fallback execution is not represented as verified and remains subject to explicit route policy. |
+| Live Spec-Kit artifact lifecycle | PASS, fixture-backed implementation | `make verify`; fresh/partial feature-directory selection, existing constitution/spec preservation, missing plan creation, path containment, and selected-directory checkpoint persistence are covered by `internal/speckit` and `internal/workflow` tests (T063). |
 | Verified live-stage workflow path | PASS, fixture-backed implementation | `make verify`; engine fixture invoked verified plan, analyze, converge, and final-review routes through provider adapters, persisted sanitized events and loop counts, validated capabilities at invocation, and persisted `analyze_clean`, `required_tests`, `converged`, and `final_review` PASS gates. Simulated-E2E remains blocked; no real provider credentials or official live stage execution were used. T014/T016/T035 implementation is complete. |
 | Persisted live test gate | PASS, fixture-backed implementation | Focused workflow loop tests and `make verify`; default local checks persist individual verdicts and aggregate `required_tests`, with failed-check-only repair prompts and fail-closed no-progress/exhaustion handling. T016 is complete. |
 | Durable blocked live-stage outcome | PASS | Focused workflow/CLI/API/Spec-Kit tests and full `make verify`; authorized but unavailable live routes persist a `BLOCKED` run, skipped first stage, `NOT_RUN` event, and blocked gate |
