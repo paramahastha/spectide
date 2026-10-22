@@ -382,6 +382,11 @@
 - Tightened the routing capability policy to accept only the explicit `AUTHENTICATED` state. Empty and `NOT_PROBED` states now block route resolution instead of passing through; the policy continues to reject explicit unauthenticated profiles.
 - Focused `go test ./internal/routing` and full `make verify` passed. T024 remains open for persisting capabilities and wiring this policy to workflow launch. Latest SC-001 measurement is 18.958 ms on the reference host.
 
+### Bounded workflow-loop budget foundation
+
+- Added a per-run budget controller with the required 3 analyze-remediation, 4 test-repair, and 5 convergence defaults. It rejects unchanged analyze artifacts, rejects convergence rounds with unchanged task-ledger hashes and gate verdicts, and returns explicit exhaustion codes.
+- Focused `go test ./internal/workflow -run LoopBudget -count=1` and full `make verify` passed. The budget policy is not yet driven by official stage outcomes, so T016 remains open for workflow-level remediation and retry orchestration. Latest SC-001 measurement is 20.640 ms on the reference host.
+
 ### Phase checkpoint — durable run-owner leases
 
 - Added migration 6 and per-run heartbeat leases. The workflow writes its owner lease atomically with the workspace lock, refreshes it while the worker is alive, and removes it at finish.
