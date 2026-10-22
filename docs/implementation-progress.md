@@ -387,6 +387,11 @@
 - Added a per-run budget controller with the required 3 analyze-remediation, 4 test-repair, and 5 convergence defaults. It rejects unchanged analyze artifacts, rejects convergence rounds with unchanged task-ledger hashes and gate verdicts, and returns explicit exhaustion codes.
 - Focused `go test ./internal/workflow -run LoopBudget -count=1` and full `make verify` passed. The budget policy is not yet driven by official stage outcomes, so T016 remains open for workflow-level remediation and retry orchestration. Latest SC-001 measurement is 20.640 ms on the reference host.
 
+### Read-only analyze remediation driver foundation
+
+- Added `RunAnalyzeGate`: it runs a baseline analysis, fingerprints managed artifacts before/after each analysis to enforce read-only behavior, routes one blocking finding per remediation, and repeats analysis after the owner-artifact change. Critical/high findings block; medium findings block only when their category and text identify an unsatisfied security boundary, acceptance criterion, or prerequisite. The baseline does not spend a remediation round.
+- Focused tests passed for severity policy, baseline handling, read-only mutation rejection, no progress, and exhaustion after exactly three remediation rounds. T016 remains open because test-repair retries and live stage outcome integration are still outstanding.
+
 ### Workflow convergence driver foundation
 
 - Added `RunConvergence` to consume parsed convergence reports through explicit hooks. It snapshots the same product specification path, task ledger, and required gates; rejects path replacement, task rewrites/nonprogress, and report/task mismatches; implements only persisted append-only additions; reruns required tests; and enforces the five-round limit. A converged report is accepted only when the ledger is unchanged and all required gates pass.
