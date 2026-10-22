@@ -238,6 +238,18 @@
 
 - Provider invocations remain unconnected to canonical workflow stages, and cross-platform process-group semantics still need platform CI coverage. Full suite validation will follow the next implementation slice.
 
+### Phase checkpoint — typed provider errors and invocation contracts
+
+**Verified in this checkpoint**
+
+- Added `ProviderError` with stable codes, readable messages, and preserved underlying causes. Executable lookup, version probes, malformed/oversized event lines, unsupported effort, and denied read-only invocations use typed errors.
+- Contract tests inspect errors via `errors.As`, verify preserved causes, and verify provider-specific read-only and effort policies remain fail-closed.
+- `go test ./internal/adapters/... -count=1` passed. T018 is complete.
+
+**Remaining**
+
+- Fake adapter scripted failure/cancellation/rate-limit scenarios (T019) and canonical workflow integration remain open.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified

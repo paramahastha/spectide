@@ -15,7 +15,7 @@ This ledger maps every functional requirement in the single master specification
 | FR-009 append-only bounded convergence loop | Partial | [append-only validator](../internal/speckit/parse.go); implementation/test/converge return loop remains open (T035) |
 | FR-010 evidence-backed quality verdicts | Partial | [quality registry tests](../internal/quality/registry_test.go); run-level required evidence remains simulated |
 | FR-011 deterministic simulated workflow | Pass | [20-run SC-002 acceptance test](../internal/workflow/engine_test.go); [isolated smoke script](../scripts/smoke.sh) |
-| FR-012 three provider adapters | Partial | [adapter contract tests](../internal/adapters/adapters_test.go); live stage invocation and expanded compatibility fixtures remain open (T018–T022) |
+| FR-012 three provider adapters | Partial | [adapter contract tests](../internal/adapters/adapters_test.go); stable typed errors and fail-closed invocation policy are tested; scripted fake failures/rate limits and workflow integration remain open (T019, T022, T014) |
 | FR-013 independently configured safe profiles | Partial | [profile persistence tests](../internal/store/profiles_test.go); authorized live profile execution remains disabled |
 | FR-014 capability and execution-policy validation | Partial | [routing policy tests](../internal/routing/routing_test.go); config/profile/capability policy is not yet integrated into run launch (T024) |
 | FR-015 routing modes and audit decisions | Partial | [config routing tests](../internal/config/config_test.go), [workflow route persistence test](../internal/workflow/engine_test.go); full policy inputs remain incomplete (T024) |

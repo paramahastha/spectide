@@ -47,7 +47,7 @@
 
 **Independent Test**: Valid configured profiles resolve per stage; invalid capabilities and forbidden profile boundaries cannot start.
 
-- [ ] T018 [P] [US2] Add typed adapter errors and invocation-policy contract tests around the existing shared `Adapter` interface in `internal/adapters/`
+- [x] T018 [P] [US2] Add typed adapter errors and invocation-policy contract tests around the existing shared `Adapter` interface in `internal/adapters/`
 - [ ] T019 [P] [US2] Implement fake adapter scripted failures, cancellation, and rate limits against the shared `Adapter` interface in `internal/adapters/fake/`
 - [x] T020 [P] [US2] Implement Claude fixture adapter and capability probe against the shared `Adapter` interface in `internal/adapters/claude/`
 - [x] T021 [P] [US2] Implement Codex fixture adapter and capability probe against the shared `Adapter` interface in `internal/adapters/codex/`
@@ -109,7 +109,7 @@
 
 ## Dependencies & Execution Order
 
-`spec.md + plan.md + tasks.md → T044 → T001–T004 → T005–T011/T047/T050/T051 → US1–US5 → T042–T044a → T054 → T043/T043a → T045–T046`. T044 is the read-only analysis gate and runs after task generation but before implementation; findings are resolved in owning work after that command exits. T044a repeats the read-only gate after the current implementation extension and before convergence. T054 records its completed output only after the command exits. Adapter implementations can proceed in parallel against the existing shared interface; typed error and invocation-policy tests remain in T018. T053 implements the numerical process limits before T048 verifies them.
+`spec.md + plan.md + tasks.md → T044 → T001–T004 → T005–T011/T047/T050/T051 → US1–US5 → T042–T044a → T054 → T043/T043a → T045–T046`. T044 is the read-only analysis gate and runs after task generation but before implementation; findings are resolved in owning work after that command exits. T044a repeats the read-only gate after the current implementation extension and before convergence. T054 records its completed output only after the command exits. Adapter implementations proceed against the shared interface; T018's typed error and invocation-policy contract tests are complete. T053 implements the numerical process limits before T048 verifies them.
 
 ## Implementation Strategy
 

@@ -1,6 +1,7 @@
 package adapters_test
 
 import (
+	"errors"
 	"github.com/spectide/spectide/internal/adapters"
 	"github.com/spectide/spectide/internal/adapters/claude"
 	"github.com/spectide/spectide/internal/adapters/codex"
@@ -67,9 +68,13 @@ func TestReadOnlyAndEffortPoliciesFailClosed(t *testing.T) {
 	}
 	if _, err = (claude.Adapter{}).Build(adapters.Request{Profile: profile, ProjectRoot: "/tmp/work", Prompt: "inspect", Effort: "high"}); err == nil {
 		t.Fatal("unverified Claude effort option was accepted")
+	} else {
+		assertProviderErrorCode(t, err, "UNSUPPORTED_EFFORT")
 	}
 	if _, err = (opencode.Adapter{}).Build(adapters.Request{Profile: profile, ProjectRoot: "/tmp/work", Prompt: "inspect", ReadOnly: true}); err == nil {
 		t.Fatal("OpenCode read-only policy was accepted without a verified control")
+	} else {
+		assertProviderErrorCode(t, err, "PERMISSION_DENIED")
 	}
 	in, err := (codex.Adapter{}).Build(adapters.Request{Profile: profile, ProjectRoot: "/tmp/work", Prompt: "inspect", ReadOnly: true})
 	if err != nil {
@@ -83,6 +88,31 @@ func TestReadOnlyAndEffortPoliciesFailClosed(t *testing.T) {
 	}
 	if !ok {
 		t.Fatal("Codex read-only sandbox was not selected")
+	}
+}
+
+func TestAdapterErrorsExposeStableCodesAndUnderlyingCause(t *testing.T) {
+	cause := errors.New("probe detail")
+	err := adapters.WrapProviderError("PROBE_FAILED", "provider probe failed", cause)
+	assertProviderErrorCode(t, err, "PROBE_FAILED")
+	if !errors.Is(err, cause) {
+		t.Fatal("provider error did not preserve its underlying cause")
+	}
+	if _, err := adapters.NormalizeJSONL(adapters.Codex, []byte("{bad json}\n")); err == nil {
+		t.Fatal("malformed event was accepted")
+	} else {
+		assertProviderErrorCode(t, err, "MALFORMED_PROVIDER_EVENT")
+	}
+}
+
+func assertProviderErrorCode(t *testing.T, err error, want string) {
+	t.Helper()
+	var providerErr *adapters.ProviderError
+	if !errors.As(err, &providerErr) {
+		t.Fatalf("error %T does not expose ProviderError", err)
+	}
+	if providerErr.Code != want {
+		t.Fatalf("error code = %q, want %q", providerErr.Code, want)
 	}
 }
 

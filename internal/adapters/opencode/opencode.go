@@ -2,7 +2,6 @@ package opencode
 
 import (
 	"context"
-	"fmt"
 	"github.com/spectide/spectide/internal/adapters"
 	"github.com/spectide/spectide/internal/runner"
 )
@@ -15,7 +14,7 @@ func (Adapter) Probe(ctx context.Context, p adapters.Profile) (adapters.Capabili
 }
 func (Adapter) Build(r adapters.Request) (runner.Invocation, error) {
 	if r.ReadOnly {
-		return runner.Invocation{}, fmt.Errorf("PERMISSION_DENIED: OpenCode CLI adapter has no verified read-only invocation policy")
+		return runner.Invocation{}, adapters.NewProviderError("PERMISSION_DENIED", "OpenCode CLI adapter has no verified read-only invocation policy")
 	}
 	a := []string{"run", "--format", "json", "--dir", r.ProjectRoot}
 	if r.Model != "" {

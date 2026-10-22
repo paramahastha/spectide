@@ -2,7 +2,6 @@ package claude
 
 import (
 	"context"
-	"fmt"
 	"github.com/spectide/spectide/internal/adapters"
 	"github.com/spectide/spectide/internal/runner"
 )
@@ -22,7 +21,7 @@ func (Adapter) Build(r adapters.Request) (runner.Invocation, error) {
 		a = append(a, "--model", r.Model)
 	}
 	if r.Effort != "" {
-		return runner.Invocation{}, fmt.Errorf("UNSUPPORTED_EFFORT: Claude Code CLI effort flag is not verified")
+		return runner.Invocation{}, adapters.NewProviderError("UNSUPPORTED_EFFORT", "Claude Code CLI effort flag is not verified")
 	}
 	a = append(a, r.Prompt)
 	env := []string{}

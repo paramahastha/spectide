@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"fmt"
 	"github.com/spectide/spectide/internal/runner"
 	"os/exec"
 	"strings"
@@ -21,6 +20,34 @@ const (
 	OpenCode ProviderName = "opencode"
 	Fake     ProviderName = "fake"
 )
+
+// ProviderError gives callers a stable code while retaining a safe, readable
+// message and the underlying cause for local diagnostics.
+type ProviderError struct {
+	Code    string
+	Message string
+	Cause   error
+}
+
+func (e *ProviderError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if e.Message == "" {
+		return e.Code
+	}
+	return e.Code + ": " + e.Message
+}
+
+func (e *ProviderError) Unwrap() error { return e.Cause }
+
+func NewProviderError(code, message string) *ProviderError {
+	return &ProviderError{Code: code, Message: message}
+}
+
+func WrapProviderError(code, message string, cause error) *ProviderError {
+	return &ProviderError{Code: code, Message: message, Cause: cause}
+}
 
 type Profile struct {
 	Name                  string
@@ -61,14 +88,14 @@ func ProbeBinary(p Profile) (Capability, error) {
 	c := Capability{Provider: p.Provider, Authenticated: "NOT_PROBED", Warnings: []string{"Authentication is never read from credential files."}}
 	path, e := exec.LookPath(p.Executable)
 	if e != nil {
-		return c, fmt.Errorf("EXECUTABLE_NOT_FOUND: %s", p.Executable)
+		return c, WrapProviderError("EXECUTABLE_NOT_FOUND", p.Executable, e)
 	}
 	c.ExecutableFound = true
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	result, err := runner.Run(ctx, runner.Invocation{Binary: path, Args: []string{"--version"}})
 	if err != nil {
-		return c, fmt.Errorf("PROVIDER_VERSION_PROBE_FAILED: %w", err)
+		return c, WrapProviderError("PROVIDER_VERSION_PROBE_FAILED", "provider version probe failed", err)
 	}
 	c.Version = strings.TrimSpace(result.Stdout)
 	if c.Version == "" {
@@ -93,7 +120,7 @@ func NormalizeJSONL(provider ProviderName, raw []byte) ([]Event, error) {
 		}
 		var record map[string]any
 		if err := json.Unmarshal([]byte(line), &record); err != nil {
-			return nil, fmt.Errorf("MALFORMED_PROVIDER_EVENT: %w", err)
+			return nil, WrapProviderError("MALFORMED_PROVIDER_EVENT", "provider event is not valid JSON", err)
 		}
 		typ, _ := record["type"].(string)
 		if typ == "" {
@@ -102,7 +129,7 @@ func NormalizeJSONL(provider ProviderName, raw []byte) ([]Event, error) {
 		events = append(events, Event{Type: string(provider) + "." + typ, Summary: "structured provider event"})
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("PROVIDER_EVENT_LIMIT: %w", err)
+		return nil, WrapProviderError("PROVIDER_EVENT_LIMIT", "provider event exceeds the line-size limit", err)
 	}
 	return events, nil
 }
