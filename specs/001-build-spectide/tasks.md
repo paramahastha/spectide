@@ -63,9 +63,9 @@
 
 - [x] T026 [P] [US3] Implement baseline loopback API, CSRF checks, run routes, report routes, and SSE replay in `internal/api/server.go`
 - [x] T027 [P] [US3] Implement an embedded local dashboard shell in `internal/webassets/`
-- [ ] T028 [US3] Add API request validation, idempotency keys, project/profile/config/approval endpoints, and structured errors in `internal/api/`
-- [ ] T029 [US3] Add SSE high-water replay, heartbeats, slow-client backpressure, and integration tests in `internal/api/`
-- [ ] T029a [US3] Add Host/Origin/CSRF, path-escape, request-size, and idempotency security tests in `internal/api/`
+- [x] T028 [US3] Add API request validation, idempotency keys, project/profile/config/approval endpoints, and structured errors in `internal/api/`
+- [x] T029 [US3] Add SSE high-water replay, heartbeats, slow-client backpressure, and integration tests in `internal/api/`
+- [x] T029a [US3] Add Host/Origin/CSRF, path-escape, request-size, and idempotency security tests in `internal/api/`
 - [x] T030 [US3] Implement React dashboard API client, run list/detail, live events, controls, profiles, routing, and quality views in `web/src/`
 - [ ] T031 [US3] Add dashboard component and browser end-to-end tests in `web/tests/` and `web/e2e/`
 

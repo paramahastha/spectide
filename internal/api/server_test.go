@@ -2,10 +2,13 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"github.com/spectide/spectide/internal/store"
 	"github.com/spectide/spectide/internal/workflow"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -69,10 +72,39 @@ func TestCreateRun(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs", strings.NewReader(`{"project":"demo","prompt":"test"}`))
 	r.Host = "127.0.0.1"
 	r.Header.Set("X-SpecTide-CSRF", s.CSRF)
+	r.Header.Set("Idempotency-Key", "request-key-123")
 	w := httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, r)
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var first struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &first); err != nil {
+		t.Fatal(err)
+	}
+	r = httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs", strings.NewReader(`{"project":"demo","prompt":"test"}`))
+	r.Host = "127.0.0.1"
+	r.Header.Set("X-SpecTide-CSRF", s.CSRF)
+	r.Header.Set("Idempotency-Key", "request-key-123")
+	w = httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	var second struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &second)
+	if w.Code != http.StatusOK || first.ID != second.ID {
+		t.Fatalf("duplicate status=%d ids=%s/%s body=%s", w.Code, first.ID, second.ID, w.Body.String())
+	}
+	r = httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs", strings.NewReader(`{"project":"demo","prompt":"different"}`))
+	r.Host = "127.0.0.1"
+	r.Header.Set("X-SpecTide-CSRF", s.CSRF)
+	r.Header.Set("Idempotency-Key", "request-key-123")
+	w = httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "IDEMPOTENCY_KEY_REUSED") {
+		t.Fatalf("key mismatch status=%d body=%s", w.Code, w.Body.String())
 	}
 	_ = context.Background()
 }
@@ -93,5 +125,151 @@ func TestCreateAndListProfile(t *testing.T) {
 	s.Handler().ServeHTTP(w, r)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "fake") {
 		t.Fatalf("list=%d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestProjectConfigAndApprovalEndpoints(t *testing.T) {
+	s := testServer(t)
+	root := t.TempDir()
+	body := `{"path":"` + root + `","name":"fixture"}`
+	r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/projects", strings.NewReader(body))
+	r.Host = "127.0.0.1"
+	r.Header.Set("X-SpecTide-CSRF", s.CSRF)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("project=%d %s", w.Code, w.Body.String())
+	}
+	var project struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &project); err != nil || project.ID == "" {
+		t.Fatalf("project=%+v err=%v", project, err)
+	}
+	r = httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/v1/projects/"+project.ID+"/config", nil)
+	r.Host = "127.0.0.1"
+	w = httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"routing_mode":"hybrid"`) {
+		t.Fatalf("config=%d %s", w.Code, w.Body.String())
+	}
+
+	run, err := s.Store.CreateRun(context.Background(), root, "approval test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r = httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs/"+run.ID+"/approvals", strings.NewReader(`{"action":"workspace write"}`))
+	r.Host = "127.0.0.1"
+	r.Header.Set("X-SpecTide-CSRF", s.CSRF)
+	w = httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("approval=%d %s", w.Code, w.Body.String())
+	}
+	var approval struct {
+		ID string `json:"id"`
+	}
+	if err = json.Unmarshal(w.Body.Bytes(), &approval); err != nil || approval.ID == "" {
+		t.Fatalf("approval=%+v err=%v", approval, err)
+	}
+	r = httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs/"+run.ID+"/approvals/"+approval.ID, strings.NewReader(`{"decision":"approved"}`))
+	r.Host = "127.0.0.1"
+	r.Header.Set("X-SpecTide-CSRF", s.CSRF)
+	w = httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "APPROVED") {
+		t.Fatalf("resolve=%d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestProjectConfigRejectsRegisteredPathSymlinkSwap(t *testing.T) {
+	s := testServer(t)
+	root := filepath.Join(t.TempDir(), "project")
+	if err := os.Mkdir(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/projects", strings.NewReader(`{"path":"`+root+`","name":"fixture"}`))
+	r.Host = "127.0.0.1"
+	r.Header.Set("X-SpecTide-CSRF", s.CSRF)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	var project struct {
+		ID string `json:"id"`
+	}
+	if w.Code != http.StatusCreated || json.Unmarshal(w.Body.Bytes(), &project) != nil {
+		t.Fatalf("project=%d %s", w.Code, w.Body.String())
+	}
+	if err := os.Rename(root, root+"-moved"); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, root); err != nil {
+		t.Fatal(err)
+	}
+	r = httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/v1/projects/"+project.ID+"/config", nil)
+	r.Host = "127.0.0.1"
+	w = httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "PROJECT_PATH_CHANGED") {
+		t.Fatalf("swap=%d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAPIRejectsOversizedAndUnkeyedRunRequests(t *testing.T) {
+	s := testServer(t)
+	for _, test := range []struct {
+		name string
+		body string
+		key  string
+	}{
+		{name: "missing key", body: `{"project":"demo","prompt":"test"}`},
+		{name: "oversized", body: `{"name":"` + strings.Repeat("x", 20<<10) + `"}`, key: "request-key-123"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs", strings.NewReader(test.body))
+			r.Host = "127.0.0.1"
+			r.Header.Set("X-SpecTide-CSRF", s.CSRF)
+			if test.key != "" {
+				r.Header.Set("Idempotency-Key", test.key)
+			}
+			w := httptest.NewRecorder()
+			s.Handler().ServeHTTP(w, r)
+			if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `"error"`) {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+type brokenStreamWriter struct {
+	header  http.Header
+	written bool
+}
+
+func (w *brokenStreamWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+func (*brokenStreamWriter) WriteHeader(int) {}
+func (w *brokenStreamWriter) Write([]byte) (int, error) {
+	w.written = true
+	return 0, errors.New("client disconnected")
+}
+func (*brokenStreamWriter) Flush() {}
+
+func TestSSEStopsWritingWhenClientDisconnects(t *testing.T) {
+	s := testServer(t)
+	run, err := s.Store.CreateRun(context.Background(), "demo", "sse test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := &brokenStreamWriter{}
+	r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/v1/runs/"+run.ID+"/events", nil)
+	r.Host = "127.0.0.1"
+	s.events(w, r, run.ID)
+	if !w.written {
+		t.Fatal("SSE writer did not attempt persisted replay")
 	}
 }

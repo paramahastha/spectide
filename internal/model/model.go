@@ -119,3 +119,10 @@ type Profile struct {
 	ConfigDirectory string   `json:"config_directory,omitempty"`
 	AllowedScopes   []string `json:"allowed_scopes"`
 }
+
+type Project struct {
+	ID            string   `json:"id"`
+	CanonicalPath string   `json:"canonical_path"`
+	DisplayName   string   `json:"display_name"`
+	AllowedScopes []string `json:"allowed_scopes"`
+}

@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	_ "embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -60,12 +62,24 @@ func (s *Store) migrate() error {
 		if _, err = tx.Exec(`INSERT INTO schema_migrations(version,applied_at) VALUES(1,?)`, now().Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
+		version = 1
+	}
+	if version < 2 {
+		if _, err = tx.Exec(schemaV2); err != nil {
+			return fmt.Errorf("apply schema migration 2: %w", err)
+		}
+		if _, err = tx.Exec(`INSERT INTO schema_migrations(version,applied_at) VALUES(2,?)`, now().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
 
 //go:embed migrations/001_initial.sql
 var schemaV1 string
+
+//go:embed migrations/002_idempotency.sql
+var schemaV2 string
 
 func now() time.Time { return time.Now().UTC().Round(0) }
 func parse(v string) *time.Time {
@@ -80,22 +94,78 @@ func parse(v string) *time.Time {
 }
 
 func (s *Store) CreateRun(ctx context.Context, project, prompt string) (model.Run, error) {
+	r, _, err := s.CreateRunIdempotent(ctx, "", project, prompt)
+	return r, err
+}
+
+func (s *Store) CreateRunIdempotent(ctx context.Context, key, project, prompt string) (model.Run, bool, error) {
 	prompt = security.Redact(prompt)
+	requestHash := ""
+	if key != "" {
+		sum := sha256.Sum256([]byte(project + "\x00" + prompt))
+		requestHash = hex.EncodeToString(sum[:])
+	}
 	t := now()
 	r := model.Run{ID: uuid.NewString(), Project: project, Prompt: prompt, State: model.Created, CreatedAt: t}
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
-		return r, err
+		return r, false, err
 	}
 	defer tx.Rollback()
+	if key != "" {
+		var existing model.Run
+		var existingHash string
+		var created, started, ended string
+		err = tx.QueryRowContext(ctx, `SELECT i.request_hash,r.id,r.project,r.prompt,r.state,r.created_at,COALESCE(r.started_at,''),COALESCE(r.ended_at,'') FROM idempotency_keys i JOIN runs r ON r.id=i.run_id WHERE i.key=?`, key).Scan(&existingHash, &existing.ID, &existing.Project, &existing.Prompt, &existing.State, &created, &started, &ended)
+		if err == nil {
+			if existingHash != requestHash {
+				return model.Run{}, false, fmt.Errorf("IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST")
+			}
+			existing.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+			existing.StartedAt, existing.EndedAt = parse(started), parse(ended)
+			return existing, true, nil
+		} else if err != sql.ErrNoRows {
+			return model.Run{}, false, err
+		}
+	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO runs VALUES(?,?,?,?,?,?,?)`, r.ID, r.Project, r.Prompt, r.State, t.Format(time.RFC3339Nano), nil, nil)
 	if err != nil {
-		return r, err
+		return r, false, err
+	}
+	if key != "" {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO idempotency_keys(key,request_hash,run_id,created_at) VALUES(?,?,?,?)`, key, requestHash, r.ID, t.Format(time.RFC3339Nano)); err != nil {
+			return r, false, err
+		}
 	}
 	if err = appendEvent(ctx, tx, r.ID, "", "run.created", "info", map[string]any{"project": project}); err != nil {
-		return r, err
+		return r, false, err
 	}
-	return r, tx.Commit()
+	return r, false, tx.Commit()
+}
+
+func (s *Store) IdempotentRun(ctx context.Context, key, project, prompt string) (model.Run, bool, error) {
+	if key == "" {
+		return model.Run{}, false, nil
+	}
+	prompt = security.Redact(prompt)
+	sum := sha256.Sum256([]byte(project + "\x00" + prompt))
+	requestHash := hex.EncodeToString(sum[:])
+	run, err := scanRun(s.DB.QueryRowContext(ctx, `SELECT r.id,r.project,r.prompt,r.state,r.created_at,COALESCE(r.started_at,''),COALESCE(r.ended_at,'') FROM idempotency_keys i JOIN runs r ON r.id=i.run_id WHERE i.key=? AND i.request_hash=?`, key, requestHash))
+	if err == nil {
+		return run, true, nil
+	}
+	if err != sql.ErrNoRows {
+		return model.Run{}, false, err
+	}
+	var storedHash string
+	err = s.DB.QueryRowContext(ctx, `SELECT request_hash FROM idempotency_keys WHERE key=?`, key).Scan(&storedHash)
+	if err == nil {
+		return model.Run{}, false, fmt.Errorf("IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST")
+	}
+	if err != sql.ErrNoRows {
+		return model.Run{}, false, err
+	}
+	return model.Run{}, false, nil
 }
 
 func appendEvent(ctx context.Context, tx *sql.Tx, runID, stage, typ, severity string, payload map[string]any) error {
@@ -254,6 +324,38 @@ func (s *Store) RegisterProject(ctx context.Context, path, name string, scopes [
 	return err
 }
 
+func (s *Store) Projects(ctx context.Context) ([]model.Project, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT id,canonical_path,display_name,allowed_scopes_json FROM projects ORDER BY display_name,canonical_path`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []model.Project
+	for rows.Next() {
+		var project model.Project
+		var scopes string
+		if err = rows.Scan(&project.ID, &project.CanonicalPath, &project.DisplayName, &scopes); err != nil {
+			return nil, err
+		}
+		if err = json.Unmarshal([]byte(scopes), &project.AllowedScopes); err != nil {
+			return nil, err
+		}
+		result = append(result, project)
+	}
+	return result, rows.Err()
+}
+
+func (s *Store) Project(ctx context.Context, id string) (model.Project, error) {
+	var project model.Project
+	var scopes string
+	err := s.DB.QueryRowContext(ctx, `SELECT id,canonical_path,display_name,allowed_scopes_json FROM projects WHERE id=?`, id).Scan(&project.ID, &project.CanonicalPath, &project.DisplayName, &scopes)
+	if err != nil {
+		return project, err
+	}
+	err = json.Unmarshal([]byte(scopes), &project.AllowedScopes)
+	return project, err
+}
+
 func (s *Store) AcquireWorkspaceLock(ctx context.Context, path, runID string) error {
 	_, err := s.DB.ExecContext(ctx, `INSERT INTO workspace_locks(canonical_path,run_id,acquired_at) VALUES(?,?,?)`, path, runID, now().Format(time.RFC3339Nano))
 	if err != nil {
@@ -365,6 +467,38 @@ func (s *Store) Events(ctx context.Context, runID string, after int64) ([]model.
 		o = append(o, e)
 	}
 	return o, rows.Err()
+}
+
+func (s *Store) EventHighWater(ctx context.Context, runID string) (int64, error) {
+	var sequence int64
+	err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq),0) FROM events WHERE run_id=?`, runID).Scan(&sequence)
+	return sequence, err
+}
+
+func (s *Store) EventsPage(ctx context.Context, runID string, after, through int64, limit int) ([]model.Event, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 256
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT seq,timestamp,stage,type,severity,payload_json FROM events WHERE run_id=? AND seq>? AND seq<=? ORDER BY seq LIMIT ?`, runID, after, through, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var events []model.Event
+	for rows.Next() {
+		var event model.Event
+		var timestamp, payload string
+		if err = rows.Scan(&event.Seq, &timestamp, &event.Stage, &event.Type, &event.Severity, &payload); err != nil {
+			return nil, err
+		}
+		event.RunID = runID
+		event.Timestamp, _ = time.Parse(time.RFC3339Nano, timestamp)
+		if err = json.Unmarshal([]byte(payload), &event.Payload); err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, rows.Err()
 }
 func (s *Store) Gate(ctx context.Context, runID, key, verdict, evidence string) error {
 	_, err := s.DB.ExecContext(ctx, `INSERT INTO quality_gates VALUES(?,?,?,?) ON CONFLICT(run_id,gate_key) DO UPDATE SET verdict=excluded.verdict,evidence=excluded.evidence`, runID, key, verdict, evidence)

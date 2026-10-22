@@ -31,40 +31,53 @@ func New(s *store.Store) *Engine {
 var stages = []string{"constitution", "specify", "clarify", "plan", "checklist", "tasks", "analyze", "implement", "tests", "converge", "final_review", "report"}
 
 func (e *Engine) Start(ctx context.Context, project, prompt string) (model.Run, error) {
+	r, _, err := e.StartIdempotent(ctx, "", project, prompt)
+	return r, err
+}
+
+func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt string) (model.Run, bool, error) {
 	workspace, err := canonicalWorkspace(project)
 	if err != nil {
-		return model.Run{}, err
+		return model.Run{}, false, err
 	}
 	if project == "" {
-		return model.Run{}, fmt.Errorf("PROJECT_REQUIRED")
+		return model.Run{}, false, fmt.Errorf("PROJECT_REQUIRED")
 	}
 	project = workspace
+	if existing, reused, err := e.store.IdempotentRun(ctx, key, project, prompt); err != nil {
+		return model.Run{}, false, err
+	} else if reused {
+		return existing, true, nil
+	}
 	cfg, err := config.Load(config.ProjectPath(workspace))
 	if err != nil {
-		return model.Run{}, err
+		return model.Run{}, false, err
 	}
 	decisions := make(map[string]config.Decision, len(stages))
 	for _, stage := range stages {
 		decision, e := cfg.Resolve(stage, prompt)
 		if e != nil {
-			return model.Run{}, e
+			return model.Run{}, false, e
 		}
 		if decision.Route.Provider != "fake" {
-			return model.Run{}, fmt.Errorf("LIVE_STAGE_EXECUTION_UNAVAILABLE: %s resolves to %s/%s; run not started", stage, decision.Route.Provider, decision.Route.Profile)
+			return model.Run{}, false, fmt.Errorf("LIVE_STAGE_EXECUTION_UNAVAILABLE: %s resolves to %s/%s; run not started", stage, decision.Route.Provider, decision.Route.Profile)
 		}
 		decisions[stage] = decision
 	}
 	if err = e.store.RegisterProject(ctx, workspace, path.Base(workspace), []string{workspace}); err != nil {
-		return model.Run{}, err
+		return model.Run{}, false, err
 	}
-	r, err := e.store.CreateRun(ctx, project, prompt)
+	r, reused, err := e.store.CreateRunIdempotent(ctx, key, project, prompt)
 	if err != nil {
-		return r, err
+		return r, false, err
+	}
+	if reused {
+		return r, true, nil
 	}
 	if err = e.store.AcquireWorkspaceLock(ctx, workspace, r.ID); err != nil {
 		_ = e.store.Event(context.Background(), r.ID, "", "workspace.lock_denied", "warning", map[string]any{"reason": "another run owns this workspace"})
 		_ = e.store.SetRunState(context.Background(), r.ID, model.Blocked)
-		return r, nil
+		return r, false, nil
 	}
 	child, cancel := context.WithCancel(context.Background())
 	e.mu.Lock()
@@ -72,7 +85,7 @@ func (e *Engine) Start(ctx context.Context, project, prompt string) (model.Run, 
 	e.locks[r.ID] = workspace
 	e.mu.Unlock()
 	go e.execute(child, r, decisions)
-	return r, nil
+	return r, false, nil
 }
 
 func canonicalWorkspace(project string) (string, error) {

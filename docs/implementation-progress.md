@@ -130,6 +130,22 @@
 - Browser end-to-end coverage and screenshot evidence are not complete. The local browser inspection attempt was blocked by the browser access gate for `http://127.0.0.1:4747`; no alternate browser path was used.
 - API idempotency, project/config/approval endpoints, SSE high-water replay/backpressure, recovery, and workflow integration of real quality evidence remain open.
 
+### Phase checkpoint — API idempotency, project approvals, and SSE replay
+
+**Verified in this checkpoint**
+
+- Added schema migration 2 for durable idempotency keys, scoped to a request hash. Reusing a key for the same request returns the original run; a changed request is rejected.
+- Added strict bounded JSON decoding, structured API errors, project registration/list/config-read endpoints, and approval create/resolve endpoints. Registered project configuration is only read after revalidating the canonical path.
+- Added paginated SSE replay with a captured high-water mark, 256-event pages, periodic heartbeats, 10-second write deadlines, and immediate exit after a client write error.
+- Added tests for migration version, idempotency reuse/mismatch, event pagination boundaries, host/origin/CSRF, symlink path replacement, oversized requests, project configuration, approvals, and client disconnect.
+- `go test ./internal/api ./internal/store ./internal/workflow` passed.
+- The full `make test`, `make lint`, `make web-test`, `make web-build`, and `make build` sequence passed. The offline demo reached `COMPLETED` and remained labeled `SIMULATED`.
+- Tasks T028, T029, and T029a are checked complete.
+
+**Remaining**
+
+- Config write/update endpoints, API action idempotency beyond run creation, and a real socket slow-reader throughput measurement remain open. Full recovery and live provider workflow execution remain unavailable.
+
 ### Earlier checkpoint summary
 
 ### Completed and verified

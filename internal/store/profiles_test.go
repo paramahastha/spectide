@@ -95,15 +95,72 @@ func TestVersionedSchemaContainsRecoveryEntities(t *testing.T) {
 	if err = s.DB.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 1 {
+	if version != 2 {
 		t.Fatalf("schema version=%d", version)
 	}
-	for _, table := range []string{"projects", "routing_decisions", "artifacts", "checkpoints", "approvals", "workspace_locks"} {
+	for _, table := range []string{"projects", "routing_decisions", "artifacts", "checkpoints", "approvals", "workspace_locks", "idempotency_keys"} {
 		var found string
 		err = s.DB.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&found)
 		if err != nil {
 			t.Fatalf("missing table %s: %v", table, err)
 		}
+	}
+}
+
+func TestIdempotencyKeyReusesOnlyTheSameRunRequest(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	first, reused, err := s.CreateRunIdempotent(ctx, "request-key-123", "/workspace", "same prompt")
+	if err != nil || reused {
+		t.Fatalf("first=%+v reused=%t err=%v", first, reused, err)
+	}
+	second, reused, err := s.CreateRunIdempotent(ctx, "request-key-123", "/workspace", "same prompt")
+	if err != nil || !reused || first.ID != second.ID {
+		t.Fatalf("second=%+v reused=%t err=%v", second, reused, err)
+	}
+	if _, _, err = s.CreateRunIdempotent(ctx, "request-key-123", "/workspace", "different prompt"); err == nil {
+		t.Fatal("key reused for a different payload")
+	}
+	runs, err := s.Runs(ctx)
+	if err != nil || len(runs) != 1 {
+		t.Fatalf("runs=%d err=%v", len(runs), err)
+	}
+}
+
+func TestEventPagesStayWithinCapturedHighWater(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	run, err := s.CreateRun(ctx, "demo", "pagination")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		if err = s.Event(ctx, run.ID, "stage", "event", "info", map[string]any{"index": i}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	high, err := s.EventHighWater(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Event(ctx, run.ID, "stage", "later", "info", nil); err != nil {
+		t.Fatal(err)
+	}
+	page, err := s.EventsPage(ctx, run.ID, 0, high, 2)
+	if err != nil || len(page) != 2 || page[1].Seq != 2 {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+	page, err = s.EventsPage(ctx, run.ID, page[1].Seq, high, 20)
+	if err != nil || len(page) != 3 || page[len(page)-1].Seq != high {
+		t.Fatalf("remainder=%+v err=%v", page, err)
 	}
 }
 
