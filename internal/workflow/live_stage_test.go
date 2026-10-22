@@ -34,7 +34,7 @@ func (liveFixtureAdapter) Build(request adapters.Request) (runner.Invocation, er
 		return runner.Invocation{Binary: "/bin/sh", Args: []string{"-c", "printf '\\n%s\\n' '// implementation evidence' >> \"" + path + "\"; printf '%s' 'implementation generated'"}, Dir: request.ProjectRoot}, nil
 	}
 	if request.Stage == "analyze" {
-		output = "## Specification Analysis Report\n- Coverage: 100%\n"
+		output = "## Specification Analysis Report\n\n| ID | Category | Severity | Location(s) | Summary | Recommendation |\n|---|---|---|---|---|---|\n| — | — | — | — | — | — |\n\n### Metrics\n- Coverage: 100% (1/1)\n"
 	} else if request.Stage == "converge" {
 		output = "✅ Converged — required gates pass."
 	}

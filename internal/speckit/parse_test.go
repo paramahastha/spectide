@@ -41,6 +41,74 @@ func TestParseConvergenceReport(t *testing.T) {
 	}
 }
 
+func TestAnalysisParserRejectsIncompleteMalformedAndContradictoryReports(t *testing.T) {
+	valid := `## Specification Analysis Report
+
+| ID | Category | Severity | Location(s) | Summary | Recommendation |
+|---|---|---|---|---|---|
+| A1 | Coverage | HIGH | spec.md:1 | Missing acceptance evidence | Add evidence per FR-006 |
+
+### Metrics
+- Coverage: 90% (9/10)
+`
+	cases := map[string]string{
+		"heading only":                    "## Specification Analysis Report\n",
+		"quoted heading":                  "> ## Specification Analysis Report\n" + strings.TrimPrefix(valid, "## Specification Analysis Report\n"),
+		"fenced report":                   "```markdown\n" + valid + "```\n",
+		"truncated metrics":               strings.Split(valid, "### Metrics")[0],
+		"unknown table":                   strings.Replace(valid, "| ID | Category | Severity | Location(s) | Summary | Recommendation |", "| ID | Severity | Finding |", 1),
+		"unknown severity":                strings.Replace(valid, "| A1 | Coverage | HIGH |", "| A1 | Coverage | URGENT |", 1),
+		"malformed row":                   strings.Replace(valid, "| A1 | Coverage | HIGH | spec.md:1 | Missing acceptance evidence | Add evidence per FR-006 |", "| A1 | Coverage | HIGH | incomplete |", 1),
+		"duplicate finding":               strings.Replace(valid, "\n\n### Metrics", "\n| A1 | Coverage | HIGH | spec.md:2 | Duplicate finding | Fix per FR-006 |\n\n### Metrics", 1),
+		"contradictory coverage fraction": strings.Replace(valid, "90% (9/10)", "80% (9/10)", 1),
+		"outcome failure":                 strings.Replace(valid, "### Metrics", "Outcome: INCOMPLETE\n\n### Metrics", 1),
+	}
+	for name, output := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseAnalysisOutput(output); err == nil {
+				t.Fatal("invalid analysis report was accepted")
+			}
+		})
+	}
+	noFindings := `## Specification Analysis Report
+
+| ID | Category | Severity | Location(s) | Summary | Recommendation |
+|---|---|---|---|---|---|
+| — | — | — | — | — | — |
+
+### Metrics
+- Coverage: 100%
+`
+	parsed, err := ParseAnalysisOutput(noFindings)
+	if err != nil || !parsed.Complete || len(parsed.Findings) != 0 {
+		t.Fatalf("valid no-findings report=%+v err=%v", parsed, err)
+	}
+	if _, err = ParseAnalysisOutput(strings.Replace(noFindings, "100%", "100% (38/38 requirements have associated tasks)", 1)); err != nil {
+		t.Fatalf("realistic coverage summary was rejected: %v", err)
+	}
+}
+
+func TestConvergenceParserRejectsQuotedUnknownAndContradictoryOutcomes(t *testing.T) {
+	cases := map[string]string{
+		"quoted success":            "> ✅ Converged — all gates pass",
+		"quoted inline success":     "The command printed \"✅ Converged\" as an example.",
+		"fenced success":            "```\n✅ Converged — all gates pass\n```",
+		"unknown outcome":           "## Convergence Findings\nOutcome: maybe\n",
+		"missing additions":         "## Convergence Findings\nOutcome: tasks_appended\n",
+		"contradictory status":      "✅ Converged — all gates pass\n## Convergence Findings\nOutcome: tasks_appended\n- [ ] T050 Add acceptance coverage per FR-006\n",
+		"untraceable task":          "## Convergence Findings\nOutcome: tasks_appended\n- [ ] T050 Add coverage\n",
+		"reused report id":          "## Convergence Findings\nOutcome: tasks_appended\n- [ ] T050 First item per FR-006\n- [ ] T050 Duplicate item per FR-006\n",
+		"nonconsecutive report ids": "## Convergence Findings\nOutcome: tasks_appended\n- [ ] T050 First item per FR-006\n- [ ] T052 Skipped item per FR-006\n",
+	}
+	for name, output := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseConvergenceOutput(output); err == nil {
+				t.Fatal("invalid convergence report was accepted")
+			}
+		})
+	}
+}
+
 func TestValidateConvergenceAppendOnly(t *testing.T) {
 	old := "# Tasks\n\n## Phase 2: Foundational\n- [ ] T004 Build foundation\n"
 	good := old + "\n## Phase 3: Convergence\n- [ ] T005 Add missing evidence per FR-002 (partial)\n"
@@ -48,10 +116,15 @@ func TestValidateConvergenceAppendOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, changed := range map[string]string{
-		"rewrite": "# changed\n" + strings.TrimPrefix(good, "# Tasks\n"),
-		"reuse":   old + "\n## Phase 3: Convergence\n- [ ] T004 Reuse id\n",
-		"phase":   old + "\n## Phase 4: Convergence\n- [ ] T005 Add task\n",
-		"no_task": old + "\n## Phase 3: Convergence\nNo tasks\n",
+		"rewrite":           "# changed\n" + strings.TrimPrefix(good, "# Tasks\n"),
+		"reuse":             old + "\n## Phase 3: Convergence\n- [ ] T004 Reuse id\n",
+		"phase":             old + "\n## Phase 4: Convergence\n- [ ] T005 Add task\n",
+		"no_task":           old + "\n## Phase 3: Convergence\nNo tasks\n",
+		"nonconsecutive":    old + "\n## Phase 3: Convergence\n- [ ] T006 Skip an id per FR-006\n",
+		"checked":           old + "\n## Phase 3: Convergence\n- [x] T005 Completed task per FR-006\n",
+		"untraceable":       old + "\n## Phase 3: Convergence\n- [ ] T005 Add task without requirement link\n",
+		"duplicate old ids": "# Tasks\n\n## Phase 2: Foundational\n- [ ] T004 First task\n- [ ] T004 Reused task\n" + "\n## Phase 3: Convergence\n- [ ] T005 New task per FR-006\n",
+		"multiple phases":   old + "\n## Phase 3: Convergence\n- [ ] T005 First task per FR-006\n\n## Phase 4: Another phase\n- [ ] T006 Another task per FR-006\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if err := ValidateAppendOnly(old, changed); err == nil {

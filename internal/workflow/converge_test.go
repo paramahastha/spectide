@@ -18,8 +18,8 @@ func TestRunConvergenceImplementsOnlyAppendedTasksThenRepeatsTests(t *testing.T)
 		Converge: func(context.Context) (string, error) {
 			convergeCalls++
 			if convergeCalls == 1 {
-				ledger += "\n## Phase 2: Convergence\n- [ ] T002 Add missing regression test\n"
-				return "## Convergence Findings\nOutcome: tasks_appended\n- [ ] T002 Add missing regression test\n", nil
+				ledger += "\n## Phase 2: Convergence\n- [ ] T002 Add missing regression test per FR-029\n"
+				return "## Convergence Findings\nOutcome: tasks_appended\n- [ ] T002 Add missing regression test per FR-029\n", nil
 			}
 			return "✅ Converged — required gates pass.", nil
 		},
@@ -64,8 +64,8 @@ func TestRunConvergenceRejectsReportedTasksThatDifferFromLedger(t *testing.T) {
 			return ConvergenceSnapshot{SpecificationPath: "specs/001-build-spectide/spec.md", TaskLedger: ledger, GateVerdicts: map[string]string{"tests": "FAIL"}}, nil
 		},
 		Converge: func(context.Context) (string, error) {
-			ledger += "\n## Phase 2: Convergence\n- [ ] T002 Persisted task\n"
-			return "## Convergence Findings\nOutcome: tasks_appended\n- [ ] T003 Different reported task\n", nil
+			ledger += "\n## Phase 2: Convergence\n- [ ] T002 Persisted task per FR-029\n"
+			return "## Convergence Findings\nOutcome: tasks_appended\n- [ ] T003 Different reported task per FR-029\n", nil
 		},
 		Implement: func(context.Context, []string) error { t.Fatal("implemented mismatched report tasks"); return nil },
 		Test: func(context.Context) (map[string]string, error) {
@@ -203,7 +203,7 @@ func TestRunConvergenceRejectsNoProgressAndTaskRewrite(t *testing.T) {
 			Implement: func(context.Context, []string) error { t.Fatal("implemented without progress"); return nil },
 			Test:      func(context.Context) (map[string]string, error) { t.Fatal("tested without progress"); return nil, nil },
 		}
-		if converged, err := RunConvergence(context.Background(), hooks, DefaultLoopLimits()); converged || err == nil || !strings.Contains(err.Error(), "CONVERGENCE_NO_PROGRESS") {
+		if converged, err := RunConvergence(context.Background(), hooks, DefaultLoopLimits()); converged || err == nil || !strings.Contains(err.Error(), "CONVERGENCE_TASKS_MISSING") {
 			t.Fatalf("converged=%v err=%v", converged, err)
 		}
 	})
@@ -215,7 +215,7 @@ func TestRunConvergenceRejectsNoProgressAndTaskRewrite(t *testing.T) {
 			},
 			Converge: func(context.Context) (string, error) {
 				ledger = "# Replaced Tasks\n\n## Phase 2: Convergence\n- [ ] T002 New task\n"
-				return "## Convergence Findings\nOutcome: tasks_appended\n- [ ] T002 New task\n", nil
+				return "## Convergence Findings\nOutcome: tasks_appended\n- [ ] T002 New task per FR-029\n", nil
 			},
 			Implement: func(context.Context, []string) error { t.Fatal("implemented rewritten tasks"); return nil },
 			Test:      func(context.Context) (map[string]string, error) { return map[string]string{"tests": "PASS"}, nil },
@@ -239,8 +239,8 @@ func TestRunConvergenceStopsAfterFiveAppendRounds(t *testing.T) {
 			phase++
 			task++
 			id := task + 1
-			ledger += fmt.Sprintf("\n## Phase %d: Convergence\n- [ ] T%03d Appended task\n", phase+1, id)
-			return fmt.Sprintf("## Convergence Findings\nOutcome: tasks_appended\n- [ ] T%03d Appended task\n", id), nil
+			ledger += fmt.Sprintf("\n## Phase %d: Convergence\n- [ ] T%03d Appended task per FR-029\n", phase+1, id)
+			return fmt.Sprintf("## Convergence Findings\nOutcome: tasks_appended\n- [ ] T%03d Appended task per FR-029\n", id), nil
 		},
 		Implement: func(context.Context, []string) error { return nil },
 		Test:      func(context.Context) (map[string]string, error) { return map[string]string{"tests": "PASS"}, nil },

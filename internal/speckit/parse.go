@@ -86,11 +86,12 @@ func DiscoverFeatureDirectory(projectRoot string) (string, error) {
 	return featureDirs[0], nil
 }
 
-var analysisRow = regexp.MustCompile(`^\|\s*([A-Z][0-9]+)\s*\|\s*([^|]+)\|\s*(CRITICAL|HIGH|MEDIUM|LOW)\s*\|\s*([^|]+)\|\s*([^|]+)\|\s*([^|]+)\|`)
-var convergenceTask = regexp.MustCompile(`^- \[ \] (T[0-9]{3,}) (.+)$`)
-var taskID = regexp.MustCompile(`(?m)^- \[[ xX]\] (T[0-9]{3,})\b`)
-var phaseHeader = regexp.MustCompile(`(?m)^## Phase ([0-9]+): Convergence\s*$`)
-var anyPhaseHeader = regexp.MustCompile(`(?m)^## Phase ([0-9]+):`)
+var coverageLine = regexp.MustCompile(`^- Coverage:\s*([0-9]+(?:\.[0-9]+)?%)?(?:\s*\(([0-9]+)\s*/\s*([0-9]+)(?:\s+[^)]*)?\))?(?:\s+.+)?$`)
+var findingID = regexp.MustCompile(`^[A-Z][A-Z0-9_-]*[0-9]+$`)
+var taskLine = regexp.MustCompile(`^- \[([ xX])\] (T[0-9]{3,})\s+(.+?)\s*$`)
+var traceReference = regexp.MustCompile(`(?i)(?:\bFR-[0-9]{3}\b|\bSC-[0-9]{3}\b|\bUS[1-5]\b|\bAC[0-9]+\b|\bconstitution\b)`)
+var phaseLine = regexp.MustCompile(`^## Phase ([0-9]+):\s*(.+?)\s*$`)
+var convergenceTask = taskLine
 
 // InspectArtifacts returns the three canonical Spec-Kit files without following
 // symlinks outside the feature directory.
@@ -126,57 +127,182 @@ func InspectArtifacts(featureDir string) (ArtifactState, error) {
 
 func ParseAnalysisOutput(output string) (Analysis, error) {
 	a := Analysis{Findings: []Finding{}}
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		m := analysisRow.FindStringSubmatch(line)
-		if m == nil {
-			continue
-		}
-		a.Findings = append(a.Findings, Finding{ID: m[1], Category: strings.TrimSpace(m[2]), Severity: m[3], Location: strings.TrimSpace(m[4]), Summary: strings.TrimSpace(m[5]), Resolution: strings.TrimSpace(m[6])})
-		switch m[3] {
-		case "CRITICAL":
-			a.Critical++
-		case "HIGH":
-			a.High++
-		case "MEDIUM":
-			a.Medium++
-		case "LOW":
-			a.Low++
-		}
-	}
-	if err := scanner.Err(); err != nil {
+	lines, err := reportLines(output)
+	if err != nil {
 		return a, err
 	}
-	a.Complete = strings.Contains(output, "## Specification Analysis Report")
-	coverage := regexp.MustCompile(`(?m)^- Coverage:\s*(.+)$`).FindStringSubmatch(output)
-	if coverage != nil {
-		a.Coverage = strings.TrimSpace(coverage[1])
+	headingCount, tableHeader, tableSeparator, coverageCount := 0, false, false, 0
+	inFindings := false
+	seenIDs := map[string]bool{}
+	placeholderNoFindings := false
+	for _, line := range lines {
+		if line == "## Specification Analysis Report" {
+			headingCount++
+			continue
+		}
+		if strings.HasPrefix(line, "## ") && line != "## Specification Analysis Report" && headingCount > 0 {
+			break
+		}
+		if headingCount == 0 {
+			continue
+		}
+		if strings.HasPrefix(line, "|") {
+			if tableHeader && !inFindings {
+				continue
+			}
+			cells, ok := markdownCells(line)
+			if !ok {
+				return a, fmt.Errorf("ANALYSIS_REPORT_MALFORMED_TABLE")
+			}
+			if !tableHeader {
+				if !equalCells(cells, []string{"ID", "Category", "Severity", "Location(s)", "Summary", "Recommendation"}) {
+					return a, fmt.Errorf("ANALYSIS_REPORT_UNKNOWN_FINDINGS_TABLE")
+				}
+				tableHeader = true
+				inFindings = true
+				continue
+			}
+			if !tableSeparator {
+				if len(cells) != 6 || !isMarkdownSeparator(cells) {
+					return a, fmt.Errorf("ANALYSIS_REPORT_MALFORMED_TABLE_SEPARATOR")
+				}
+				tableSeparator = true
+				continue
+			}
+			if !inFindings {
+				return a, fmt.Errorf("ANALYSIS_REPORT_UNEXPECTED_TABLE")
+			}
+			if isNoFindingPlaceholder(cells) {
+				if len(a.Findings) > 0 || placeholderNoFindings {
+					return a, fmt.Errorf("ANALYSIS_REPORT_CONTRADICTORY_FINDINGS")
+				}
+				placeholderNoFindings = true
+				continue
+			}
+			if placeholderNoFindings || len(cells) != 6 {
+				return a, fmt.Errorf("ANALYSIS_REPORT_MALFORMED_FINDING_ROW")
+			}
+			finding := Finding{ID: cells[0], Category: cells[1], Severity: strings.ToUpper(cells[2]), Location: cells[3], Summary: cells[4], Resolution: cells[5]}
+			if !findingID.MatchString(finding.ID) || seenIDs[finding.ID] || finding.Category == "" || finding.Location == "" || finding.Summary == "" || finding.Resolution == "" {
+				return a, fmt.Errorf("ANALYSIS_REPORT_INVALID_FINDING")
+			}
+			seenIDs[finding.ID] = true
+			switch finding.Severity {
+			case "CRITICAL":
+				a.Critical++
+			case "HIGH":
+				a.High++
+			case "MEDIUM":
+				a.Medium++
+			case "LOW":
+				a.Low++
+			default:
+				return a, fmt.Errorf("ANALYSIS_REPORT_UNKNOWN_SEVERITY: %s", finding.Severity)
+			}
+			a.Findings = append(a.Findings, finding)
+			continue
+		}
+		if strings.HasPrefix(line, "### ") {
+			inFindings = false
+		}
+		if strings.HasPrefix(line, "- Coverage:") {
+			match := coverageLine.FindStringSubmatch(line)
+			if match == nil || (match[1] == "" && (match[2] == "" || match[3] == "")) {
+				return a, fmt.Errorf("ANALYSIS_REPORT_COVERAGE_INVALID")
+			}
+			coverageCount++
+			a.Coverage = strings.TrimSpace(strings.TrimPrefix(line, "- Coverage:"))
+			if match[2] != "" && match[3] != "" {
+				numerator, _ := strconv.Atoi(match[2])
+				denominator, _ := strconv.Atoi(match[3])
+				if denominator == 0 || numerator > denominator {
+					return a, fmt.Errorf("ANALYSIS_REPORT_COVERAGE_INVALID")
+				}
+				if match[1] != "" {
+					percent, _ := strconv.ParseFloat(strings.TrimSuffix(match[1], "%"), 64)
+					if percent < 0 || percent > 100 || int(percent+0.5) != int((float64(numerator)/float64(denominator))*100+0.5) {
+						return a, fmt.Errorf("ANALYSIS_REPORT_COVERAGE_CONTRADICTORY")
+					}
+				}
+			} else if match[1] != "" {
+				percent, _ := strconv.ParseFloat(strings.TrimSuffix(match[1], "%"), 64)
+				if percent < 0 || percent > 100 {
+					return a, fmt.Errorf("ANALYSIS_REPORT_COVERAGE_INVALID")
+				}
+			}
+		}
+		lower := strings.ToLower(line)
+		if strings.HasPrefix(lower, "outcome:") {
+			outcome := strings.TrimSpace(strings.TrimPrefix(lower, "outcome:"))
+			if outcome != "complete" && outcome != "pass" && outcome != "clean" {
+				return a, fmt.Errorf("ANALYSIS_REPORT_OUTCOME_CONTRADICTORY")
+			}
+		}
+		if strings.Contains(lower, "analysis incomplete") || strings.Contains(lower, "report truncated") {
+			return a, fmt.Errorf("ANALYSIS_REPORT_INCOMPLETE")
+		}
 	}
-	if !a.Complete {
+	if headingCount != 1 || !tableHeader || !tableSeparator || coverageCount != 1 || (len(a.Findings) == 0 && !placeholderNoFindings && !containsNoFindings(lines)) {
 		return a, fmt.Errorf("ANALYSIS_REPORT_INCOMPLETE")
 	}
+	a.Complete = true
 	return a, nil
 }
 
 func ParseConvergenceOutput(output string) (Convergence, error) {
 	c := Convergence{Appended: []string{}}
-	if strings.Contains(output, "✅ Converged") {
+	lines, err := reportLines(output)
+	if err != nil {
+		return c, err
+	}
+	cleanMarkers, findingsHeaders, outcomeCount := 0, 0, 0
+	outcome := ""
+	ids := map[string]bool{}
+	lastID := 0
+	for _, line := range lines {
+		if strings.HasPrefix(line, "✅ Converged") {
+			cleanMarkers++
+		}
+		if line == "## Convergence Findings" {
+			findingsHeaders++
+		}
+		if strings.HasPrefix(line, "Outcome:") {
+			outcomeCount++
+			outcome = strings.TrimSpace(strings.TrimPrefix(line, "Outcome:"))
+		}
+		if strings.HasPrefix(line, "> ✅ Converged") || strings.HasPrefix(line, "'✅ Converged") || strings.HasPrefix(line, "\"✅ Converged") {
+			continue
+		}
+		if strings.HasPrefix(line, "- [") {
+			match := convergenceTask.FindStringSubmatch(line)
+			if match == nil || match[1] != " " || !traceReference.MatchString(match[3]) {
+				return c, fmt.Errorf("CONVERGENCE_TASK_INVALID")
+			}
+			number, _ := strconv.Atoi(strings.TrimPrefix(match[2], "T"))
+			if ids[match[2]] || (lastID != 0 && number != lastID+1) {
+				return c, fmt.Errorf("CONVERGENCE_TASK_IDS_NOT_CONSECUTIVE")
+			}
+			ids[match[2]], lastID = true, number
+			c.Appended = append(c.Appended, match[2]+" "+strings.TrimSpace(match[3]))
+		}
+	}
+	if cleanMarkers > 0 {
+		if cleanMarkers != 1 || findingsHeaders != 0 || outcomeCount != 0 || len(c.Appended) > 0 {
+			return c, fmt.Errorf("CONVERGENCE_OUTCOME_CONTRADICTORY")
+		}
 		c.Converged = true
 		return c, nil
 	}
-	if !strings.Contains(output, "## Convergence Findings") || !strings.Contains(output, "tasks_appended") {
+	if findingsHeaders != 1 || outcomeCount != 1 || (outcome != "tasks_appended" && outcome != "converged") {
 		return c, fmt.Errorf("CONVERGENCE_REPORT_INCOMPLETE")
 	}
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() {
-		if m := convergenceTask.FindStringSubmatch(strings.TrimSpace(scanner.Text())); m != nil {
-			c.Appended = append(c.Appended, m[1]+" "+m[2])
-		}
+	if outcome == "tasks_appended" && len(c.Appended) == 0 {
+		return c, fmt.Errorf("CONVERGENCE_TASKS_MISSING")
 	}
-	if err := scanner.Err(); err != nil {
-		return c, err
+	if outcome == "converged" && len(c.Appended) != 0 {
+		return c, fmt.Errorf("CONVERGENCE_OUTCOME_CONTRADICTORY")
 	}
+	c.Converged = outcome == "converged"
 	return c, nil
 }
 
@@ -190,46 +316,78 @@ func ValidateAppendOnly(previous, current string) error {
 	if strings.TrimSpace(appended) == "" {
 		return fmt.Errorf("CONVERGENCE_APPEND_EMPTY")
 	}
-	oldIDs := taskID.FindAllStringSubmatch(previous, -1)
-	newIDs := taskID.FindAllStringSubmatch(appended, -1)
-	if len(newIDs) == 0 {
+	oldLines, err := ledgerTasks(previous)
+	if err != nil {
+		return err
+	}
+	newLines, err := ledgerTasks(appended)
+	if err != nil {
+		return err
+	}
+	if len(newLines) == 0 {
 		return fmt.Errorf("CONVERGENCE_TASKS_MISSING")
 	}
 	maxID := 0
-	seen := make(map[string]bool, len(oldIDs)+len(newIDs))
-	for _, item := range oldIDs {
-		seen[item[1]] = true
-		n, _ := strconv.Atoi(strings.TrimPrefix(item[1], "T"))
+	seen := make(map[string]bool, len(oldLines)+len(newLines))
+	for _, item := range oldLines {
+		if seen[item.id] {
+			return fmt.Errorf("CONVERGENCE_TASK_ID_REUSED: %s", item.id)
+		}
+		seen[item.id] = true
+		n, _ := strconv.Atoi(strings.TrimPrefix(item.id, "T"))
 		if n > maxID {
 			maxID = n
 		}
 	}
-	header := phaseHeader.FindStringSubmatch(appended)
-	if header == nil {
+	var phaseNumber int
+	phaseCount := 0
+	phaseIndex := -1
+	appendedLines := strings.Split(appended, "\n")
+	for i, line := range appendedLines {
+		if match := phaseLine.FindStringSubmatch(strings.TrimSpace(line)); match != nil {
+			phaseCount++
+			phaseIndex = i
+			if match[2] != "Convergence" {
+				return fmt.Errorf("CONVERGENCE_PHASE_HEADER_INVALID")
+			}
+			phaseNumber, _ = strconv.Atoi(match[1])
+		}
+	}
+	if phaseCount != 1 {
 		return fmt.Errorf("CONVERGENCE_PHASE_HEADER_MISSING")
 	}
-	phase, _ := strconv.Atoi(header[1])
 	maxPhase := 0
-	for _, found := range anyPhaseHeader.FindAllStringSubmatch(previous, -1) {
-		n, _ := strconv.Atoi(found[1])
-		if n > maxPhase {
-			maxPhase = n
+	for _, line := range strings.Split(previous, "\n") {
+		if found := phaseLine.FindStringSubmatch(strings.TrimSpace(line)); found != nil {
+			n, _ := strconv.Atoi(found[1])
+			if n > maxPhase {
+				maxPhase = n
+			}
 		}
 	}
-	if phase != maxPhase+1 {
-		return fmt.Errorf("CONVERGENCE_PHASE_NOT_NEXT: expected %d, got %d", maxPhase+1, phase)
+	if phaseNumber != maxPhase+1 {
+		return fmt.Errorf("CONVERGENCE_PHASE_NOT_NEXT: expected %d, got %d", maxPhase+1, phaseNumber)
 	}
-	last := maxID
-	for _, item := range newIDs {
-		if seen[item[1]] {
-			return fmt.Errorf("CONVERGENCE_TASK_ID_REUSED: %s", item[1])
+	for i, line := range appendedLines {
+		if strings.HasPrefix(strings.TrimSpace(line), "- [") && i < phaseIndex {
+			return fmt.Errorf("CONVERGENCE_TASK_OUTSIDE_PHASE")
 		}
-		seen[item[1]] = true
-		n, _ := strconv.Atoi(strings.TrimPrefix(item[1], "T"))
-		if n <= last {
-			return fmt.Errorf("CONVERGENCE_TASK_ID_NOT_INCREASING: %s", item[1])
+	}
+	for i, item := range newLines {
+		if seen[item.id] {
+			return fmt.Errorf("CONVERGENCE_TASK_ID_REUSED: %s", item.id)
 		}
-		last = n
+		n, _ := strconv.Atoi(strings.TrimPrefix(item.id, "T"))
+		if n != maxID+i+1 {
+			return fmt.Errorf("CONVERGENCE_TASK_ID_NOT_CONSECUTIVE: %s", item.id)
+		}
+		if !item.unchecked {
+			return fmt.Errorf("CONVERGENCE_TASK_MUST_BE_UNCHECKED: %s", item.id)
+		}
+		if !traceReference.MatchString(item.description) {
+			return fmt.Errorf("CONVERGENCE_TASK_NOT_TRACEABLE: %s", item.id)
+		}
+		seen[item.id] = true
 	}
 	return nil
 }
@@ -241,15 +399,117 @@ func AppendedConvergenceTasks(previous, current string) ([]string, error) {
 		return nil, err
 	}
 	appended := strings.TrimPrefix(current, previous)
-	var tasks []string
-	scanner := bufio.NewScanner(strings.NewReader(appended))
+	parsed, err := ledgerTasks(appended)
+	if err != nil {
+		return nil, err
+	}
+	tasks := make([]string, 0, len(parsed))
+	for _, task := range parsed {
+		tasks = append(tasks, task.id+" "+task.description)
+	}
+	return tasks, nil
+}
+
+type ledgerTask struct {
+	id          string
+	unchecked   bool
+	description string
+}
+
+func ledgerTasks(content string) ([]ledgerTask, error) {
+	var tasks []ledgerTask
+	for _, raw := range strings.Split(content, "\n") {
+		line := strings.TrimSpace(raw)
+		if !strings.HasPrefix(line, "- [") {
+			continue
+		}
+		match := taskLine.FindStringSubmatch(line)
+		if match == nil {
+			return nil, fmt.Errorf("CONVERGENCE_TASK_LINE_MALFORMED")
+		}
+		tasks = append(tasks, ledgerTask{id: match[2], unchecked: match[1] == " ", description: strings.TrimSpace(match[3])})
+	}
+	return tasks, nil
+}
+
+func reportLines(output string) ([]string, error) {
+	if strings.TrimSpace(output) == "" || len(output) > 1<<20 {
+		return nil, fmt.Errorf("SPECKIT_REPORT_SIZE_INVALID")
+	}
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	scanner.Buffer(make([]byte, 4096), 1<<20)
+	lines := make([]string, 0)
+	inFence := false
 	for scanner.Scan() {
-		if match := convergenceTask.FindStringSubmatch(strings.TrimSpace(scanner.Text())); match != nil {
-			tasks = append(tasks, match[1]+" "+match[2])
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if !inFence {
+			lines = append(lines, line)
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
-	return tasks, nil
+	if inFence {
+		return nil, fmt.Errorf("SPECKIT_REPORT_TRUNCATED_FENCE")
+	}
+	return lines, nil
+}
+
+func markdownCells(line string) ([]string, bool) {
+	if !strings.HasPrefix(line, "|") || !strings.HasSuffix(line, "|") {
+		return nil, false
+	}
+	parts := strings.Split(line[1:len(line)-1], "|")
+	cells := make([]string, len(parts))
+	for i := range parts {
+		cells[i] = strings.TrimSpace(parts[i])
+	}
+	return cells, true
+}
+
+func equalCells(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !strings.EqualFold(strings.TrimSpace(a[i]), b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isMarkdownSeparator(cells []string) bool {
+	for _, cell := range cells {
+		cell = strings.Trim(cell, ":")
+		if len(cell) < 3 || strings.Trim(cell, "-") != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func isNoFindingPlaceholder(cells []string) bool {
+	if len(cells) != 6 {
+		return false
+	}
+	for _, cell := range cells {
+		if cell != "—" && cell != "-" && cell != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func containsNoFindings(lines []string) bool {
+	for _, line := range lines {
+		if strings.EqualFold(line, "No findings.") || strings.EqualFold(line, "No findings") {
+			return true
+		}
+	}
+	return false
 }

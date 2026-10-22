@@ -9,8 +9,8 @@ import (
 )
 
 const (
-	blockingAnalysis = "## Specification Analysis Report\n| C1 | Security | CRITICAL | spec.md:1 | Boundary is unsafe | Fix boundary |\n"
-	cleanAnalysis    = "## Specification Analysis Report\n| I1 | Ambiguity | MEDIUM | spec.md:1 | Bound unspecified | Clarify if needed |\n"
+	blockingAnalysis = "## Specification Analysis Report\n\n| ID | Category | Severity | Location(s) | Summary | Recommendation |\n|---|---|---|---|---|---|\n| C1 | Security | CRITICAL | spec.md:1 | Boundary is unsafe | Fix boundary |\n\n### Metrics\n- Coverage: 100% (1/1)\n"
+	cleanAnalysis    = "## Specification Analysis Report\n\n| ID | Category | Severity | Location(s) | Summary | Recommendation |\n|---|---|---|---|---|---|\n| I1 | Ambiguity | MEDIUM | spec.md:1 | Bound unspecified | Clarify if needed |\n\n### Metrics\n- Coverage: 100% (1/1)\n"
 )
 
 func TestBlockingAnalysisFindingsFollowFR008SeverityPolicy(t *testing.T) {

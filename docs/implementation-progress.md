@@ -504,6 +504,12 @@
 - No-op provider stages and missing generated files fail even if the subprocess exits zero. Tests exercise semantic failure, no-op rejection, symlink escape rejection, report metadata, and artifact-to-attempt links.
 - Focused workflow/store acceptance tests and full `make verify` passed. Go vet/tests, dashboard typecheck/tests/build, binary build, secret scan, and smoke all passed. Latest SC-001: 17.638 ms; offline smoke remains `SIMULATED`. T059 is complete; T060 is next. T031, T045, and T046 remain open.
 
+### T060 — Strict Spec-Kit report parsing and convergence append validation — 2026-10-22
+
+- Analysis output requires a single exact report heading, recognized six-column findings table, complete finding fields and unique IDs, a valid coverage metric, and an explicit empty-findings representation. Coverage percentages and optional numerator/denominator summaries must agree. Truncated fences, quoted/fenced reports, unknown severity/table formats, malformed rows, and contradictory outcomes are rejected.
+- Convergence output accepts only a standalone unquoted success marker or a structured findings report with one supported outcome. Task additions must be traceable, unchecked, unique, and consecutive; append validation requires one next-numbered Convergence phase, consecutive unused IDs, and exact reported/persisted task agreement.
+- Tests exercise realistic report summaries, malformed/unknown/contradictory output, quoted/fenced success markers, duplicate and skipped IDs, checked/untraceable tasks, multiple phases, and ledger/report mismatches. Focused Spec-Kit/workflow tests, full `make verify`, `go vet ./...`, and `git diff --check` passed. Latest SC-001: 18.385 ms; offline smoke remains `SIMULATED`. T060 is complete; T061 is next. T031, T045, and T046 remain open.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified
