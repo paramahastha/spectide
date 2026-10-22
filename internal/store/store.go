@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -769,6 +770,31 @@ func (s *Store) SaveProfileCapability(ctx context.Context, name string, capabili
 	if len(capability.Version) > 512 || len(capability.Warnings) > 16 {
 		return capability, fmt.Errorf("PROFILE_CAPABILITY_LIMIT_EXCEEDED")
 	}
+	switch capability.ModelCatalogStatus {
+	case "", "NOT_PROBED", "VERIFIED", "UNAVAILABLE":
+	default:
+		return capability, fmt.Errorf("PROFILE_MODEL_CATALOG_STATE_INVALID")
+	}
+	for _, values := range [][]string{capability.ModelValues, capability.AuthenticatedProviders, capability.EffortValues, capability.SafetyModes, capability.CommandCapabilities} {
+		if len(values) > 128 {
+			return capability, fmt.Errorf("PROFILE_CAPABILITY_LIMIT_EXCEEDED")
+		}
+		for _, value := range values {
+			if value == "" || len(value) > 128 || security.Redact(value) != value {
+				return capability, fmt.Errorf("PROFILE_CAPABILITY_VALUE_INVALID")
+			}
+			for _, r := range value {
+				if r < 0x20 || r == 0x7f {
+					return capability, fmt.Errorf("PROFILE_CAPABILITY_VALUE_INVALID")
+				}
+			}
+		}
+	}
+	capability.ModelValues = uniqueCapabilityValues(capability.ModelValues)
+	capability.AuthenticatedProviders = uniqueCapabilityValues(capability.AuthenticatedProviders)
+	capability.EffortValues = uniqueCapabilityValues(capability.EffortValues)
+	capability.SafetyModes = uniqueCapabilityValues(capability.SafetyModes)
+	capability.CommandCapabilities = uniqueCapabilityValues(capability.CommandCapabilities)
 	for _, warning := range capability.Warnings {
 		if len(warning) > 512 {
 			return capability, fmt.Errorf("PROFILE_CAPABILITY_LIMIT_EXCEEDED")
@@ -810,6 +836,22 @@ func (s *Store) SaveProfileCapability(ctx context.Context, name string, capabili
 	}
 	_, err = s.DB.ExecContext(ctx, `INSERT INTO profile_capabilities(profile_name,capability_json,observed_at) VALUES(?,?,?) ON CONFLICT(profile_name) DO UPDATE SET capability_json=excluded.capability_json,observed_at=excluded.observed_at`, name, string(encoded), capability.ObservedAt.Format(time.RFC3339Nano))
 	return capability, err
+}
+
+func uniqueCapabilityValues(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if !seen[value] {
+			seen[value] = true
+			out = append(out, value)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (s *Store) InvalidateProfileCapability(ctx context.Context, name string) error {

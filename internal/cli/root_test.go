@@ -204,11 +204,11 @@ func TestProfileAndModelProbeDoNotClaimAuthentication(t *testing.T) {
 		t.Fatal(err)
 	}
 	output, err := executeCLI(t, db, "profiles", "probe", "offline-echo")
-	if err != nil || !strings.Contains(output, `"authenticated":"NOT_PROBED"`) || !strings.Contains(output, `"version":"--version"`) {
+	if err != nil || !strings.Contains(output, `"authenticated":"UNKNOWN"`) || !strings.Contains(output, `"version":"--version"`) {
 		t.Fatalf("profile probe=%q err=%v", output, err)
 	}
 	output, err = executeCLI(t, db, "models", "probe", "offline-echo")
-	if err != nil || !strings.Contains(output, `"authentication":"NOT_PROBED"`) || !strings.Contains(output, `"model_catalog":"NOT_PROBED"`) {
+	if err != nil || !strings.Contains(output, `"authentication":"UNKNOWN"`) || !strings.Contains(output, `"model_catalog":"UNAVAILABLE"`) {
 		t.Fatalf("model probe=%q err=%v", output, err)
 	}
 	s, err = store.Open(db)
@@ -217,7 +217,7 @@ func TestProfileAndModelProbeDoNotClaimAuthentication(t *testing.T) {
 	}
 	defer s.Close()
 	profiles, err := s.Profiles(context.Background())
-	if err != nil || len(profiles) != 1 || profiles[0].Capability == nil || profiles[0].Capability.Authenticated != "NOT_PROBED" {
+	if err != nil || len(profiles) != 1 || profiles[0].Capability == nil || profiles[0].Capability.Authenticated != "UNKNOWN" {
 		t.Fatalf("persisted probe capability=%+v err=%v", profiles, err)
 	}
 }

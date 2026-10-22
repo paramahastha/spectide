@@ -20,7 +20,10 @@ import (
 	"github.com/spectide/spectide/internal/store"
 )
 
-type liveFixtureAdapter struct{ timeouts []time.Duration }
+type liveFixtureAdapter struct {
+	timeouts        []time.Duration
+	models, efforts []string
+}
 
 func verifiedFixtureCapability(t *testing.T, provider, executable, configDirectory string) model.ProfileCapability {
 	t.Helper()
@@ -32,7 +35,7 @@ func verifiedFixtureCapability(t *testing.T, provider, executable, configDirecto
 	if err != nil {
 		t.Fatal(err)
 	}
-	return model.ProfileCapability{Provider: provider, ExecutableFound: true, ApprovedExecutablePath: reference.Path, ExecutableSHA256: reference.SHA256, ApprovedConfigDirectory: approvedConfig, Version: "fixture-1", Authenticated: "AUTHENTICATED", ReadOnlyExecution: true, WorkspaceWrite: true}
+	return model.ProfileCapability{Provider: provider, ExecutableFound: true, ApprovedExecutablePath: reference.Path, ExecutableSHA256: reference.SHA256, ApprovedConfigDirectory: approvedConfig, Version: "fixture-1", Authenticated: "AUTHENTICATED", ModelOverride: true, ModelCatalogStatus: "VERIFIED", ModelValues: []string{"fixture/model"}, EffortOverride: "verified", EffortValues: []string{"medium"}, ReadOnlyExecution: true, WorkspaceWrite: true, SafetyModes: []string{"read-only", "workspace-write"}}
 }
 
 func (*liveFixtureAdapter) Name() adapters.ProviderName { return adapters.Codex }
@@ -41,6 +44,8 @@ func (*liveFixtureAdapter) Probe(context.Context, adapters.Profile) (adapters.Ca
 }
 func (a *liveFixtureAdapter) Build(request adapters.Request) (runner.Invocation, error) {
 	a.timeouts = append(a.timeouts, request.Timeout)
+	a.models = append(a.models, request.Model)
+	a.efforts = append(a.efforts, request.Effort)
 	output := "{\"type\":\"message\"}"
 	if request.Stage == "plan" {
 		path := filepath.Join(request.ProjectRoot, "specs", "001-product", "plan.md")
@@ -133,6 +138,7 @@ func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *t
 		"converge":     {Provider: "codex", Profile: "fixture"},
 		"final_review": {Provider: "codex", Profile: "fixture"},
 	}
+	cfg.StageRoutes["plan"] = config.Route{Provider: "codex", Profile: "fixture", Model: "fixture/model", Effort: "medium"}
 	if err = config.Save(config.ProjectPath(project), cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -156,6 +162,9 @@ func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *t
 		t.Fatal(err)
 	}
 	run, err = engine.Wait(ctx, run.ID)
+	if !stringSliceContains(fixtureAdapter.models, "fixture/model") || !stringSliceContains(fixtureAdapter.efforts, "medium") {
+		t.Fatalf("verified configured model/effort did not reach offline launch: models=%v efforts=%v", fixtureAdapter.models, fixtureAdapter.efforts)
+	}
 	if err != nil || run.State != model.Blocked {
 		t.Fatalf("live workflow run=%+v err=%v", run, err)
 	}
@@ -471,4 +480,13 @@ func TestExecutableReplacementAfterProbeInvalidatesProfileCapability(t *testing.
 	if err != nil || len(events) == 0 || events[len(events)-1].Type != "profile.capability_invalidated" {
 		t.Fatalf("capability invalidation was not reported: events=%+v err=%v", events, err)
 	}
+}
+
+func stringSliceContains(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
 }

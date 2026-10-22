@@ -71,10 +71,9 @@ func TestReadOnlyAndEffortPoliciesFailClosed(t *testing.T) {
 	if !foundPlan {
 		t.Fatal("Claude analyze route lacks plan permission mode")
 	}
-	if _, err = (claude.Adapter{}).Build(adapters.Request{Profile: profile, ProjectRoot: "/tmp/work", Prompt: "inspect", Effort: "high"}); err == nil {
-		t.Fatal("unverified Claude effort option was accepted")
-	} else {
-		assertProviderErrorCode(t, err, "UNSUPPORTED_EFFORT")
+	claudeEffort, err := (claude.Adapter{}).Build(adapters.Request{Profile: profile, ProjectRoot: "/tmp/work", Prompt: "inspect", Effort: "high"})
+	if err != nil || !hasArgPair(claudeEffort.Args, "--effort", "high") {
+		t.Fatalf("verified Claude effort flag missing: invocation=%+v err=%v", claudeEffort, err)
 	}
 	if _, err = (opencode.Adapter{}).Build(adapters.Request{Profile: profile, ProjectRoot: "/tmp/work", Prompt: "inspect", ReadOnly: true}); err == nil {
 		t.Fatal("OpenCode read-only policy was accepted without a verified control")
@@ -119,6 +118,15 @@ func assertProviderErrorCode(t *testing.T, err error, want string) {
 	if providerErr.Code != want {
 		t.Fatalf("error code = %q, want %q", providerErr.Code, want)
 	}
+}
+
+func hasArgPair(args []string, key, value string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == key && args[i+1] == value {
+			return true
+		}
+	}
+	return false
 }
 
 func TestProbeUsesVersionCommandWithoutCheckingCredentials(t *testing.T) {

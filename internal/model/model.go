@@ -201,9 +201,15 @@ type ProfileCapability struct {
 	Authenticated           string    `json:"authenticated"`
 	StreamingEvents         bool      `json:"streaming_events"`
 	ModelOverride           bool      `json:"model_override"`
+	ModelCatalogStatus      string    `json:"model_catalog_status"`
+	ModelValues             []string  `json:"model_values,omitempty"`
+	AuthenticatedProviders  []string  `json:"authenticated_providers,omitempty"`
 	EffortOverride          string    `json:"effort_override"`
+	EffortValues            []string  `json:"effort_values,omitempty"`
 	ReadOnlyExecution       bool      `json:"read_only_execution"`
 	WorkspaceWrite          bool      `json:"workspace_write"`
+	SafetyModes             []string  `json:"safety_modes,omitempty"`
+	CommandCapabilities     []string  `json:"command_capabilities,omitempty"`
 	Warnings                []string  `json:"warnings,omitempty"`
 	ObservedAt              time.Time `json:"observed_at"`
 }

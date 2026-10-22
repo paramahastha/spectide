@@ -18,7 +18,7 @@ func TestEffectiveRunConfigurationFreezesBoundsChecksAndProfileReferences(t *tes
 		Capability: &model.ProfileCapability{
 			Provider: "codex", ExecutableFound: true, ApprovedExecutablePath: "/opt/codex", ExecutableSHA256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 			ApprovedConfigDirectory: "/Users/example/.codex", Authenticated: "AUTHENTICATED", ReadOnlyExecution: true,
-			WorkspaceWrite: true, ModelOverride: true, Version: "codex 1.2", ObservedAt: time.Date(2026, 10, 22, 1, 2, 3, 0, time.UTC),
+			WorkspaceWrite: true, ModelOverride: true, ModelCatalogStatus: "VERIFIED", ModelValues: []string{"model-a"}, SafetyModes: []string{"read-only", "workspace-write"}, Version: "codex 1.2", ObservedAt: time.Date(2026, 10, 22, 1, 2, 3, 0, time.UTC),
 		},
 	}
 	decisions := make(map[string]config.Decision, len(stages))
@@ -60,6 +60,11 @@ func TestEffectiveRunConfigurationFreezesBoundsChecksAndProfileReferences(t *tes
 	drifted.Capability = &model.ProfileCapability{}
 	if profileMatchesReference(drifted, pinned) {
 		t.Fatal("profile capability drift matched immutable run configuration")
+	}
+	drifted = profile
+	drifted.Capability.ModelValues = []string{"changed-model"}
+	if profileMatchesReference(drifted, pinned) {
+		t.Fatal("verified model catalog drift matched immutable run configuration")
 	}
 }
 

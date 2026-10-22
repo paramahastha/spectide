@@ -2,6 +2,7 @@ package routing
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
@@ -118,19 +119,44 @@ func ValidateRouteCapability(stage string, route config.Route, profile model.Pro
 		}
 		return fmt.Errorf("PROFILE_AUTHENTICATION_NOT_VERIFIED: %s", profile.Name)
 	}
-	if route.Model != "" && !capability.ModelOverride {
-		return fmt.Errorf("MODEL_OVERRIDE_UNSUPPORTED: %s", profile.Name)
+	if route.Model != "" {
+		if !capability.ModelOverride {
+			return fmt.Errorf("MODEL_OVERRIDE_UNSUPPORTED: %s", profile.Name)
+		}
+		if capability.ModelCatalogStatus != "VERIFIED" || !containsCapability(capability.ModelValues, route.Model) {
+			return fmt.Errorf("MODEL_NOT_VERIFIED: %s", profile.Name)
+		}
+		if capability.Provider == "opencode" {
+			provider, _, ok := strings.Cut(route.Model, "/")
+			if !ok || !containsCapability(capability.AuthenticatedProviders, provider) {
+				return fmt.Errorf("MODEL_PROVIDER_UNAUTHENTICATED: %s", profile.Name)
+			}
+		}
 	}
-	if route.Effort != "" && capability.EffortOverride != "verified" {
-		return fmt.Errorf("EFFORT_OVERRIDE_UNSUPPORTED: %s", profile.Name)
+	if route.Effort != "" {
+		if capability.EffortOverride != "verified" {
+			return fmt.Errorf("EFFORT_OVERRIDE_UNSUPPORTED: %s", profile.Name)
+		}
+		if !containsCapability(capability.EffortValues, route.Effort) {
+			return fmt.Errorf("EFFORT_NOT_VERIFIED: %s", profile.Name)
+		}
 	}
-	if (stage == "analyze" || stage == "final_review") && !capability.ReadOnlyExecution {
+	if (stage == "analyze" || stage == "final_review") && (!capability.ReadOnlyExecution || !containsCapability(capability.SafetyModes, "read-only")) {
 		return fmt.Errorf("READ_ONLY_EXECUTION_UNVERIFIED: %s", profile.Name)
 	}
-	if stage == "implement" && !capability.WorkspaceWrite {
+	if stage == "implement" && (!capability.WorkspaceWrite || !containsCapability(capability.SafetyModes, "workspace-write")) {
 		return fmt.Errorf("WORKSPACE_WRITE_UNVERIFIED: %s", profile.Name)
 	}
 	return nil
+}
+
+func containsCapability(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
 }
 
 func validateCapability(stage string, route config.Route, profile model.Profile) error {

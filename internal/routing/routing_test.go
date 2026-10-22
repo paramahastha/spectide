@@ -6,7 +6,7 @@ import (
 )
 
 func policy(mode Mode) Policy {
-	return Policy{Mode: mode, ProjectScope: "personal", Default: Route{Profile: "safe", Model: "x", Effort: "medium"}, Profiles: map[string]adapters.Profile{"safe": {Name: "safe", Provider: adapters.Codex, AllowedProjects: []string{"personal"}}, "work": {Name: "work", Provider: adapters.Claude, AllowedProjects: []string{"work"}}}, Capabilities: map[string]adapters.Capability{"safe": {ExecutableFound: true, Version: "1.0", Authenticated: "AUTHENTICATED", ModelOverride: true, EffortOverride: "verified", ReadOnlyExecution: true, WorkspaceWrite: true}, "work": {ExecutableFound: true, Version: "1.0", Authenticated: "AUTHENTICATED", ModelOverride: true, EffortOverride: "verified", ReadOnlyExecution: true, WorkspaceWrite: true}}}
+	return Policy{Mode: mode, ProjectScope: "personal", Default: Route{Profile: "safe", Model: "x", Effort: "medium"}, Profiles: map[string]adapters.Profile{"safe": {Name: "safe", Provider: adapters.Codex, AllowedProjects: []string{"personal"}}, "work": {Name: "work", Provider: adapters.Claude, AllowedProjects: []string{"work"}}}, Capabilities: map[string]adapters.Capability{"safe": {ExecutableFound: true, Version: "1.0", Authenticated: "AUTHENTICATED", ModelOverride: true, ModelCatalogStatus: "VERIFIED", ModelValues: []string{"x"}, EffortOverride: "verified", EffortValues: []string{"medium"}, ReadOnlyExecution: true, WorkspaceWrite: true, SafetyModes: []string{"read-only", "workspace-write"}}, "work": {ExecutableFound: true, Version: "1.0", Authenticated: "AUTHENTICATED", ModelOverride: true, ModelCatalogStatus: "VERIFIED", ModelValues: []string{"x"}, EffortOverride: "verified", EffortValues: []string{"medium"}, ReadOnlyExecution: true, WorkspaceWrite: true, SafetyModes: []string{"read-only", "workspace-write"}}}}
 }
 func TestManualRequiresExplicitStage(t *testing.T) {
 	_, e := policy(Manual).Resolve("plan", "")
@@ -37,11 +37,11 @@ func TestAutomaticExplainsRisk(t *testing.T) {
 
 func TestRejectsUnverifiedCapabilitiesAndProviderBoundaries(t *testing.T) {
 	p := policy(Hybrid)
-	p.Capabilities["safe"] = adapters.Capability{ExecutableFound: true, Authenticated: "NOT_PROBED", Version: "1.0", ModelOverride: true, EffortOverride: "verified", ReadOnlyExecution: true, WorkspaceWrite: true}
+	p.Capabilities["safe"] = adapters.Capability{ExecutableFound: true, Authenticated: "NOT_PROBED", Version: "1.0", ModelOverride: true, ModelCatalogStatus: "VERIFIED", ModelValues: []string{"x"}, EffortOverride: "verified", EffortValues: []string{"medium"}, ReadOnlyExecution: true, WorkspaceWrite: true, SafetyModes: []string{"read-only", "workspace-write"}}
 	if _, err := p.Resolve("plan", ""); err == nil {
 		t.Fatal("authentication that was not probed accepted")
 	}
-	p.Capabilities["safe"] = adapters.Capability{ExecutableFound: true, Authenticated: "UNAUTHENTICATED", Version: "1.0", ModelOverride: true, EffortOverride: "verified", ReadOnlyExecution: true, WorkspaceWrite: true}
+	p.Capabilities["safe"] = adapters.Capability{ExecutableFound: true, Authenticated: "UNAUTHENTICATED", Version: "1.0", ModelOverride: true, ModelCatalogStatus: "VERIFIED", ModelValues: []string{"x"}, EffortOverride: "verified", EffortValues: []string{"medium"}, ReadOnlyExecution: true, WorkspaceWrite: true, SafetyModes: []string{"read-only", "workspace-write"}}
 	if _, err := p.Resolve("plan", ""); err == nil {
 		t.Fatal("unauthenticated profile accepted")
 	}

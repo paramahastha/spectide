@@ -40,6 +40,12 @@ type approvedProfileReference struct {
 	ModelOverride           bool      `json:"model_override"`
 	EffortOverride          string    `json:"effort_override,omitempty"`
 	CapabilityVersion       string    `json:"capability_version,omitempty"`
+	ModelCatalogStatus      string    `json:"model_catalog_status,omitempty"`
+	ModelValues             []string  `json:"model_values,omitempty"`
+	AuthenticatedProviders  []string  `json:"authenticated_providers,omitempty"`
+	EffortValues            []string  `json:"effort_values,omitempty"`
+	SafetyModes             []string  `json:"safety_modes,omitempty"`
+	CommandCapabilities     []string  `json:"command_capabilities,omitempty"`
 	CapabilityObservedAt    time.Time `json:"capability_observed_at,omitempty"`
 }
 
@@ -79,6 +85,8 @@ func buildEffectiveRunConfiguration(cfg config.Config, decisions map[string]conf
 			Authenticated: capability.Authenticated, ReadOnlyExecution: capability.ReadOnlyExecution,
 			WorkspaceWrite: capability.WorkspaceWrite, ModelOverride: capability.ModelOverride,
 			EffortOverride: capability.EffortOverride, CapabilityVersion: capability.Version,
+			ModelCatalogStatus: capability.ModelCatalogStatus, ModelValues: append([]string(nil), capability.ModelValues...), AuthenticatedProviders: append([]string(nil), capability.AuthenticatedProviders...),
+			EffortValues: append([]string(nil), capability.EffortValues...), SafetyModes: append([]string(nil), capability.SafetyModes...), CommandCapabilities: append([]string(nil), capability.CommandCapabilities...),
 			CapabilityObservedAt: capability.ObservedAt,
 		}
 		sort.Strings(reference.AllowedScopes)
@@ -189,7 +197,21 @@ func profileMatchesReference(profile model.Profile, expected approvedProfileRefe
 		capability.ApprovedConfigDirectory == expected.ApprovedConfigDirectory && capability.Authenticated == expected.Authenticated &&
 		capability.ReadOnlyExecution == expected.ReadOnlyExecution && capability.WorkspaceWrite == expected.WorkspaceWrite &&
 		capability.ModelOverride == expected.ModelOverride && capability.EffortOverride == expected.EffortOverride &&
+		capability.ModelCatalogStatus == expected.ModelCatalogStatus && slicesEqual(capability.ModelValues, expected.ModelValues) && slicesEqual(capability.AuthenticatedProviders, expected.AuthenticatedProviders) &&
+		slicesEqual(capability.EffortValues, expected.EffortValues) && slicesEqual(capability.SafetyModes, expected.SafetyModes) && slicesEqual(capability.CommandCapabilities, expected.CommandCapabilities) &&
 		capability.Version == expected.CapabilityVersion && capability.ObservedAt.Equal(expected.CapabilityObservedAt)
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (effective effectiveRunConfiguration) qualityRegistry() (*quality.Registry, error) {

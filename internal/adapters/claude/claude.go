@@ -10,7 +10,7 @@ type Adapter struct{}
 
 func (Adapter) Name() adapters.ProviderName { return adapters.Claude }
 func (Adapter) Probe(ctx context.Context, p adapters.Profile) (adapters.Capability, error) {
-	return adapters.ProbeBinary(p)
+	return adapters.ProbeProvider(ctx, p)
 }
 func (Adapter) Build(r adapters.Request) (runner.Invocation, error) {
 	a := []string{"-p", "--output-format", "stream-json", "--verbose"}
@@ -21,7 +21,7 @@ func (Adapter) Build(r adapters.Request) (runner.Invocation, error) {
 		a = append(a, "--model", r.Model)
 	}
 	if r.Effort != "" {
-		return runner.Invocation{}, adapters.NewProviderError("UNSUPPORTED_EFFORT", "Claude Code CLI effort flag is not verified")
+		a = append(a, "--effort", r.Effort)
 	}
 	a = append(a, r.Prompt)
 	env := []string{}

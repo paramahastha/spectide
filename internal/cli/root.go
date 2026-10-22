@@ -40,6 +40,8 @@ func persistedCapability(c adapters.Capability) model.ProfileCapability {
 		ApprovedConfigDirectory: c.ApprovedConfigDirectory,
 		Authenticated:           c.Authenticated, StreamingEvents: c.StreamingEvents,
 		ModelOverride: c.ModelOverride, EffortOverride: c.EffortOverride,
+		ModelCatalogStatus: c.ModelCatalogStatus, ModelValues: append([]string(nil), c.ModelValues...), AuthenticatedProviders: append([]string(nil), c.AuthenticatedProviders...),
+		EffortValues: append([]string(nil), c.EffortValues...), SafetyModes: append([]string(nil), c.SafetyModes...), CommandCapabilities: append([]string(nil), c.CommandCapabilities...),
 		ReadOnlyExecution: c.ReadOnlyExecution, WorkspaceWrite: c.WorkspaceWrite,
 		Warnings: c.Warnings,
 	}
@@ -325,7 +327,7 @@ func Root() *cobra.Command {
 	add.Flags().String("executable", "", "local executable name or path")
 	add.Flags().String("scope", "personal-public", "comma-separated allowed project scopes")
 	profiles.AddCommand(add)
-	profiles.AddCommand(&cobra.Command{Use: "probe NAME", Args: cobra.ExactArgs(1), Short: "Check an executable version without reading credentials", RunE: func(c *cobra.Command, args []string) error {
+	profiles.AddCommand(&cobra.Command{Use: "probe NAME", Args: cobra.ExactArgs(1), Short: "Check provider status and capabilities without exposing credentials", RunE: func(c *cobra.Command, args []string) error {
 		a, e := open()
 		if e != nil {
 			return e
@@ -339,7 +341,7 @@ func Root() *cobra.Command {
 			if profile.Name != args[0] {
 				continue
 			}
-			capability, probeErr := adapters.ProbeBinary(adapters.Profile{Provider: adapters.ProviderName(profile.Provider), Executable: profile.Executable, ConfigDir: profile.ConfigDirectory})
+			capability, probeErr := adapters.ProbeProvider(c.Context(), adapters.Profile{Provider: adapters.ProviderName(profile.Provider), Executable: profile.Executable, ConfigDir: profile.ConfigDirectory})
 			if probeErr != nil {
 				return probeErr
 			}
@@ -361,9 +363,24 @@ func Root() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		return writeJSON(c.OutOrStdout(), map[string]any{"profiles": ps, "catalog": "NOT_PROBED", "reason": "Model IDs must be validated by each provider CLI in its authorized profile."})
+		type profileModels struct {
+			Profile string   `json:"profile"`
+			Status  string   `json:"catalog"`
+			Models  []string `json:"models,omitempty"`
+		}
+		catalogs := []profileModels{}
+		for _, p := range ps {
+			status := "NOT_PROBED"
+			var values []string
+			if p.Capability != nil {
+				status = p.Capability.ModelCatalogStatus
+				values = p.Capability.ModelValues
+			}
+			catalogs = append(catalogs, profileModels{Profile: p.Name, Status: status, Models: values})
+		}
+		return writeJSON(c.OutOrStdout(), map[string]any{"profiles": catalogs})
 	}}
-	models.AddCommand(&cobra.Command{Use: "probe PROFILE", Args: cobra.ExactArgs(1), Short: "Probe executable readiness without reading model or credential stores", RunE: func(c *cobra.Command, args []string) error {
+	models.AddCommand(&cobra.Command{Use: "probe PROFILE", Args: cobra.ExactArgs(1), Short: "Probe provider status and model catalog without exposing credentials", RunE: func(c *cobra.Command, args []string) error {
 		a, e := open()
 		if e != nil {
 			return e
@@ -377,14 +394,14 @@ func Root() *cobra.Command {
 			if profile.Name != args[0] {
 				continue
 			}
-			capability, probeErr := adapters.ProbeBinary(adapters.Profile{Provider: adapters.ProviderName(profile.Provider), Executable: profile.Executable, ConfigDir: profile.ConfigDirectory})
+			capability, probeErr := adapters.ProbeProvider(c.Context(), adapters.Profile{Provider: adapters.ProviderName(profile.Provider), Executable: profile.Executable, ConfigDir: profile.ConfigDirectory})
 			if probeErr != nil {
 				return probeErr
 			}
 			if _, probeErr = a.Store.SaveProfileCapability(c.Context(), profile.Name, persistedCapability(capability)); probeErr != nil {
 				return probeErr
 			}
-			return writeJSON(c.OutOrStdout(), map[string]any{"profile": profile.Name, "executable_version": capability.Version, "authentication": "NOT_PROBED", "model_catalog": "NOT_PROBED"})
+			return writeJSON(c.OutOrStdout(), map[string]any{"profile": profile.Name, "executable_version": capability.Version, "authentication": capability.Authenticated, "model_catalog": capability.ModelCatalogStatus, "models": capability.ModelValues})
 		}
 		return fmt.Errorf("PROFILE_NOT_FOUND: %s", args[0])
 	}})

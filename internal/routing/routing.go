@@ -96,19 +96,34 @@ func (p Policy) allowed(stage string, r Route) error {
 			if r.Model != "" && !capability.ModelOverride {
 				return fmt.Errorf("MODEL_OVERRIDE_UNSUPPORTED: %s", r.Profile)
 			}
+			if r.Model != "" && (capability.ModelCatalogStatus != "VERIFIED" || !hasCapability(capability.ModelValues, r.Model)) {
+				return fmt.Errorf("MODEL_NOT_VERIFIED: %s", r.Profile)
+			}
 			if r.Effort != "" && capability.EffortOverride != "verified" {
 				return fmt.Errorf("EFFORT_OVERRIDE_UNSUPPORTED: %s", r.Profile)
 			}
-			if stage == "analyze" && !capability.ReadOnlyExecution {
+			if r.Effort != "" && !hasCapability(capability.EffortValues, r.Effort) {
+				return fmt.Errorf("EFFORT_NOT_VERIFIED: %s", r.Profile)
+			}
+			if stage == "analyze" && (!capability.ReadOnlyExecution || !hasCapability(capability.SafetyModes, "read-only")) {
 				return fmt.Errorf("READ_ONLY_EXECUTION_UNVERIFIED: %s", r.Profile)
 			}
-			if stage == "implement" && !capability.WorkspaceWrite {
+			if stage == "implement" && (!capability.WorkspaceWrite || !hasCapability(capability.SafetyModes, "workspace-write")) {
 				return fmt.Errorf("WORKSPACE_WRITE_UNVERIFIED: %s", r.Profile)
 			}
 			return nil
 		}
 	}
 	return fmt.Errorf("PROFILE_NOT_ALLOWED: %s for %s", r.Profile, p.ProjectScope)
+}
+
+func hasCapability(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
 }
 
 func knownStage(stage string) bool {

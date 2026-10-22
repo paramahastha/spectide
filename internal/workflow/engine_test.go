@@ -303,7 +303,7 @@ func TestEngineDoesNotSilentlySimulateLiveRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.SaveProfileCapability(context.Background(), "work", model.ProfileCapability{Provider: "codex", ExecutableFound: true, ApprovedExecutablePath: reference.Path, ExecutableSHA256: reference.SHA256, Version: "1.2.3", Authenticated: "AUTHENTICATED", ModelOverride: true, EffortOverride: "verified", ReadOnlyExecution: true, WorkspaceWrite: true}); err != nil {
+	if _, err = s.SaveProfileCapability(context.Background(), "work", model.ProfileCapability{Provider: "codex", ExecutableFound: true, ApprovedExecutablePath: reference.Path, ExecutableSHA256: reference.SHA256, Version: "1.2.3", Authenticated: "AUTHENTICATED", ModelOverride: true, ModelCatalogStatus: "VERIFIED", ModelValues: []string{"deterministic"}, EffortOverride: "verified", EffortValues: []string{"none"}, ReadOnlyExecution: true, WorkspaceWrite: true, SafetyModes: []string{"read-only", "workspace-write"}}); err != nil {
 		t.Fatal(err)
 	}
 	run, err := New(s).Start(context.Background(), project, "task")

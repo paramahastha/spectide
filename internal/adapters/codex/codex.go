@@ -11,7 +11,7 @@ type Adapter struct{}
 
 func (Adapter) Name() adapters.ProviderName { return adapters.Codex }
 func (Adapter) Probe(ctx context.Context, p adapters.Profile) (adapters.Capability, error) {
-	return adapters.ProbeBinary(p)
+	return adapters.ProbeProvider(ctx, p)
 }
 func (Adapter) Build(r adapters.Request) (runner.Invocation, error) {
 	a := []string{"exec", "--json", "--cd", r.ProjectRoot, "--sandbox"}

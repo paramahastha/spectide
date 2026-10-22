@@ -538,6 +538,13 @@
 - Live provider calls receive the frozen timeout through `adapters.Request` into every production adapter's `runner.Invocation`. Local quality checks reconstruct from frozen definitions, and analyze/test-repair/convergence/final-review loops run with the frozen limits. Provider launch rejects profile or capability-reference drift.
 - Tests cover 3/4/5 defaults, global/project override merging, timeout defaults and minimum/maximum, invalid values, profile drift, frozen checks, and adapter timeout propagation. Full `make verify` passed: Go vet/tests, dashboard typecheck/tests/build, binary build, secret scan, and offline `SIMULATED` smoke. Latest SC-001: 22.153 ms. T064 is complete; T065 is next. T031, T045, and T046 remain open.
 
+### T065 — Credential-safe provider capability discovery — 2026-10-23
+
+- Added per-provider status/capability probes using CLI `auth status`, `login status`, `auth list`, `models`, and help commands. Provider stdout/stderr is parsed in memory; the CLI returns only capability facts and the store validates and persists bounded identifiers, never account labels or credential contents. Probe failures remain `UNKNOWN`/`UNAVAILABLE` and are not treated as readiness.
+- Claude and Codex report authenticated readiness only from their documented status output. OpenCode reports provider readiness only for providers with nonempty configured auth entries. Model catalogs are verified only for OpenCode when safe provider/model identifiers are present; Claude/Codex explicit models remain blocked because their CLIs do not expose a verified model catalog. Claude effort options and Claude/Codex execution modes are checked against installed help output; OpenCode stage execution remains blocked because its adapter has no verified read-only/workspace-write controls.
+- Routing validates exact model and effort values, and the immutable run configuration freezes catalog status and observed values. Tests cover anonymized auth success/failure, catalog and effort parsing, secret omission, exact-value rejection, capability drift, and a fixture-backed offline launch carrying a configured model/effort.
+- Focused adapter/routing/store/CLI/workflow tests and `make verify` passed. The full verification included Go vet/tests, dashboard typecheck/tests/build, binary build, secret scan, and offline simulated smoke. Latest SC-001: 35.811 ms. T065 is complete; T066 is next. T031, T045, and T046 remain open; live account verification remains `NOT_RUN`.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified
