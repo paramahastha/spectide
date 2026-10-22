@@ -3,6 +3,8 @@ package speckit
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"strings"
 
 	"github.com/spectide/spectide/internal/adapters"
 	"github.com/spectide/spectide/internal/runner"
@@ -12,6 +14,45 @@ type StageResult struct {
 	Process runner.Result
 	Events  []adapters.Event
 	Output  string
+}
+
+// FeatureScopeArguments binds every installed stage prompt to the canonical
+// product specification directory selected by the workflow. Feature-owned
+// artifact stages must not derive a second branch or feature directory.
+func FeatureScopeArguments(projectRoot, featureDirectory, arguments string) (string, error) {
+	if featureDirectory == "" {
+		return arguments, nil
+	}
+	root, err := filepath.EvalSymlinks(projectRoot)
+	if err != nil {
+		return "", err
+	}
+	root, err = filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	feature, err := filepath.EvalSymlinks(featureDirectory)
+	if err != nil {
+		return "", err
+	}
+	feature, err = filepath.Abs(feature)
+	if err != nil {
+		return "", err
+	}
+	relative, err := filepath.Rel(root, feature)
+	if err != nil || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("PERMISSION_DENIED: selected feature directory escapes project root")
+	}
+	parts := strings.Split(filepath.Clean(relative), string(filepath.Separator))
+	if len(parts) != 2 || parts[0] != "specs" || parts[1] == "" || parts[1] == "." || parts[1] == ".." {
+		return "", fmt.Errorf("SPEC_KIT_FEATURE_SCOPE_INVALID")
+	}
+	scope := filepath.ToSlash(filepath.Join(parts[0], parts[1]))
+	directive := "Selected canonical feature directory: " + scope + ". Treat this as the only product specification scope for this run. For specify, create or update only " + scope + "/spec.md; do not create another feature directory, branch, or alternate specification. Keep all Spec-Kit feature artifacts and every retry/remediation in this selected directory."
+	if strings.TrimSpace(arguments) == "" {
+		return directive, nil
+	}
+	return strings.TrimSpace(arguments) + "\n\n" + directive, nil
 }
 
 // ExecuteStage expands a verified installed Spec-Kit command as a provider
@@ -38,12 +79,16 @@ func ExecuteStageWithTemplate(ctx context.Context, installation Installation, ad
 	if templateStage == "" {
 		return StageResult{}, fmt.Errorf("SPEC_KIT_STAGE_REQUIRED")
 	}
+	request.ProjectRoot = installation.ProjectRoot
+	arguments, err := FeatureScopeArguments(request.ProjectRoot, request.FeatureDirectory, arguments)
+	if err != nil {
+		return StageResult{}, err
+	}
 	prompt, err := StagePrompt(installation, templateStage, arguments)
 	if err != nil {
 		return StageResult{}, err
 	}
 	request.Stage = stage
-	request.ProjectRoot = installation.ProjectRoot
 	request.Prompt = prompt
 	request.ReadOnly = stage == "analyze"
 	invocation, err := adapter.Build(request)

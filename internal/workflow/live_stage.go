@@ -154,11 +154,12 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 		return nil, err
 	}
 	request := adapters.Request{
-		ProjectRoot: installation.ProjectRoot,
-		Prompt:      prompt,
-		Model:       route.Model,
-		Effort:      route.Effort,
-		Timeout:     time.Duration(effectiveConfiguration.Execution.StageTimeoutSeconds[stage]) * time.Second,
+		ProjectRoot:      installation.ProjectRoot,
+		FeatureDirectory: featureDir,
+		Prompt:           prompt,
+		Model:            route.Model,
+		Effort:           route.Effort,
+		Timeout:          time.Duration(effectiveConfiguration.Execution.StageTimeoutSeconds[stage]) * time.Second,
 		Profile: adapters.Profile{
 			Name: profile.Name, Provider: adapters.ProviderName(profile.Provider),
 			Executable: profile.Executable, ConfigDir: approvedConfig,
@@ -293,6 +294,9 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 	}
 	if runErr == nil && stage == "converge" {
 		registered, runErr = changedStageArtifacts(installation.ProjectRoot, featureDir, stage, beforeArtifacts)
+	}
+	if runErr == nil && stage == "specify" {
+		runErr = speckit.ValidateUniqueFeatureDirectory(installation.ProjectRoot, featureDir)
 	}
 	if runErr == nil {
 		if option.ownerPath != "" {

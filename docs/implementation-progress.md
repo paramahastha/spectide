@@ -728,3 +728,9 @@
 - Acceptance classification, configuration-derived execution labels, and simulated-gate applicability omit these engine-owned stages so a non-fake default does not misclassify them as provider work or trigger a false simulation-only gate.
 - The verified mixed-run fixture now uses a non-fake default for tests/report and confirms local stage labels, no provider attempts for either stage, local report-generation evidence, and final acceptance PASS.
 - The focused mixed-engine fixture, `go test ./internal/workflow ./internal/store ./internal/model -count=1`, `go vet ./internal/workflow ./internal/store ./internal/model`, and `git diff --check` passed. T090 is complete; T091 is next. T087/T088 remain partial.
+
+### T091 — Bind provider prompts to the selected feature scope — 2026-10-23
+
+- Added the selected feature directory to provider requests and centrally append a prompt directive after verifying it resolves to exactly `specs/<one-directory>` under the canonical project root. Specify is directed to create only the selected `spec.md`; every feature stage, retry, and remediation receives the same scope.
+- After specify, the workflow verifies the selected directory is the only artifact-bearing feature scope, rejecting alternate specification creation. Existing artifact-owner checks still preserve an already-created selected spec.
+- Tests cover canonical scope instructions, rejection of outside/nested scopes, rejection of a second artifact-bearing spec directory, and scope presence in live provider prompts. `go test ./internal/speckit ./internal/adapters ./internal/workflow -count=1`, package vet, and diff checks passed. T091 is complete; T092 is next. T087/T088 remain partial.

@@ -25,6 +25,7 @@ import (
 type liveFixtureAdapter struct {
 	timeouts        []time.Duration
 	models, efforts []string
+	prompts         []string
 	analyzeStart    string
 	analyzeRelease  string
 	analyzeBarrier  sync.Once
@@ -87,6 +88,7 @@ func (a *liveFixtureAdapter) Build(request adapters.Request) (runner.Invocation,
 	a.timeouts = append(a.timeouts, request.Timeout)
 	a.models = append(a.models, request.Model)
 	a.efforts = append(a.efforts, request.Effort)
+	a.prompts = append(a.prompts, request.Prompt)
 	output := "{\"type\":\"message\"}"
 	if request.Stage == "plan" {
 		path := filepath.Join(request.ProjectRoot, "specs", "001-product", "plan.md")
@@ -293,6 +295,11 @@ func TestEngineCompletesVerifiedMixedRunWithApplicableEvidence(t *testing.T) {
 	}
 	if !stringSliceContains(fixtureAdapter.models, "fixture/model") || !stringSliceContains(fixtureAdapter.efforts, "medium") {
 		t.Fatalf("verified configured model/effort did not reach offline launch: models=%v efforts=%v", fixtureAdapter.models, fixtureAdapter.efforts)
+	}
+	for _, prompt := range fixtureAdapter.prompts {
+		if !strings.Contains(prompt, "Selected canonical feature directory: specs/001-product") {
+			t.Fatalf("provider invocation omitted selected canonical feature scope: %q", prompt)
+		}
 	}
 	if err != nil || run.State != model.Completed {
 		t.Fatalf("live workflow run=%+v err=%v", run, err)

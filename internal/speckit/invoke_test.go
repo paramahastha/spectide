@@ -119,6 +119,46 @@ func TestExecuteStageWithOwnerTemplateAvoidsGeneralImplementationPrompt(t *testi
 	}
 }
 
+func TestExecuteSpecifyPromptUsesOnlyFreshOrExistingSelectedScope(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		name := "fresh"
+		if existing {
+			name = "existing"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			feature := filepath.Join(root, "specs", "001-selected")
+			if err := EnsureFeatureDirectory(root, feature); err != nil {
+				t.Fatal(err)
+			}
+			if existing {
+				if err := os.WriteFile(filepath.Join(feature, "spec.md"), []byte("canonical product spec\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			rel := filepath.Join(".opencode", "commands", "speckit.specify.md")
+			command := filepath.Join(root, rel)
+			if err := os.MkdirAll(filepath.Dir(command), 0700); err != nil {
+				t.Fatal(err)
+			}
+			body := []byte("Create one product spec from: $ARGUMENTS")
+			if err := os.WriteFile(command, body, 0600); err != nil {
+				t.Fatal(err)
+			}
+			digest := sha256.Sum256(body)
+			installation := Installation{ProjectRoot: root, Verified: true, Commands: map[string]string{"specify": "/speckit.specify"}, CommandFiles: map[string]string{"specify": filepath.ToSlash(rel)}, CommandHashes: map[string]string{"specify": hex.EncodeToString(digest[:])}}
+			adapter := &fixtureAdapter{}
+			_, err := ExecuteStage(context.Background(), installation, adapter, adapters.Request{FeatureDirectory: feature, Profile: adapters.Profile{Provider: adapters.Fake}}, "specify", "build the selected project")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(adapter.request.Prompt, "Selected canonical feature directory: specs/001-selected") || !strings.Contains(adapter.request.Prompt, "specs/001-selected/spec.md") {
+				t.Fatalf("specify request lost selected path: %+v", adapter.request)
+			}
+		})
+	}
+}
+
 type streamingFixtureAdapter struct{}
 
 func (streamingFixtureAdapter) Name() adapters.ProviderName { return adapters.OpenCode }

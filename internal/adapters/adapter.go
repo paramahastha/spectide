@@ -69,6 +69,7 @@ type Profile struct {
 }
 type Request struct {
 	ProjectRoot, Stage, Prompt, Model, Effort string
+	FeatureDirectory                          string
 	ReadOnly                                  bool
 	Timeout                                   time.Duration
 	InheritedFiles                            []*os.File

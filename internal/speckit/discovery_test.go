@@ -36,6 +36,59 @@ func TestStagePromptExpandsTrustedTemplateAndArguments(t *testing.T) {
 	}
 }
 
+func TestFeatureScopeArgumentsPinsCanonicalFeatureDirectory(t *testing.T) {
+	root := t.TempDir()
+	feature := filepath.Join(root, "specs", "001-product")
+	if err := os.MkdirAll(feature, 0700); err != nil {
+		t.Fatal(err)
+	}
+	arguments, err := FeatureScopeArguments(root, feature, "implement the selected task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"implement the selected task", "Selected canonical feature directory: specs/001-product", "specs/001-product/spec.md", "do not create another feature directory"} {
+		if !strings.Contains(arguments, expected) {
+			t.Fatalf("scope arguments missing %q: %s", expected, arguments)
+		}
+	}
+}
+
+func TestFeatureScopeArgumentsRejectsOtherAndNestedDirectories(t *testing.T) {
+	root := t.TempDir()
+	for _, feature := range []string{filepath.Join(root, "outside"), filepath.Join(root, "specs", "001-product", "nested")} {
+		if err := os.MkdirAll(feature, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := FeatureScopeArguments(root, feature, "task"); err == nil {
+			t.Fatalf("accepted non-canonical feature scope %q", feature)
+		}
+	}
+}
+
+func TestValidateUniqueFeatureDirectoryRejectsAlternativeSpecification(t *testing.T) {
+	root := t.TempDir()
+	selected := filepath.Join(root, "specs", "001-product")
+	if err := os.MkdirAll(selected, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(selected, "spec.md"), []byte("selected\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateUniqueFeatureDirectory(root, selected); err != nil {
+		t.Fatalf("selected scope rejected: %v", err)
+	}
+	alternate := filepath.Join(root, "specs", "002-other")
+	if err := os.MkdirAll(alternate, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(alternate, "spec.md"), []byte("alternate\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateUniqueFeatureDirectory(root, selected); err == nil {
+		t.Fatal("alternate product specification was accepted")
+	}
+}
+
 func TestStagePromptRejectsTemplateSymlinkEscape(t *testing.T) {
 	root := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "template.md")

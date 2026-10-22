@@ -169,6 +169,49 @@ func EnsureFeatureDirectory(projectRoot, featureDir string) error {
 	return nil
 }
 
+// ValidateUniqueFeatureDirectory verifies that the selected directory is the
+// only feature scope containing a product spec, plan, or task ledger.
+func ValidateUniqueFeatureDirectory(projectRoot, featureDir string) error {
+	root, err := filepath.EvalSymlinks(projectRoot)
+	if err != nil {
+		return err
+	}
+	selected, err := filepath.EvalSymlinks(featureDir)
+	if err != nil {
+		return err
+	}
+	selected, err = filepath.Abs(selected)
+	if err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(filepath.Join(root, "specs"))
+	if err != nil {
+		return err
+	}
+	var artifactScopes []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		directory := filepath.Join(root, "specs", entry.Name())
+		artifacts, inspectErr := InspectArtifacts(directory)
+		if inspectErr != nil {
+			return inspectErr
+		}
+		if artifacts.Present["spec"] || artifacts.Present["plan"] || artifacts.Present["tasks"] {
+			resolved, resolveErr := filepath.EvalSymlinks(directory)
+			if resolveErr != nil {
+				return resolveErr
+			}
+			artifactScopes = append(artifactScopes, resolved)
+		}
+	}
+	if len(artifactScopes) != 1 || artifactScopes[0] != selected {
+		return fmt.Errorf("SPECIFICATION_SCOPE_NOT_UNIQUE")
+	}
+	return nil
+}
+
 func canonicalPathAllowMissing(path string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
