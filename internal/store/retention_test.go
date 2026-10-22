@@ -127,6 +127,132 @@ func TestRetentionExpiresOldDetailsAndPreservesActiveRuns(t *testing.T) {
 	}
 }
 
+func TestRetentionExpiresExecutionDetailsAtTimestampBoundary(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "detail-boundary.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	terminal, err := s.CreateRun(ctx, "/project", "terminal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SetRunState(ctx, terminal.ID, model.Blocked); err != nil {
+		t.Fatal(err)
+	}
+	active, err := s.CreateRun(ctx, "/project", "active")
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
+	cutoff := anchor.Add(-detailRetention)
+	for name, finished := range map[string]time.Time{"expired": cutoff.Add(-time.Nanosecond), "boundary": cutoff} {
+		started := finished.Add(-time.Second)
+		attempt, startErr := s.StartExecutionAttempt(ctx, model.ExecutionAttempt{RunID: terminal.ID, Stage: name, Phase: name, Provider: "fake", Profile: "retention-test", StartedAt: started})
+		if startErr != nil {
+			t.Fatal(startErr)
+		}
+		attempt.Result, attempt.FinishedAt, attempt.Error = "FAILED", &finished, "sanitized detail summary"
+		attempt.EvidenceJSON = `{"detail":"provider output"}`
+		if err = s.CompleteExecutionAttempt(ctx, attempt); err != nil {
+			t.Fatal(err)
+		}
+		_, err = s.SaveQualityExecution(ctx, model.QualityExecution{RunID: terminal.ID, Phase: name, ProcessID: 1, StartedAt: started, FinishedAt: finished, Results: []model.QualityResult{{Key: "check_" + name, Verdict: "FAIL", Command: []string{"go", "test", "./internal/..."}, Summary: "check output detail", StartedAt: finished}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	activeAttempt, err := s.StartExecutionAttempt(ctx, model.ExecutionAttempt{RunID: active.ID, Stage: "old", Phase: "old", Provider: "fake", Profile: "retention-test", StartedAt: cutoff.Add(-time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeFinished := cutoff.Add(-time.Hour + time.Second)
+	activeAttempt.Result, activeAttempt.FinishedAt, activeAttempt.EvidenceJSON = "SUCCEEDED", &activeFinished, `{"detail":"active"}`
+	if err = s.CompleteExecutionAttempt(ctx, activeAttempt); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.PruneRetention(ctx, anchor); err != nil {
+		t.Fatal(err)
+	}
+	attempts, err := s.ExecutionAttempts(ctx, terminal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byStage := map[string]model.ExecutionAttempt{}
+	for _, attempt := range attempts {
+		byStage[attempt.Stage] = attempt
+	}
+	if byStage["expired"].EvidenceJSON != `{}` || byStage["expired"].Error != "" {
+		t.Fatalf("expired attempt detail was retained: %+v", byStage["expired"])
+	}
+	if byStage["boundary"].EvidenceJSON == `{}` {
+		t.Fatalf("exact 90-day boundary was expired: %+v", byStage["boundary"])
+	}
+	quality, err := s.QualityExecutions(ctx, terminal.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	qualityByPhase := map[string]model.QualityExecution{}
+	for _, execution := range quality {
+		qualityByPhase[execution.Phase] = execution
+	}
+	if got := qualityByPhase["expired"].Results[0]; got.Summary != "" || len(got.Command) != 0 || got.Verdict != "FAIL" {
+		t.Fatalf("expired quality detail/outcome=%+v", got)
+	}
+	if got := qualityByPhase["boundary"].Results[0]; got.Summary == "" || len(got.Command) == 0 || got.Verdict != "FAIL" {
+		t.Fatalf("quality at exact 90-day boundary changed: %+v", got)
+	}
+	activeAttempts, err := s.ExecutionAttempts(ctx, active.ID)
+	if err != nil || len(activeAttempts) != 1 || activeAttempts[0].EvidenceJSON == `{}` {
+		t.Fatalf("active execution detail changed: %+v err=%v", activeAttempts, err)
+	}
+}
+
+func TestRetentionMaintenanceRunsWhileDaemonIsIdle(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s, err := Open(filepath.Join(t.TempDir(), "idle-maintenance.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	run, err := s.CreateRun(context.Background(), "/project", "idle retention")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SetRunState(context.Background(), run.ID, model.Blocked); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().UTC().Add(-detailRetention - time.Hour).Format(time.RFC3339Nano)
+	if _, err = s.DB.Exec(`UPDATE events SET timestamp=?,payload_json='{"detail":"old"}' WHERE run_id=?`, old, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		s.RunRetentionMaintenance(ctx, 5*time.Millisecond, func(error) {})
+		close(done)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		var payload string
+		if err = s.DB.QueryRow(`SELECT payload_json FROM events WHERE run_id=? ORDER BY seq DESC LIMIT 1`, run.ID).Scan(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload == `{}` {
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("maintenance goroutine did not stop after cancellation")
+			}
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("idle retention maintenance did not expire old details")
+}
+
 func TestDetailedHistoryCapPrunesOldestTerminalAndRejectsAllActive(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -153,6 +279,18 @@ func TestDetailedHistoryCapPrunesOldestTerminalAndRejectsAllActive(t *testing.T)
 	if _, err = s.DB.ExecContext(ctx, `INSERT INTO quality_gates(run_id,gate_key,verdict,evidence) VALUES(?,?,?,?)`, "run-0000", "required_tests", "PASS", "preserved summary verdict"); err != nil {
 		t.Fatal(err)
 	}
+	attempt, err := s.StartExecutionAttempt(ctx, model.ExecutionAttempt{RunID: "run-0000", Stage: "implement", Phase: "implement", Provider: "fake", Profile: "retention-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished := time.Now().UTC()
+	attempt.Result, attempt.FinishedAt, attempt.EvidenceJSON = "SUCCEEDED", &finished, `{"detail":"provider output"}`
+	if err = s.CompleteExecutionAttempt(ctx, attempt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.SaveQualityExecution(ctx, model.QualityExecution{RunID: "run-0000", Phase: "tests", ProcessID: 1, Results: []model.QualityResult{{Key: "unit_tests", Verdict: "PASS", Command: []string{"go", "test", "./..."}, Summary: "all detailed output", StartedAt: finished}}}); err != nil {
+		t.Fatal(err)
+	}
 	newRun, err := s.CreateRun(ctx, "/project", "new run")
 	if err != nil {
 		t.Fatal(err)
@@ -166,6 +304,14 @@ func TestDetailedHistoryCapPrunesOldestTerminalAndRejectsAllActive(t *testing.T)
 	}
 	if err = s.DB.QueryRowContext(ctx, `SELECT verdict FROM quality_gates WHERE run_id='run-0000'`).Scan(&verdict); err != nil || verdict != "PASS" {
 		t.Fatalf("preserved verdict=%s err=%v", verdict, err)
+	}
+	attempts, err := s.ExecutionAttempts(ctx, "run-0000")
+	if err != nil || len(attempts) != 1 || attempts[0].Result != "SUCCEEDED" || attempts[0].EvidenceJSON != `{}` {
+		t.Fatalf("attempt summary/detail after cap prune=%+v err=%v", attempts, err)
+	}
+	quality, err := s.QualityExecutions(ctx, "run-0000")
+	if err != nil || len(quality) != 1 || quality[0].Verdict != "PASS" || len(quality[0].Results) != 1 || quality[0].Results[0].Verdict != "PASS" || quality[0].Results[0].Summary != "" || len(quality[0].Results[0].Command) != 0 {
+		t.Fatalf("quality compact outcome/detail after cap prune=%+v err=%v", quality, err)
 	}
 	if _, err = s.GetRun(ctx, newRun.ID); err != nil {
 		t.Fatal("new run missing after pruning:", err)

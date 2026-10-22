@@ -45,7 +45,13 @@ func expireOldDetails(ctx context.Context, tx *sql.Tx, at time.Time) error {
 	if _, err := tx.ExecContext(ctx, `UPDATE events SET payload_json='{}' WHERE timestamp < ? AND run_id IN (SELECT id FROM runs WHERE state IN (?,?,?,?))`, cutoff, model.Completed, model.Blocked, model.Failed, model.Cancelled); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `UPDATE checkpoints SET state_json='{}' WHERE created_at < ? AND run_id IN (SELECT id FROM runs WHERE state IN (?,?,?,?))`, cutoff, model.Completed, model.Blocked, model.Failed, model.Cancelled)
+	if _, err := tx.ExecContext(ctx, `UPDATE checkpoints SET state_json='{}' WHERE created_at < ? AND run_id IN (SELECT id FROM runs WHERE state IN (?,?,?,?))`, cutoff, model.Completed, model.Blocked, model.Failed, model.Cancelled); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE execution_attempts SET error='',evidence_json='{}' WHERE finished_at < ? AND result != 'RUNNING' AND run_id IN (SELECT id FROM runs WHERE state IN (?,?,?,?)) AND (error != '' OR evidence_json != '{}')`, cutoff, model.Completed, model.Blocked, model.Failed, model.Cancelled); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE quality_results SET command_json='[]',summary='' WHERE started_at < ? AND run_id IN (SELECT id FROM runs WHERE state IN (?,?,?,?)) AND (command_json != '[]' OR summary != '')`, cutoff, model.Completed, model.Blocked, model.Failed, model.Cancelled)
 	return err
 }
 
@@ -56,11 +62,17 @@ func pruneRunDetails(ctx context.Context, tx *sql.Tx, runID string, at time.Time
 	if _, err := tx.ExecContext(ctx, `UPDATE checkpoints SET state_json='{}' WHERE run_id=?`, runID); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `UPDATE execution_attempts SET error='',evidence_json='{}' WHERE run_id=? AND result != 'RUNNING' AND (error != '' OR evidence_json != '{}')`, runID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE quality_results SET command_json='[]',summary='' WHERE run_id=? AND (command_json != '[]' OR summary != '')`, runID); err != nil {
+		return err
+	}
 	_, err := tx.ExecContext(ctx, `UPDATE runs SET details_pruned_at=? WHERE id=? AND state IN (?,?,?,?) AND details_pruned_at IS NULL`, at.Format(time.RFC3339Nano), runID, model.Completed, model.Blocked, model.Failed, model.Cancelled)
 	return err
 }
 
-// PruneRetention expires old event/checkpoint payloads and enforces the
+// PruneRetention expires old activity and execution detail and enforces the
 // detailed-history cap while preserving summaries, outcomes, routes, gates,
 // approvals, and sanitized report metadata.
 func (s *Store) PruneRetention(ctx context.Context, at time.Time) error {
@@ -96,4 +108,25 @@ func (s *Store) PruneRetention(ctx context.Context, at time.Time) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// RunRetentionMaintenance keeps age-based expiration running even when no new
+// workflow is created. Errors are reported to onError and do not stop future
+// maintenance ticks.
+func (s *Store) RunRetentionMaintenance(ctx context.Context, interval time.Duration, onError func(error)) {
+	if interval <= 0 {
+		interval = time.Hour
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case at := <-ticker.C:
+			if err := s.PruneRetention(ctx, at.UTC()); err != nil && onError != nil {
+				onError(err)
+			}
+		}
+	}
 }

@@ -166,6 +166,14 @@ func (s *Store) migrate() error {
 			return err
 		}
 	}
+	if version < 12 {
+		if _, err = tx.Exec(schemaV12); err != nil {
+			return fmt.Errorf("apply schema migration 12: %w", err)
+		}
+		if _, err = tx.Exec(`INSERT INTO schema_migrations(version,applied_at) VALUES(12,?)`, now().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 
@@ -227,6 +235,9 @@ var schemaV10 string
 
 //go:embed migrations/011_gate_policy.sql
 var schemaV11 string
+
+//go:embed migrations/012_retention_detail.sql
+var schemaV12 string
 
 func now() time.Time { return time.Now().UTC().Round(0) }
 func parse(v string) *time.Time {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spectide/spectide/internal/adapters"
 	"github.com/spectide/spectide/internal/app"
@@ -68,6 +70,12 @@ func Root() *cobra.Command {
 			return e
 		}
 		defer a.Close()
+		if e = a.Store.PruneRetention(c.Context(), time.Now().UTC()); e != nil {
+			return fmt.Errorf("retention maintenance: %w", e)
+		}
+		go a.Store.RunRetentionMaintenance(c.Context(), time.Hour, func(err error) {
+			log.Printf("SpecTide retention maintenance failed: %v", err)
+		})
 		host, _ := c.Flags().GetString("host")
 		port, _ := c.Flags().GetInt("port")
 		if host != "127.0.0.1" && host != "localhost" && host != "::1" {

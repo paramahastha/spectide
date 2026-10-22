@@ -771,3 +771,9 @@
 - Normal open now checks that migration metadata is contiguous and no version exceeds the supported schema before any new migration is applied. A gap or forward-incompatible database is rejected with an actionable schema code.
 - Migration failures close the database connection and return recovery guidance. Schema changes and history updates run in one SQLite transaction, preserving the original schema/history if a migration fails.
 - Tests verify future-version rejection without mutation, inconsistent-history rejection, rollback and connection cleanup for a deliberately failing upgrade, and the existing valid upgrade paths. `go test ./internal/store -count=1`, `go vet ./internal/store`, and `git diff --check` passed. T097 is complete; T098 is next. T087/T088 remain partial.
+
+### T098 — Retain bounded detail while preserving execution summaries — 2026-10-23
+
+- Retention now redacts old event/checkpoint payloads, provider attempt error/evidence JSON, and quality command/output summaries. The 90-day comparison expires details strictly before the cutoff; compact provider results, quality verdicts, gates, routes, approvals, artifact links, and sanitized report metadata remain.
+- Migration v12 preserves append-only history while allowing only the targeted terminal-detail scrub updates. The 1,000-run cap uses the same pruning path for the oldest terminal run; active runs are never pruned. `spectide serve` performs maintenance at startup and every hour while idle.
+- Tests cover just-before/exactly-at-90-day boundaries, active-run preservation, idle-daemon maintenance, and all 1,000 history slots with preserved attempt/quality outcomes. `go test ./internal/store ./internal/cli -count=1` passed. T098 is complete; T099 is next. T087/T088 remain partial.
