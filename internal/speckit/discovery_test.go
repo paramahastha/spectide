@@ -1,6 +1,9 @@
 package speckit
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,14 +65,34 @@ func TestRequireStage(t *testing.T) {
 }
 func TestDiscoveryUsesInstalledCommandFiles(t *testing.T) {
 	d := t.TempDir()
-	if e := os.MkdirAll(filepath.Join(d, ".specify"), 0755); e != nil {
+	if e := os.MkdirAll(filepath.Join(d, ".specify", "integrations"), 0755); e != nil {
 		t.Fatal(e)
 	}
 	if e := os.MkdirAll(filepath.Join(d, ".opencode", "commands"), 0755); e != nil {
 		t.Fatal(e)
 	}
-	if e := os.WriteFile(filepath.Join(d, ".opencode", "commands", "speckit.analyze.md"), []byte("x"), 0644); e != nil {
+	content := []byte("signed fixture command")
+	rel := filepath.ToSlash(filepath.Join(".opencode", "commands", "speckit.analyze.md"))
+	if e := os.WriteFile(filepath.Join(d, filepath.FromSlash(rel)), content, 0644); e != nil {
 		t.Fatal(e)
 	}
-	_, _ = Discover(d)
+	digest := sha256.Sum256(content)
+	manifest, err := json.Marshal(map[string]any{"integration": "opencode", "files": map[string]string{rel: hex.EncodeToString(digest[:])}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(d, ".specify", "integrations", "opencode.manifest.json")
+	if err := os.WriteFile(manifestPath, manifest, 0600); err != nil {
+		t.Fatal(err)
+	}
+	integration, commands, files, hashes, err := discoverCommandFiles(d)
+	if err != nil || integration != "opencode" || commands["analyze"] != "/speckit.analyze" || files["analyze"] != rel || hashes["analyze"] != hex.EncodeToString(digest[:]) {
+		t.Fatalf("discovery=%s %v %v %v err=%v", integration, commands, files, hashes, err)
+	}
+	if err := os.WriteFile(filepath.Join(d, filepath.FromSlash(rel)), []byte("modified command"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, _, err = discoverCommandFiles(d); err == nil || !strings.Contains(err.Error(), "SPEC_KIT_COMMAND_INTEGRITY_MISMATCH") {
+		t.Fatalf("modified command integrity error=%v", err)
+	}
 }

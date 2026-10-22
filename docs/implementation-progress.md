@@ -371,6 +371,12 @@
 - Result: all ten clients received 20,001 frames each (200,010 total); all-frame p95 was 270.133 ms, below 1 second. The initial sequential fixture exceeded the threshold at 1.018 s; a single-transaction backlog fixture measures the event timestamps at the batch's persistence point and avoids setup time being counted as delivery lag.
 - `make load-test-sse` and full `make verify` passed. T043a and SC-006 are complete. Latest SC-001 measurement is 20.717 ms on the reference host.
 
+### Spec-Kit discovery and invocation foundation
+
+- Discovery now validates each declared Spec-Kit command path against the project root and verifies its SHA-256 from the integration manifest. `StagePrompt` checks the command hash again immediately before use to reject template changes after discovery.
+- Added `speckit.ExecuteStage`, which expands only a verified command template, builds an explicit provider adapter invocation rooted at the canonical project, enforces provider/profile match, applies read-only mode to analyze, runs through the bounded runner, and normalizes output. No workflow starts this live path until authenticated capability checks are integrated.
+- Focused `go test ./internal/speckit ./internal/workflow` and full `make verify` passed; the doctor smoke reports Spec-Kit `READY`. T014 remains open for workflow-level capability-backed adapter orchestration. Latest SC-001 measurement is 19.514 ms on the reference host.
+
 ### Phase checkpoint — durable run-owner leases
 
 - Added migration 6 and per-run heartbeat leases. The workflow writes its owner lease atomically with the workspace lock, refreshes it while the worker is alive, and removes it at finish.

@@ -3,20 +3,25 @@
 package speckit
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
 type Installation struct {
-	Binary       string
-	ProjectRoot  string
-	Integration  string
-	Commands     map[string]string
-	CommandFiles map[string]string
+	Binary        string
+	ProjectRoot   string
+	Integration   string
+	Verified      bool
+	Commands      map[string]string
+	CommandFiles  map[string]string
+	CommandHashes map[string]string
 }
 
 func Discover(root string) (Installation, error) {
@@ -32,11 +37,26 @@ func Discover(root string) (Installation, error) {
 	if e != nil {
 		return Installation{ProjectRoot: abs}, fmt.Errorf("EXECUTABLE_NOT_FOUND: specify")
 	}
+	integration, commands, files, hashes, err := discoverCommandFiles(abs)
+	if err != nil {
+		return Installation{Binary: bin, ProjectRoot: abs}, err
+	}
+	return Installation{Binary: bin, ProjectRoot: abs, Integration: integration, Verified: len(commands) > 0, Commands: commands, CommandFiles: files, CommandHashes: hashes}, nil
+}
+
+func discoverCommandFiles(abs string) (string, map[string]string, map[string]string, map[string]string, error) {
+	canonical, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", nil, nil, nil, err
+	}
+	abs = canonical
 	commands := map[string]string{}
 	files := map[string]string{}
+	hashes := map[string]string{}
 	integration := ""
 	manifestDir := filepath.Join(abs, ".specify", "integrations")
 	manifests, _ := filepath.Glob(filepath.Join(manifestDir, "*.manifest.json"))
+	sort.Strings(manifests)
 	for _, manifestPath := range manifests {
 		b, err := os.ReadFile(manifestPath)
 		if err != nil {
@@ -49,23 +69,66 @@ func Discover(root string) (Installation, error) {
 		if json.Unmarshal(b, &manifest) != nil {
 			continue
 		}
+		rels := make([]string, 0, len(manifest.Files))
 		for rel := range manifest.Files {
-			if stage, ok := stageFromPath(rel); ok {
-				target := filepath.Join(abs, filepath.FromSlash(rel))
-				if _, err = os.Stat(target); err == nil {
-					commands[stage] = "/speckit." + stage
-					files[stage] = rel
-					if integration == "" {
-						integration = manifest.Integration
-					}
+			rels = append(rels, rel)
+		}
+		sort.Strings(rels)
+		for _, rel := range rels {
+			stage, ok := stageFromPath(rel)
+			if !ok {
+				continue
+			}
+			if filepath.IsAbs(rel) || filepath.Clean(filepath.FromSlash(rel)) != filepath.FromSlash(rel) {
+				return "", nil, nil, nil, fmt.Errorf("SPEC_KIT_MANIFEST_PATH_INVALID: %s", rel)
+			}
+			target := filepath.Join(abs, filepath.FromSlash(rel))
+			resolved, resolveErr := filepath.EvalSymlinks(target)
+			if resolveErr != nil {
+				if os.IsNotExist(resolveErr) {
+					continue
 				}
+				return "", nil, nil, nil, resolveErr
+			}
+			inside, relErr := filepath.Rel(abs, resolved)
+			if relErr != nil || inside == ".." || strings.HasPrefix(inside, ".."+string(filepath.Separator)) {
+				return "", nil, nil, nil, fmt.Errorf("PERMISSION_DENIED: Spec-Kit command template escapes project root")
+			}
+			content, readErr := os.ReadFile(resolved)
+			if readErr != nil {
+				return "", nil, nil, nil, readErr
+			}
+			want, decodeErr := hex.DecodeString(manifest.Files[rel])
+			if decodeErr != nil || len(want) != sha256.Size {
+				return "", nil, nil, nil, fmt.Errorf("SPEC_KIT_MANIFEST_HASH_INVALID: %s", rel)
+			}
+			got := sha256.Sum256(content)
+			if !equalBytes(want, got[:]) {
+				return "", nil, nil, nil, fmt.Errorf("SPEC_KIT_COMMAND_INTEGRITY_MISMATCH: %s", rel)
+			}
+			commands[stage] = "/speckit." + stage
+			files[stage] = rel
+			hashes[stage] = manifest.Files[rel]
+			if integration == "" {
+				integration = manifest.Integration
 			}
 		}
 	}
 	if integration == "" {
 		integration = "unknown"
 	}
-	return Installation{Binary: bin, ProjectRoot: abs, Integration: integration, Commands: commands, CommandFiles: files}, nil
+	return integration, commands, files, hashes, nil
+}
+
+func equalBytes(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	var diff byte
+	for i := range a {
+		diff |= a[i] ^ b[i]
+	}
+	return diff == 0
 }
 func RequireStage(in Installation, stage string) (string, error) {
 	cmd := in.Commands[stage]
@@ -111,6 +174,13 @@ func StagePrompt(in Installation, stage, arguments string) (string, error) {
 	b, err := os.ReadFile(target)
 	if err != nil {
 		return "", err
+	}
+	if in.Verified {
+		want, decodeErr := hex.DecodeString(in.CommandHashes[stage])
+		got := sha256.Sum256(b)
+		if decodeErr != nil || len(want) != sha256.Size || !equalBytes(want, got[:]) {
+			return "", fmt.Errorf("SPEC_KIT_COMMAND_INTEGRITY_MISMATCH: %s", rel)
+		}
 	}
 	body := string(b)
 	if strings.HasPrefix(body, "---") {

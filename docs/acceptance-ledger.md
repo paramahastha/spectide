@@ -9,7 +9,7 @@ This ledger maps every functional requirement in the single master specification
 | FR-003 immutable configuration and attempts | Partial | [versioned persistence and tests](../internal/store/migrations/004_run_configuration.sql); effective routes are hashed into run reports and immutable stage attempts are append-only, but retry orchestration and end-to-end historical attempt reporting remain open |
 | FR-004 single owner and workspace writer | Partial | [workspace path, scope, symlink, lock, and owner lease tests](../internal/workflow/engine_test.go); run start now requires an existing canonical directory and enforces configured allowed scopes before registration or creation; stale owner reconciliation is implemented, while process-start identity and complete restart validation remain open (T034) |
 | FR-005 canonical workflow stages | Partial | [workflow engine](../internal/workflow/engine.go); stage execution is deterministic simulation only; live Spec-Kit orchestration remains open (T016) |
-| FR-006 verified official Spec-Kit invocation | Partial | [Spec-Kit discovery and command mapping](../internal/speckit/discovery.go), [workflow blocked-stage evidence](../internal/workflow/engine.go), and [Spec-Kit parser tests](../internal/speckit/parse_test.go); unavailable live stages now persist as `BLOCKED` with `NOT_RUN`, but verified command-template invocation remains open (T014) |
+| FR-006 verified official Spec-Kit invocation | Partial | [hash-verified discovery and invocation builder](../internal/speckit/discovery.go), [workflow blocked-stage evidence](../internal/workflow/engine.go), and [Spec-Kit parser/invocation tests](../internal/speckit/invoke_test.go); unavailable live stages persist as `BLOCKED` with `NOT_RUN`, but workflow-level authenticated adapter orchestration remains open (T014) |
 | FR-007 one product spec through retries | Partial | [master feature spec](../specs/001-build-spectide/spec.md), [task ledger](../specs/001-build-spectide/tasks.md); retry/convergence workflow remains open (T035) |
 | FR-008 bounded read-only analysis remediation | Partial | [analyze parser](../internal/speckit/parse.go), [analysis report](../specs/001-build-spectide/analysis.md); bounded workflow loop remains open (T016) |
 | FR-009 append-only bounded convergence loop | Partial | [append-only validator](../internal/speckit/parse.go); implementation/test/converge return loop remains open (T035) |
@@ -39,7 +39,7 @@ This ledger maps every functional requirement in the single master specification
 
 | Criterion | Current evidence/status |
 |---|---|
-| SC-001 | Pass on recorded host: macOS 15.1, Apple M4, 16 GiB, arm64; latest same-process monotonic `make verify` measured 20.717 ms process-start-to-first-HTTP-200 at `/healthz`. See [verification evidence](final-verification.md). |
+| SC-001 | Pass on recorded host: macOS 15.1, Apple M4, 16 GiB, arm64; latest same-process monotonic `make verify` measured 19.514 ms process-start-to-first-HTTP-200 at `/healthz`. See [verification evidence](final-verification.md). |
 | SC-002 | Pass: 20 deterministic runs passed in `TestTwentyDeterministicRunsCompleteWithRequiredEvidence`. |
 | SC-003 | Partial: quality verdict types exist; terminal simulated reports pass; live blocked/not-run behavior needs end-to-end acceptance. |
 | SC-004 | Partial: persisted replay and cursor tests pass; two independent browser clients are not yet covered. |
