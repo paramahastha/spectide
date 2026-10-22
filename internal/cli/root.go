@@ -60,7 +60,7 @@ func Root() *cobra.Command {
 		if specErr != nil {
 			specStatus = specErr.Error()
 		}
-		return writeJSON(c.OutOrStdout(), map[string]any{"database": app.DefaultDBPath(), "providers": providers, "spec_kit": specStatus, "live_workflows": "BLOCKED_UNTIL_ROUTE_CONFIGURATION_AND_STAGE_EXECUTION_ARE_COMPLETE"})
+		return writeJSON(c.OutOrStdout(), map[string]any{"database": app.DefaultDBPath(), "providers": providers, "spec_kit": specStatus, "live_workflows": "AVAILABLE_FOR_CONFIGURED_AND_AUTHORIZED_ROUTES"})
 	}})
 	serve := &cobra.Command{Use: "serve", Short: "Serve loopback dashboard and API", RunE: func(c *cobra.Command, _ []string) error {
 		a, e := open()
@@ -85,7 +85,7 @@ func Root() *cobra.Command {
 	serve.Flags().String("host", "127.0.0.1", "loopback host")
 	serve.Flags().Int("port", 4747, "local port")
 	root.AddCommand(serve)
-	run := &cobra.Command{Use: "run PROMPT", Args: cobra.ExactArgs(1), Short: "Start an offline simulated workflow (live workflow execution is not yet enabled)", RunE: func(c *cobra.Command, args []string) error {
+	run := &cobra.Command{Use: "run PROMPT", Args: cobra.ExactArgs(1), Short: "Start a workflow using the configured project routes", RunE: func(c *cobra.Command, args []string) error {
 		a, e := open()
 		if e != nil {
 			return e
@@ -100,18 +100,31 @@ func Root() *cobra.Command {
 			return e
 		}
 		if r.State == model.Blocked {
-			fmt.Fprintf(c.OutOrStdout(), "BLOCKED run: %s\n", r.ID)
+			report, reportErr := a.Store.Report(context.Background(), r.ID)
+			if reportErr != nil {
+				return reportErr
+			}
+			fmt.Fprintf(c.OutOrStdout(), "%s BLOCKED run: %s\n", report.Acceptance.Execution, r.ID)
 			return runStateError(r.State)
 		}
-		fmt.Fprintf(c.OutOrStdout(), "SIMULATED run started: %s\n", r.ID)
+		fmt.Fprintf(c.OutOrStdout(), "Configured workflow run started: %s\n", r.ID)
 		result, e := a.Engine.Wait(context.Background(), r.ID)
 		if e != nil {
 			return e
 		}
+		report, e := a.Store.Report(context.Background(), result.ID)
+		if e != nil {
+			return e
+		}
 		if result.State != model.Completed {
+			fmt.Fprintf(c.OutOrStdout(), "%s run ended %s: %s\n", report.Acceptance.Execution, result.State, result.ID)
 			return runStateError(result.State)
 		}
-		fmt.Fprintln(c.OutOrStdout(), "SIMULATED run completed with fixture evidence")
+		if report.Acceptance.Execution == "SIMULATED" {
+			fmt.Fprintln(c.OutOrStdout(), "SIMULATED run completed with fixture evidence")
+		} else {
+			fmt.Fprintf(c.OutOrStdout(), "%s run completed with persisted evidence\n", report.Acceptance.Execution)
+		}
 		return nil
 	}}
 	run.Flags().String("project", ".", "registered local project label")
@@ -127,15 +140,24 @@ func Root() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		fmt.Fprintf(c.OutOrStdout(), "SIMULATED run started: %s\n", r.ID)
+		fmt.Fprintf(c.OutOrStdout(), "Configured demo run started: %s\n", r.ID)
 		result, e := a.Engine.Wait(context.Background(), r.ID)
 		if e != nil {
 			return e
 		}
+		report, e := a.Store.Report(context.Background(), result.ID)
+		if e != nil {
+			return e
+		}
 		if result.State != model.Completed {
+			fmt.Fprintf(c.OutOrStdout(), "%s demo run ended %s: %s\n", report.Acceptance.Execution, result.State, result.ID)
 			return runStateError(result.State)
 		}
-		fmt.Fprintln(c.OutOrStdout(), "SIMULATED run completed with fixture evidence")
+		if report.Acceptance.Execution == "SIMULATED" {
+			fmt.Fprintln(c.OutOrStdout(), "SIMULATED run completed with fixture evidence")
+		} else {
+			fmt.Fprintf(c.OutOrStdout(), "%s demo run completed with persisted evidence\n", report.Acceptance.Execution)
+		}
 		return nil
 	}}
 	demo.Flags().String("project", "examples/fake-provider-demo", "demo project path")

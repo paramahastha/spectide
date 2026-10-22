@@ -5,6 +5,7 @@ export interface Run {
   project: string
   prompt: string
   state: RunState
+  execution?: 'SIMULATED' | 'LIVE' | 'MIXED' | 'UNKNOWN'
   created_at: string
 }
 
@@ -37,6 +38,7 @@ export interface Decision {
 
 export interface Report {
   run: Run
+  acceptance?: { verdict: string; execution: 'SIMULATED' | 'LIVE' | 'MIXED'; required_gates: Gate[]; simulation_gates?: Gate[] }
   stages: Stage[]
   gates: Gate[]
   routing_decisions: Decision[]

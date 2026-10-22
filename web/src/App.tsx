@@ -158,15 +158,10 @@ export function App() {
   }, [api, refresh, selected])
 
   const selectedRun = useMemo(() => runs.find((run) => run.id === selected), [runs, selected])
-  const simulatedRunIDs = useMemo(() => {
-    const decisions = report?.routing_decisions ?? []
-    return report && decisions.length > 0 && decisions.every((decision) => decision.provider === 'fake') ? new Set([report.run.id]) : new Set<string>()
-  }, [report])
-
   async function startRun(nextPrompt = prompt, nextProject = project) {
     if (!token || busy) return
     setBusy(true)
-    setMessage('Starting a simulated local run…')
+    setMessage('Starting a workflow using the configured routes…')
     try {
       const created = await api<Run>('/api/v1/runs', {
         method: 'POST',
@@ -176,7 +171,7 @@ export function App() {
       setSelected(created.id)
       setView('workflow')
       await refresh()
-      setMessage(`SIMULATED run ${created.id.slice(0, 8)} started`)
+      setMessage(`Workflow run ${created.id.slice(0, 8)} started`)
     } catch (error) {
       setMessage(`Unable to start run: ${String(error)}`)
     } finally {
@@ -257,7 +252,7 @@ export function App() {
           <button className={view === 'profiles' ? 'nav-item active' : 'nav-item'} aria-current={view === 'profiles' ? 'page' : undefined} onClick={() => setView('profiles')}><span aria-hidden="true">⌘</span> Profiles &amp; models</button>
           <button className={view === 'readiness' ? 'nav-item active' : 'nav-item'} aria-current={view === 'readiness' ? 'page' : undefined} onClick={() => setView('readiness')}><span aria-hidden="true">✓</span> Profile readiness</button>
         </nav>
-        <div className="rail-footer"><span className="sim-pill">SIMULATED</span><p>Provider stages are offline fixtures. Live provider execution remains disabled.</p><code>127.0.0.1</code></div>
+        <div className="rail-footer"><span className="sim-pill">LOCAL</span><p>Each run is labeled from its persisted route and execution evidence.</p><code>127.0.0.1</code></div>
       </aside>
 
       <main className="main">
@@ -278,38 +273,39 @@ export function App() {
             <div className="notice"><strong>Capability boundary</strong><span>Profile presence does not verify authentication. Use <code>spectide doctor</code> to check local readiness.</span></div>
           </section>
         ) : view === 'history' ? (
-          <section className="panel history-panel"><div className="panel-head"><div><div className="eyebrow">PERSISTED RUNS</div><h2>All runs</h2></div><span className="count">{runs.length} total</span></div><RunList runs={runs} selected={selected} onSelect={setSelected} simulatedRunIDs={simulatedRunIDs} disconnected={connection === 'disconnected'} /></section>
+          <section className="panel history-panel"><div className="panel-head"><div><div className="eyebrow">PERSISTED RUNS</div><h2>All runs</h2></div><span className="count">{runs.length} total</span></div><RunList runs={runs} selected={selected} onSelect={setSelected} disconnected={connection === 'disconnected'} /></section>
         ) : (
           <>
             <section className="overview-grid">
-              <div className="panel runs-panel"><div className="panel-head"><div><div className="eyebrow">WORKSPACE ACTIVITY</div><h2>Recent runs</h2></div><button className="text-button" onClick={() => setView('history')}>View history <span>↗</span></button></div><RunList runs={runs.slice(0, 6)} selected={selected} onSelect={setSelected} simulatedRunIDs={simulatedRunIDs} disconnected={connection === 'disconnected'} /></div>
-              <div className="panel start-panel"><div className="panel-head"><div><div className="eyebrow">OFFLINE PATH</div><h2>Start a simulated run</h2></div><span className="small-icon">↗</span></div>
+              <div className="panel runs-panel"><div className="panel-head"><div><div className="eyebrow">WORKSPACE ACTIVITY</div><h2>Recent runs</h2></div><button className="text-button" onClick={() => setView('history')}>View history <span>↗</span></button></div><RunList runs={runs.slice(0, 6)} selected={selected} onSelect={setSelected} disconnected={connection === 'disconnected'} /></div>
+              <div className="panel start-panel"><div className="panel-head"><div><div className="eyebrow">CONFIGURED WORKFLOW</div><h2>Start a workflow</h2></div><span className="small-icon">↗</span></div>
                 <form onSubmit={(event) => { event.preventDefault(); void startRun() }}>
                   <label>Project path<input required value={project} onChange={(event) => setProject(event.target.value)} /></label>
                   <label>Task prompt<textarea required rows={3} value={prompt} onChange={(event) => setPrompt(event.target.value)} /></label>
-                  <button className="button button-secondary" disabled={busy || !token}>{busy ? 'Starting…' : 'Start simulated workflow'}<span>→</span></button>
+                  <button className="button button-secondary" disabled={busy || !token}>{busy ? 'Starting…' : 'Start workflow'}<span>→</span></button>
                 </form>
-                <div className="inline-note"><span className="sim-dot" />Fixture stages · local SQLite evidence · no provider account used</div>
+                <div className="inline-note"><span className="sim-dot" />Execution labels follow configured routes and persisted evidence.</div>
               </div>
             </section>
 
             <section className="panel detail-panel" aria-label="Run detail surface" aria-live="polite">
               <div className="panel-head"><div><div className="eyebrow">OBSERVED WORKFLOW</div><h2>{selectedRun ? <>Run <code>{selectedRun.id.slice(0, 8)}</code></> : 'Run detail'}</h2></div>{selectedRun && <RunDetailStatus run={selectedRun} onPause={() => void runControl('pause')} onResume={() => void runControl('resume')} onCancel={() => void cancelRun()} />}</div>
               {!report ? <div className="empty-inline">Select a run to inspect its stages, routes, and evidence.</div> : <>
+                <div className="run-context"><span className="context-label">EXECUTION</span><span className={`execution-tag ${(report.acceptance?.execution ?? report.run.execution ?? 'UNKNOWN').toLowerCase()}`}>{report.acceptance?.execution ?? report.run.execution ?? 'UNKNOWN'}</span><span className="context-label">ACCEPTANCE</span><span>{report.acceptance?.verdict ?? 'NOT_RECORDED'}</span></div>
                 <div className="run-context"><span className="context-label">TASK</span><span>{report.run.prompt}</span><span className="context-label">PROJECT</span><code>{report.run.project}</code></div>
-                <div className="stage-list">{report.stages.map((stage, index) => <div className="stage-row" key={stage.id}><span className={stage.state === 'SUCCEEDED' ? 'stage-index complete' : 'stage-index'} aria-hidden="true">{stage.state === 'SUCCEEDED' ? '✓' : String(index + 1).padStart(2, '0')}</span><strong>{stage.key.replaceAll('_', ' ')}</strong><span className="stage-route">{stage.provider} <i>/</i> {stage.profile} <i>·</i> {stage.model || 'default'} <i>·</i> attempt {stage.attempt}{stage.provider === 'fake' && <b className="simulated-state">SIMULATED</b>}</span><span className={`stage-state ${stage.state === 'SUCCEEDED' ? 'good' : ''}`}>{stage.state}</span></div>)}</div>
+                <div className="stage-list">{report.stages.map((stage, index) => <div className="stage-row" key={stage.id}><span className={stage.state === 'SUCCEEDED' ? 'stage-index complete' : 'stage-index'} aria-hidden="true">{stage.state === 'SUCCEEDED' ? '✓' : String(index + 1).padStart(2, '0')}</span><strong>{stage.key.replaceAll('_', ' ')}</strong><span className="stage-route">{stage.provider} <i>/</i> {stage.profile} <i>·</i> {stage.model || 'default'} <i>·</i> {stage.effort || 'default effort'} <i>·</i> attempt {stage.attempt}</span><span className={`stage-state ${stage.state === 'SUCCEEDED' ? 'good' : ''}`}>{stage.state}</span></div>)}</div>
                 {!!report.routing_decisions?.length && <details className="route-details"><summary>Routing decisions <span>{report.routing_decisions.length} stages</span></summary><div className="route-list">{report.routing_decisions.map((decision) => <div key={decision.stage}><strong>{decision.stage}</strong><span>{decision.provider} / {decision.profile}</span><small>{decision.explanation}</small></div>)}</div></details>}
               </>}
             </section>
 
             <section className="evidence-grid">
-              <div className="panel evidence-panel"><div className="panel-head"><div><div className="eyebrow">DURABLE EVENTS</div><h2>Activity stream</h2></div><span className={`live-label ${connection === 'disconnected' ? 'offline' : ''}`} role="status" aria-label={`Event stream ${connection}`}><i /> {connection === 'disconnected' ? 'RECONNECTING' : 'LIVE'}</span></div><EventList events={events} /></div>
+              <div className="panel evidence-panel"><div className="panel-head"><div><div className="eyebrow">DURABLE EVENTS</div><h2>Activity stream</h2></div><span className={`live-label ${connection === 'disconnected' ? 'offline' : ''}`} role="status" aria-label={`Event stream ${!selected ? 'idle' : connection}`}><i /> {!selected ? 'SELECT RUN' : connection === 'disconnected' ? 'RECONNECTING' : 'LIVE'}</span></div><EventList events={events} /></div>
               <div className="panel evidence-panel"><div className="panel-head"><div><div className="eyebrow">RECORDED VERDICTS</div><h2>Quality gates</h2></div><span className="count">{report?.gates.length ?? 0}</span></div><GateList gates={report?.gates ?? []} /></div>
             </section>
             {report && <section className="panel artifacts-panel"><div className="panel-head"><div><div className="eyebrow">RUN OUTPUTS</div><h2>Artifacts &amp; approvals</h2></div></div>{report.artifacts?.length || report.approvals?.length ? <div className="artifact-list">{report.artifacts?.map((artifact) => <div className="artifact-row" key={artifact.id}><span>▤</span><strong>{artifact.path}</strong><code>{artifact.sha256.slice(0, 12)}</code></div>)}<ApprovalActions approvals={report.approvals ?? []} runState={report.run.state} busy={approvalBusy} onResolve={(id, decision) => void resolveApproval(id, decision)} /></div> : <div className="empty-inline">No artifacts or approvals recorded for this run.</div>}</section>}
           </>
         )}
-        <footer className="footer"><span>SpecTide <b>0.1.0-dev</b></span><span>State is read from local SQLite · provider fixtures are marked simulated</span></footer>
+        <footer className="footer"><span>SpecTide <b>0.1.0-dev</b></span><span>Run labels come from persisted route configuration and stage evidence</span></footer>
       </main>
     </div>
   )
@@ -319,9 +315,9 @@ export function ApprovalActions({ approvals, runState, busy = '', onResolve }: {
   return <>{approvals.map((approval) => <div className="artifact-row" key={approval.id}><span aria-hidden="true">◇</span><strong>{approval.action}</strong><span className="state-pill quiet">{approval.status}</span>{approval.status === 'PENDING' && runState === 'PAUSED' && <span className="detail-actions"><button className="button button-primary control-button" aria-label={`Approve ${approval.action}`} disabled={Boolean(busy)} onClick={() => onResolve(approval.id, 'approved')}>Approve write</button><button className="button button-danger" aria-label={`Deny ${approval.action}`} disabled={Boolean(busy)} onClick={() => onResolve(approval.id, 'denied')}>Deny</button></span>}</div>)}</>
 }
 
-export function RunList({ runs, selected, onSelect, simulatedRunIDs = new Set<string>(), disconnected = false }: { runs: Run[]; selected: string; onSelect: (id: string) => void; simulatedRunIDs?: Set<string>; disconnected?: boolean }) {
-  if (!runs.length) return <><div className="empty-state compact" role="status" aria-label="Empty run list"><span className="empty-icon" aria-hidden="true">⌁</span><strong>No runs recorded yet</strong><p>Start the offline demo to see the deterministic lifecycle.</p></div>{disconnected && <SharedStateSurface state="disconnected" message="Run history may be stale while the local API is unavailable." />}</>
-  return <>{disconnected && <SharedStateSurface state="disconnected" message="Run history may be stale while the local API is unavailable." />}<div className="run-list" aria-label="Run list">{runs.map((run) => <button key={run.id} className={`run-card ${selected === run.id ? 'selected' : ''}`} onClick={() => onSelect(run.id)}><span className="run-avatar" aria-hidden="true">{run.state === 'COMPLETED' ? '✓' : run.state === 'RUNNING' ? '◌' : '·'}</span><span className="run-copy"><strong>{run.prompt}</strong><span>{run.project} <i aria-hidden="true">·</i> {new Date(run.created_at).toLocaleString()}</span></span>{simulatedRunIDs.has(run.id) && <span className="execution-tag">SIMULATED</span>}<span className={`state-pill ${runTone(run.state)}`}>{run.state}</span></button>)}</div></>
+export function RunList({ runs, selected, onSelect, disconnected = false }: { runs: Run[]; selected: string; onSelect: (id: string) => void; disconnected?: boolean }) {
+  if (!runs.length) return <><div className="empty-state compact" role="status" aria-label="Empty run list"><span className="empty-icon" aria-hidden="true">⌁</span><strong>No runs recorded yet</strong><p>Start a configured workflow or run the offline demo.</p></div>{disconnected && <SharedStateSurface state="disconnected" message="Run history may be stale while the local API is unavailable." />}</>
+  return <>{disconnected && <SharedStateSurface state="disconnected" message="Run history may be stale while the local API is unavailable." />}<div className="run-list" aria-label="Run list">{runs.map((run) => <button key={run.id} className={`run-card ${selected === run.id ? 'selected' : ''}`} onClick={() => onSelect(run.id)}><span className="run-avatar" aria-hidden="true">{run.state === 'COMPLETED' ? '✓' : run.state === 'RUNNING' ? '◌' : '·'}</span><span className="run-copy"><strong>{run.prompt}</strong><span>{run.project} <i aria-hidden="true">·</i> {new Date(run.created_at).toLocaleString()}</span></span>{run.execution && <span className={`execution-tag ${run.execution.toLowerCase()}`}>{run.execution}</span>}<span className={`state-pill ${runTone(run.state)}`}>{run.state}</span></button>)}</div></>
 }
 
 export function RunDetailStatus({ run, onPause, onResume, onCancel }: { run: Run; onPause: () => void; onResume: () => void; onCancel: () => void }) {

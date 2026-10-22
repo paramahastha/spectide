@@ -44,6 +44,18 @@ describe('FR-026 dashboard page and state matrix', () => {
     expect(screen.getByRole('status', { name: 'Empty run list' }).textContent).toContain('No runs recorded yet')
   })
 
+  it('labels each history row from its immutable execution class without selecting it', () => {
+    const runs: Run[] = [
+      { ...run('COMPLETED', 'run-simulated'), execution: 'SIMULATED' },
+      { ...run('COMPLETED', 'run-live'), execution: 'LIVE' },
+      { ...run('BLOCKED', 'run-mixed'), execution: 'MIXED' },
+      { ...run('FAILED', 'run-unknown'), execution: 'UNKNOWN' },
+    ]
+    render(<RunList runs={runs} selected="" onSelect={() => undefined} />)
+    for (const execution of ['SIMULATED', 'LIVE', 'MIXED', 'UNKNOWN']) expect(screen.getByText(execution)).toBeTruthy()
+    expect(screen.getAllByText('COMPLETED')).toHaveLength(2)
+  })
+
   it('labels a disconnected run list while preserving its rows', () => {
     render(<RunList runs={[run('RUNNING')]} selected="" onSelect={() => undefined} disconnected />)
     expect(screen.getByRole('status').textContent).toContain('Disconnected')
@@ -125,7 +137,8 @@ describe('FR-026 dashboard page and state matrix', () => {
     const item = run('BLOCKED', 'run-1')
     const report: Report = {
       run: item,
-      stages: [{ id: 'stage-1', key: 'analyze', state: 'SKIPPED', provider: 'fake', profile: 'offline', model: '', effort: '', attempt: 1 }],
+      acceptance: { execution: 'MIXED', verdict: 'BLOCKED', required_gates: [] },
+      stages: [{ id: 'stage-1', key: 'analyze', state: 'SKIPPED', provider: 'fake', profile: 'offline', model: 'fixture-model', effort: 'high', attempt: 1 }],
       gates: [{ key: 'required_tests', verdict: 'NOT_RUN', evidence: 'blocked before tests' }],
       routing_decisions: [{ stage: 'analyze', provider: 'fake', profile: 'offline', model: '', effort: '', policy: 'hybrid', explanation: 'offline fixture' }], artifacts: [], approvals: [],
     }
@@ -145,8 +158,11 @@ describe('FR-026 dashboard page and state matrix', () => {
     const detail = await screen.findByLabelText('Run detail surface')
     expect(within(detail).getByText('SKIPPED')).toBeTruthy()
     expect(screen.getByText('NOT_RUN')).toBeTruthy()
+    expect(screen.getByText('MIXED')).toBeTruthy()
     expect(screen.getAllByText('BLOCKED').length).toBeGreaterThanOrEqual(1)
-    expect(screen.getAllByText('SIMULATED').length).toBeGreaterThanOrEqual(2)
+    expect(screen.getByText(/fixture-model.*high.*attempt 1/)).toBeTruthy()
+    expect(screen.getAllByText('BLOCKED').length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText('MIXED')).toBeTruthy()
   })
 
   it('replays ordered missed events to two viewers and refreshes both canonical run snapshots', async () => {

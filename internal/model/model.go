@@ -29,6 +29,7 @@ type Run struct {
 	Project   string     `json:"project"`
 	Prompt    string     `json:"prompt"`
 	State     RunState   `json:"state"`
+	Execution string     `json:"execution,omitempty"`
 	CreatedAt time.Time  `json:"created_at"`
 	StartedAt *time.Time `json:"started_at,omitempty"`
 	EndedAt   *time.Time `json:"ended_at,omitempty"`

@@ -13,7 +13,7 @@
 - Architecture: arm64
 - Build command: `make build` (`go build -o bin/spectide ./cmd/spectide`)
 - Startup/health command: `make smoke` (`scripts/smoke.sh` starts `spectide serve --port 0`, then requests `/healthz`)
-- Measurement: latest `make verify` run measured 17.906 ms from the monotonic timestamp immediately before `Popen` through the first HTTP 200 from `/healthz`; acceptance limit is 2,000 ms. Earlier measurements are retained in the implementation checkpoint history.
+- Measurement: latest `make verify` run measured 21.562 ms from the monotonic timestamp immediately before `Popen` through the first HTTP 200 from `/healthz`; acceptance limit is 2,000 ms. Earlier measurements are retained in the implementation checkpoint history.
 - The same smoke run completed the offline demo and reported `SIMULATED`.
 
 ## Other verification executed
@@ -22,10 +22,10 @@
 |---|---|---|
 | Go unit/integration suite | PASS | `go test ./...` |
 | Go static analysis | PASS | `go vet ./...` |
-| Dashboard tests | PASS | `make web-test` (28 tests) |
+| Dashboard tests | PASS | `make web-test` (29 tests) |
 | Dashboard typecheck | PASS | `make lint` |
 | Dashboard production build | PASS | `make web-build` |
-| Dashboard component states and Axe scan | PASS, jsdom scope | `cd web && npm test` (28 tests; seven surfaces; zero critical/serious); includes two-viewer cursor reconnect and canonical snapshot agreement; see [accessibility audit](accessibility-audit.md) |
+| Dashboard component states and Axe scan | PASS, jsdom scope | `cd web && npm test` (29 tests; seven surfaces; zero critical/serious); includes two-viewer cursor reconnect/canonical snapshot agreement and fake/live/mixed/unknown run labels; see [accessibility audit](accessibility-audit.md) |
 | Offline demo and startup smoke | PASS | `make smoke` |
 | Unified verification and secret scan | PASS | `make verify` (format, vet, Go tests, dashboard checks/build, binary build, secret scan, and smoke) |
 | Frozen effective run configuration | PASS | `make verify`; immutable run configuration stores effective routes, profile executable/config/scope and capability references, required-check definitions, bounded loop settings, and stage timeouts. Tests cover defaults, overrides, supported ranges, profile drift, adapter timeout propagation, and restoration from the hashed run snapshot (T064). |
@@ -38,6 +38,7 @@
 | Foreground CLI restart resume | PASS, subprocess fixture | `go test ./internal/workflow -run TestCLISubprocessResumeWaitsForDurableTerminalEvidence -count=1`; the built `spectide resume` process remains alive through recovery claim and simulated completion, then the reopened SQLite report contains terminal acceptance and `run.COMPLETED` evidence (T071). |
 | Terminal required-gate inventory | PASS, store/workflow fixtures | `make verify`; schema migration 10 persists six inventory keys on every run, terminal acceptance is atomic with state changes, and tests assert PASS/FAIL/BLOCKED/NOT_RUN for missing integration, early failure, cancellation, interruption, simulated success, and live success (T072). |
 | Dashboard event replay and recovery | PASS, component fixtures | `make verify`; two viewers receive provider, approval, quality, and failure events in sequence, reconnect from the last event cursor, deduplicate a replay duplicate, refresh the same persisted report snapshot, and clear the disconnected state on stream recovery (T073). Actual browser E2E remains open under T077. |
+| Immutable execution labels | PASS, store/CLI/component fixtures | `make verify`; run history and reports derive execution class from immutable route snapshots; simulated/live/mixed/unknown rows render before selection, CLI status includes the class and acceptance verdict, and stage details include effort and attempt (T074). Live account execution and browser rendering remain NOT_RUN. |
 | Runner timeout/output/cancellation | PASS | `go test ./internal/runner -count=1` |
 | Deterministic repeated lifecycle | PASS | `TestTwentyDeterministicRunsCompleteWithRequiredEvidence` (20 runs) |
 | Workspace path/scope enforcement | PASS | Focused `go test ./internal/workflow ./internal/api ./internal/workspace`; missing paths and disallowed roots rejected before run creation, canonical symlink path accepted within scope |

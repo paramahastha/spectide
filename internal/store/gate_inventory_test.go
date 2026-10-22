@@ -2,12 +2,83 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/spectide/spectide/internal/model"
 )
+
+func TestRunListExecutionLabelsComeFromImmutableRoutes(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	type route struct {
+		Provider string `json:"provider"`
+	}
+	type stage struct {
+		Decision struct {
+			Route route `json:"route"`
+		} `json:"decision"`
+	}
+	cases := []struct {
+		name      string
+		providers []string
+		want      string
+	}{
+		{name: "simulated", providers: []string{"fake", "fake"}, want: "SIMULATED"},
+		{name: "live", providers: []string{"codex", "claude"}, want: "LIVE"},
+		{name: "mixed", providers: []string{"fake", "codex"}, want: "MIXED"},
+	}
+	wantByID := map[string]string{}
+	for _, tc := range cases {
+		var stages []stage
+		for _, provider := range tc.providers {
+			var item stage
+			item.Decision.Route.Provider = provider
+			stages = append(stages, item)
+		}
+		encoded, marshalErr := json.Marshal(struct {
+			Stages []stage `json:"stages"`
+		}{Stages: stages})
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		run, _, createErr := s.CreateRunWithConfiguration(ctx, "", "/workspace/"+tc.name, tc.name, encoded)
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		wantByID[run.ID] = tc.want
+		got, getErr := s.GetRun(ctx, run.ID)
+		if getErr != nil || got.Execution != tc.want {
+			t.Fatalf("GetRun execution=%q want %q, err=%v", got.Execution, tc.want, getErr)
+		}
+	}
+	legacy, err := s.CreateRun(ctx, "/workspace/legacy", "legacy route evidence")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SaveRoutingDecision(ctx, legacy.ID, "analyze", "codex", "legacy-live", "", "", "manual", "stored route", false); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.AddStage(ctx, model.Stage{ID: "legacy-fake-stage", RunID: legacy.ID, Key: "implement", Position: 2, State: model.Pending, Provider: "fake", Profile: "offline", Attempt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	wantByID[legacy.ID] = "MIXED"
+	runs, err := s.Runs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, run := range runs {
+		if want := wantByID[run.ID]; run.Execution != want {
+			t.Errorf("run %s execution=%q want %q", run.ID, run.Execution, want)
+		}
+	}
+}
 
 func TestTerminalReportsPreserveRequiredGateMatrix(t *testing.T) {
 	ctx := context.Background()

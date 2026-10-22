@@ -5,12 +5,72 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
 )
 
 var requiredGateInventory = []string{"analyze_clean", "required_tests", "converged", "final_review", "simulated_e2e", "workflow_execution"}
+
+// executionFromConfiguration projects the execution class from the immutable
+// routing snapshot so run history is accurate before a selected report loads.
+func executionFromConfiguration(encoded string) string {
+	var snapshot struct {
+		Stages []struct {
+			Decision struct {
+				Route struct {
+					Provider string `json:"provider"`
+				} `json:"route"`
+			} `json:"decision"`
+		} `json:"stages"`
+	}
+	if encoded == "" || json.Unmarshal([]byte(encoded), &snapshot) != nil || len(snapshot.Stages) == 0 {
+		return "UNKNOWN"
+	}
+	hasLive, hasSimulated := false, false
+	for _, stage := range snapshot.Stages {
+		if stage.Decision.Route.Provider == "fake" {
+			hasSimulated = true
+		} else if stage.Decision.Route.Provider != "" {
+			hasLive = true
+		}
+	}
+	if hasLive && hasSimulated {
+		return "MIXED"
+	}
+	if hasLive {
+		return "LIVE"
+	}
+	if hasSimulated {
+		return "SIMULATED"
+	}
+	return "UNKNOWN"
+}
+
+func executionFromRouteEvidence(encoded, routingProviders, stageProviders string) string {
+	if execution := executionFromConfiguration(encoded); execution != "UNKNOWN" {
+		return execution
+	}
+	hasLive, hasSimulated := false, false
+	for _, provider := range strings.Split(routingProviders+","+stageProviders, ",") {
+		if provider == "fake" {
+			hasSimulated = true
+		} else if provider != "" {
+			hasLive = true
+		}
+	}
+	if hasLive && hasSimulated {
+		return "MIXED"
+	}
+	if hasLive {
+		return "LIVE"
+	}
+	if hasSimulated {
+		return "SIMULATED"
+	}
+	return "UNKNOWN"
+}
 
 func initializeGateInventoryTx(ctx context.Context, tx *sql.Tx, runID string) error {
 	for _, key := range requiredGateInventory {

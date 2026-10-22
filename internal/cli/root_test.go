@@ -71,6 +71,30 @@ func TestCLIReportPresentationRedactsPersistedEvidence(t *testing.T) {
 	}
 }
 
+func TestCLIStatusLabelsExecutionFromImmutableRunRoutes(t *testing.T) {
+	ctx := context.Background()
+	db := filepath.Join(t.TempDir(), "state.db")
+	state, err := store.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, _, err := state.CreateRunWithConfiguration(ctx, "", "/workspace", "mixed execution", []byte(`{"schema_version":1,"stages":[{"stage":"analyze","decision":{"route":{"provider":"codex","profile":"live"}}},{"stage":"implement","decision":{"route":{"provider":"fake","profile":"offline"}}}]}`))
+	if err != nil {
+		state.Close()
+		t.Fatal(err)
+	}
+	if err = state.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := executeCLI(t, db, "status", run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, `"execution":"MIXED"`) || !strings.Contains(output, `"verdict":"BLOCKED"`) {
+		t.Fatalf("CLI omitted immutable execution/acceptance labels: %s", output)
+	}
+}
+
 func TestRunStateExitCodesAreStable(t *testing.T) {
 	cases := []struct {
 		state model.RunState

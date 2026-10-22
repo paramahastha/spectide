@@ -580,20 +580,67 @@ func scanRun(row interface{ Scan(...any) error }) (model.Run, error) {
 	return r, nil
 }
 func (s *Store) GetRun(ctx context.Context, id string) (model.Run, error) {
-	return scanRun(s.DB.QueryRowContext(ctx, `SELECT id,project,prompt,state,created_at,COALESCE(started_at,''),COALESCE(ended_at,'') FROM runs WHERE id=?`, id))
+	var run model.Run
+	var state, created, started, ended, encoded, routingProviders, stageProviders string
+	err := s.DB.QueryRowContext(ctx, `SELECT r.id,r.project,r.prompt,r.state,r.created_at,COALESCE(r.started_at,''),COALESCE(r.ended_at,''),COALESCE(c.config_json,''),COALESCE((SELECT group_concat(provider, ',') FROM routing_decisions d WHERE d.run_id=r.id),''),COALESCE((SELECT group_concat(provider, ',') FROM stages st WHERE st.run_id=r.id),'') FROM runs r LEFT JOIN run_configurations c ON c.run_id=r.id WHERE r.id=?`, id).Scan(&run.ID, &run.Project, &run.Prompt, &state, &created, &started, &ended, &encoded, &routingProviders, &stageProviders)
+	if err != nil {
+		return run, err
+	}
+	run.State = model.RunState(state)
+	run.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+	if err != nil {
+		return run, err
+	}
+	if started != "" {
+		v, parseErr := time.Parse(time.RFC3339Nano, started)
+		if parseErr != nil {
+			return run, parseErr
+		}
+		run.StartedAt = &v
+	}
+	if ended != "" {
+		v, parseErr := time.Parse(time.RFC3339Nano, ended)
+		if parseErr != nil {
+			return run, parseErr
+		}
+		run.EndedAt = &v
+	}
+	run.Execution = executionFromRouteEvidence(encoded, routingProviders, stageProviders)
+	return run, nil
 }
 func (s *Store) Runs(ctx context.Context) ([]model.Run, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT id,project,prompt,state,created_at,COALESCE(started_at,''),COALESCE(ended_at,'') FROM runs ORDER BY created_at DESC`)
+	rows, err := s.DB.QueryContext(ctx, `SELECT r.id,r.project,r.prompt,r.state,r.created_at,COALESCE(r.started_at,''),COALESCE(r.ended_at,''),COALESCE(c.config_json,''),COALESCE((SELECT group_concat(provider, ',') FROM routing_decisions d WHERE d.run_id=r.id),''),COALESCE((SELECT group_concat(provider, ',') FROM stages st WHERE st.run_id=r.id),'') FROM runs r LEFT JOIN run_configurations c ON c.run_id=r.id ORDER BY r.created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []model.Run
 	for rows.Next() {
-		r, e := scanRun(rows)
-		if e != nil {
-			return nil, e
+		var r model.Run
+		var state, created, started, ended, encoded, routingProviders, stageProviders string
+		if err = rows.Scan(&r.ID, &r.Project, &r.Prompt, &state, &created, &started, &ended, &encoded, &routingProviders, &stageProviders); err != nil {
+			return nil, err
 		}
+		r.State = model.RunState(state)
+		r.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+		if err != nil {
+			return nil, err
+		}
+		if started != "" {
+			v, parseErr := time.Parse(time.RFC3339Nano, started)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			r.StartedAt = &v
+		}
+		if ended != "" {
+			v, parseErr := time.Parse(time.RFC3339Nano, ended)
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			r.EndedAt = &v
+		}
+		r.Execution = executionFromRouteEvidence(encoded, routingProviders, stageProviders)
 		out = append(out, r)
 	}
 	return out, rows.Err()
