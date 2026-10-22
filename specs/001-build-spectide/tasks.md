@@ -26,7 +26,7 @@
 - [x] T008 [P] Implement configuration precedence, profile registry, and validation in `internal/config/`
 - [x] T009 [P] Implement workspace canonicalization, allowed roots, and writer locks in `internal/workspace/`
 - [x] T010 [P] Implement redaction, process policy, and approval models in `internal/security/` and `internal/events/`
-- [ ] T011 Implement strict workflow transition validation and recovery checkpoints in `internal/workflow/` (depends on T047 persistence repositories)
+- [x] T011 Implement strict workflow transition validation and recovery checkpoints in `internal/workflow/` (depends on T047 persistence repositories)
 
 ## Phase 3: User Story 1 — Complete development workflow (P1)
 

@@ -337,6 +337,12 @@
 - Centralized recursive event/checkpoint payload redaction in `internal/events`, covering map and slice variants as well as sensitive field names. Added explicit approval status constants while preserving the existing one-way durable approval lifecycle.
 - Focused `go test ./internal/security ./internal/events ./internal/runner ./internal/store` and full `make verify` passed. T010 is complete. Latest SC-001 measurement is 16.634 ms on the reference host.
 
+### Phase checkpoint — strict transitions and durable stage cursors
+
+- Confirmed run state transitions reject terminal-state mutation and pair each accepted transition with an event in one transaction. Workflow execution now writes an append-only checkpoint after each successful stage, recording the completed/next stage, immutable run-configuration hash, and canonical workspace identity hash.
+- Checkpoints are cursor evidence only. The hash does not cover workspace contents; lease-expired restart resume remains denied until T034 verifies checkpointed artifacts, Git HEAD, and managed paths.
+- Focused `go test ./internal/workflow ./internal/store` and full `make verify` passed. T011's foundational transition and checkpoint work is complete. Latest SC-001 measurement is 17.148 ms on the reference host.
+
 ### Phase checkpoint — durable run-owner leases
 
 - Added migration 6 and per-run heartbeat leases. The workflow writes its owner lease atomically with the workspace lock, refreshes it while the worker is alive, and removes it at finish.

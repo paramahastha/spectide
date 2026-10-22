@@ -21,7 +21,7 @@ This ledger maps every functional requirement in the single master specification
 | FR-015 routing modes and audit decisions | Partial | [config routing tests](../internal/config/config_test.go), [workflow route persistence test](../internal/workflow/engine_test.go); full policy inputs remain incomplete (T024) |
 | FR-016 deny-first workspace/profile boundaries | Partial | [workspace tests](../internal/workspace/workspace_test.go), [workflow scope enforcement](../internal/workflow/engine_test.go), and [routing tests](../internal/routing/routing_test.go); configured workspace roots are enforced before launch; profile/capability authorization remains open (T024) |
 | FR-017 bounded safe subprocess execution | Partial | [runner and process policy](../internal/runner/runner.go); explicit argument vectors, minimized environment, allowlisted provider config variables, absolute working directory, 1 MiB per-stream output cap, 30-minute default and 1-second to 4-hour timeout bounds, and 2-second cancellation escalation are implemented; canonical workflow integration remains open |
-| FR-018 atomic transitions and interrupted recovery | Partial | [store transition/recovery implementation](../internal/store/store.go); expired owner leases become blocked with durable interruption evidence; full checkpoint recovery remains open (T034) |
+| FR-018 atomic transitions and interrupted recovery | Partial | [store transitions and workflow checkpoints](../internal/store/store.go), [workflow checkpoint tests](../internal/workflow/engine_test.go); state changes and events are atomic, every completed simulated stage persists its next-stage cursor tied to immutable config and canonical workspace identity, and expired owner leases become blocked with interruption evidence; verified restart resume remains open (T034) |
 | FR-019 safe pause, resume, cancellation, crash recovery | Partial | [cross-process and stale-owner tests](../internal/workflow/engine_test.go); fresh owners accept controls, expired owners block with `WORKSPACE_DRIFT` and release locks; positive restart resume with matching checkpoint/artifact/Git fingerprints remains unimplemented (T034) |
 | FR-020 loopback HTTP interface | Partial | [API handlers and tests](../internal/api/server_test.go); capabilities and some documented endpoint behaviors remain open |
 | FR-021 ordered SSE replay and slow clients | Partial | [API replay tests](../internal/api/server_test.go); 10,000-event p95 measurement remains open (T043a) |
@@ -39,7 +39,7 @@ This ledger maps every functional requirement in the single master specification
 
 | Criterion | Current evidence/status |
 |---|---|
-| SC-001 | Pass on recorded host: macOS 15.1, Apple M4, 16 GiB, arm64; latest same-process monotonic `make verify` measured 16.634 ms process-start-to-first-HTTP-200 at `/healthz`. See [verification evidence](final-verification.md). |
+| SC-001 | Pass on recorded host: macOS 15.1, Apple M4, 16 GiB, arm64; latest same-process monotonic `make verify` measured 17.148 ms process-start-to-first-HTTP-200 at `/healthz`. See [verification evidence](final-verification.md). |
 | SC-002 | Pass: 20 deterministic runs passed in `TestTwentyDeterministicRunsCompleteWithRequiredEvidence`. |
 | SC-003 | Partial: quality verdict types exist; terminal simulated reports pass; live blocked/not-run behavior needs end-to-end acceptance. |
 | SC-004 | Partial: persisted replay and cursor tests pass; two independent browser clients are not yet covered. |

@@ -13,7 +13,7 @@
 - Architecture: arm64
 - Build command: `make build` (`go build -o bin/spectide ./cmd/spectide`)
 - Startup/health command: `make smoke` (`scripts/smoke.sh` starts `spectide serve --port 0`, then requests `/healthz`)
-- Measurement: latest corrected `make verify` run measured 16.634 ms from the monotonic timestamp immediately before `Popen` through the first HTTP 200 from `/healthz` (prior same-process run: 20.369 ms); acceptance limit is 2,000 ms. An earlier attempt measured timestamps in separate Python processes, which use different monotonic origins in this host environment; those earlier values (0.152 ms and 0.295 ms) and the negative result are invalid and superseded.
+- Measurement: latest corrected `make verify` run measured 17.148 ms from the monotonic timestamp immediately before `Popen` through the first HTTP 200 from `/healthz` (prior same-process run: 16.634 ms); acceptance limit is 2,000 ms. An earlier attempt measured timestamps in separate Python processes, which use different monotonic origins in this host environment; those earlier values (0.152 ms and 0.295 ms) and the negative result are invalid and superseded.
 - The same smoke run completed the offline demo and reported `SIMULATED`.
 
 ## Other verification executed
@@ -31,6 +31,7 @@
 | Deterministic repeated lifecycle | PASS | `TestTwentyDeterministicRunsCompleteWithRequiredEvidence` (20 runs) |
 | Workspace path/scope enforcement | PASS | Focused `go test ./internal/workflow ./internal/api ./internal/workspace`; missing paths and disallowed roots rejected before run creation, canonical symlink path accepted within scope |
 | Process policy and event/checkpoint sanitization | PASS | Focused `go test ./internal/security ./internal/events ./internal/runner ./internal/store`; runner validates process policy before launch and payload sanitization covers nested map/slice credential variants |
+| Persisted stage cursors | PASS | Focused `go test ./internal/workflow ./internal/store`; completed simulated runs retain one config-bound cursor checkpoint per canonical stage; checkpoints do not authorize restart resume |
 | Spec-Kit analyze consistency gate | PASS, read-only equivalent | `specs/001-build-spectide/analysis.md`; installed Codex CLI executed the repository instructions after OpenCode returned HTTP 503; no official Spec-Kit invocation is claimed |
 
 ## Not run or incomplete

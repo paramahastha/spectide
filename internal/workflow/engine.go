@@ -2,6 +2,8 @@ package workflow
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -365,6 +367,12 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 	pause, resume := e.pauses[r.ID], e.resumes[r.ID]
 	e.mu.Unlock()
 	_ = e.store.SetRunState(ctx, r.ID, model.Running)
+	configuration, err := e.store.RunConfiguration(ctx, r.ID)
+	if err != nil {
+		_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
+		e.finish(r.ID)
+		return
+	}
 	for i, key := range stages {
 		select {
 		case <-ctx.Done():
@@ -419,6 +427,22 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			typ = "tests.passed"
 		}
 		_ = e.store.Event(ctx, r.ID, key, typ, "info", map[string]any{"simulated": true, "evidence": "deterministic fake-provider fixture"})
+		next := ""
+		if i+1 < len(stages) {
+			next = stages[i+1]
+		}
+		state, marshalErr := json.Marshal(map[string]any{"completed_stage": key, "next_stage": next, "configuration_sha256": configuration.SHA256, "cursor_only": true})
+		if marshalErr != nil {
+			_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
+			e.finish(r.ID)
+			return
+		}
+		checkpoint := model.Checkpoint{RunID: r.ID, Stage: key, StateJSON: string(state), WorkspaceFingerprint: workspaceIdentityFingerprint(r.Project)}
+		if _, checkpointErr := e.store.SaveCheckpoint(ctx, checkpoint); checkpointErr != nil {
+			_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
+			e.finish(r.ID)
+			return
+		}
 	}
 	for _, g := range []string{"analyze_clean", "required_tests", "converged", "final_review", "simulated_e2e"} {
 		_ = e.store.Gate(ctx, r.ID, g, "PASS", "simulated deterministic workflow")
@@ -426,6 +450,15 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 	_ = e.store.SetRunState(ctx, r.ID, model.Completed)
 	e.finish(r.ID)
 }
+
+// workspaceIdentityFingerprint binds a cursor checkpoint to its canonical
+// workspace location. It is not a content-integrity fingerprint and therefore
+// is insufficient to authorize restart resume on its own.
+func workspaceIdentityFingerprint(project string) string {
+	digest := sha256.Sum256([]byte(filepath.Clean(project)))
+	return hex.EncodeToString(digest[:])
+}
+
 func (e *Engine) finish(id string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()

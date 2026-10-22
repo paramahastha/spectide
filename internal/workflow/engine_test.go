@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
@@ -32,12 +33,30 @@ func TestFakeLifecyclePersistsEvidence(t *testing.T) {
 			if e != nil {
 				t.Fatal(e)
 			}
-			if len(rep.Stages) != 12 || len(rep.Decisions) != 12 || len(rep.Gates) != 5 {
-				t.Fatalf("stages=%d decisions=%d gates=%d", len(rep.Stages), len(rep.Decisions), len(rep.Gates))
-			}
 			configuration, err := s.RunConfiguration(context.Background(), r.ID)
 			if err != nil || len(configuration.SHA256) != 64 || !strings.Contains(configuration.ConfigJSON, `"simulated":true`) {
 				t.Fatalf("effective run configuration=%+v err=%v", configuration, err)
+			}
+			if len(rep.Stages) != 12 || len(rep.Decisions) != 12 || len(rep.Gates) != 5 || len(rep.Checkpoints) != 12 {
+				t.Fatalf("stages=%d decisions=%d gates=%d checkpoints=%d", len(rep.Stages), len(rep.Decisions), len(rep.Gates), len(rep.Checkpoints))
+			}
+			for index, checkpoint := range rep.Checkpoints {
+				var cursor struct {
+					CompletedStage string `json:"completed_stage"`
+					NextStage      string `json:"next_stage"`
+					ConfigHash     string `json:"configuration_sha256"`
+					CursorOnly     bool   `json:"cursor_only"`
+				}
+				if err := json.Unmarshal([]byte(checkpoint.StateJSON), &cursor); err != nil {
+					t.Fatal(err)
+				}
+				wantNext := ""
+				if index+1 < len(stages) {
+					wantNext = stages[index+1]
+				}
+				if checkpoint.Stage != stages[index] || cursor.CompletedStage != stages[index] || cursor.NextStage != wantNext || cursor.ConfigHash != configuration.SHA256 || !cursor.CursorOnly {
+					t.Fatalf("checkpoint %d does not identify the completed cursor: %+v %+v", index, checkpoint, cursor)
+				}
 			}
 			if rep.Configuration == nil || rep.Configuration.SHA256 != configuration.SHA256 {
 				t.Fatalf("report omitted immutable run configuration: %+v", rep.Configuration)
