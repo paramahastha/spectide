@@ -42,6 +42,50 @@ type ArtifactState struct {
 	Present   map[string]bool
 }
 
+// DiscoverFeatureDirectory resolves a single existing feature directory. It
+// refuses to choose among multiple specs so a workflow cannot silently switch
+// the project's product specification.
+func DiscoverFeatureDirectory(projectRoot string) (string, error) {
+	root, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return "", err
+	}
+	entries, err := os.ReadDir(filepath.Join(root, "specs"))
+	if err != nil {
+		return "", fmt.Errorf("SPECIFICATION_NOT_FOUND: %w", err)
+	}
+	var featureDirs []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		dir := filepath.Join(root, "specs", entry.Name())
+		state, inspectErr := InspectArtifacts(dir)
+		if inspectErr != nil {
+			return "", inspectErr
+		}
+		if state.Present["spec"] {
+			featureDirs = append(featureDirs, dir)
+		}
+	}
+	if len(featureDirs) == 0 {
+		return "", fmt.Errorf("SPECIFICATION_NOT_FOUND: no specs/*/spec.md exists")
+	}
+	if len(featureDirs) != 1 {
+		return "", fmt.Errorf("SPECIFICATION_AMBIGUOUS: found %d product specifications", len(featureDirs))
+	}
+	state, err := InspectArtifacts(featureDirs[0])
+	if err != nil {
+		return "", err
+	}
+	for _, name := range []string{"spec", "plan", "tasks"} {
+		if !state.Present[name] {
+			return "", fmt.Errorf("SPECIFICATION_ARTIFACT_MISSING: %s", name)
+		}
+	}
+	return featureDirs[0], nil
+}
+
 var analysisRow = regexp.MustCompile(`^\|\s*([A-Z][0-9]+)\s*\|\s*([^|]+)\|\s*(CRITICAL|HIGH|MEDIUM|LOW)\s*\|\s*([^|]+)\|\s*([^|]+)\|\s*([^|]+)\|`)
 var convergenceTask = regexp.MustCompile(`^- \[ \] (T[0-9]{3,}) (.+)$`)
 var taskID = regexp.MustCompile(`(?m)^- \[[ xX]\] (T[0-9]{3,})\b`)

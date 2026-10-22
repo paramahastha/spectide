@@ -1497,7 +1497,8 @@ Implement scope as a deny-first policy. Explicit exceptions must be documented a
 - [x] The offline fake-provider demo is labeled `SIMULATED`; provider probes do not claim authentication or live execution.
 - [x] Profile capability snapshots persist with redaction and profile-edit invalidation; route preview and launch deny unverified live profiles before creating a run.
 - [x] Complete T024 routing/capability validation, explicit fallback authorization, deny-first boundary checks, and dry-run evidence.
-- [ ] Integrate actual authenticated provider launch and fallback execution into persisted stage outcomes (T014).
+- [x] Execute capability-authorized provider stages through verified Spec-Kit command templates; persist sanitized live events and reject analyze/converge artifact contract violations (T014).
+- [ ] Integrate analyze remediation, test-repair, convergence loops, and any fallback retries with persisted stage outcomes (T016, T035).
 - [ ] Integrate official Spec-Kit/provider stages and bounded analyze, test-repair, and convergence loops into persisted run outcomes (T014, T016, T035).
 - [ ] Complete verified restart recovery and cross-layer failure/secret-leak acceptance (T034, T036).
 - [ ] Complete browser page/state and accessibility evidence, screenshots, and the final release report (T031, T046).
@@ -1581,12 +1582,12 @@ The detailed phase checklists below remain the full blueprint. Their original bo
 
 - [ ] P5-001: Detect `specify` binary/version and existing `.specify` project.
 - [ ] P5-002: Implement safe project init/update guidance with backup and approval safeguards.
-- [ ] P5-003: Detect per-provider installed Spec-Kit commands/skills; handle syntax mappings accurately.
-- [ ] P5-004: Build stage prompt envelopes that invoke **real** official commands.
-- [ ] P5-005: Identify current spec directory and enumerate expected artifacts robustly.
+- [x] P5-003: Detect per-provider installed Spec-Kit commands/skills; handle syntax mappings accurately.
+- [x] P5-004: Build stage prompt envelopes that invoke **real** official commands through capability-authorized provider adapters.
+- [x] P5-005: Identify the single current spec directory and require its canonical spec, plan, and task artifacts.
 - [ ] P5-006: Capture per-stage artifact manifests and diffs, enforce read-only stage contracts.
 - [ ] P5-007: Parse analyze findings and reroute to artifact-owning steps.
-- [ ] P5-008: Parse converge outcomes and appended tasks with append-only verification.
+- [x] P5-008: Parse converge outcomes and appended tasks with append-only verification.
 - [ ] P5-009: Implement provider-switch context handoff using artifacts and task summaries.
 - [ ] P5-010: Add fixture tests for different Spec-Kit versions and command installation layouts.
 

@@ -13,6 +13,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/spectide/spectide/internal/adapters"
+	"github.com/spectide/spectide/internal/adapters/claude"
+	"github.com/spectide/spectide/internal/adapters/codex"
+	"github.com/spectide/spectide/internal/adapters/opencode"
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
 	"github.com/spectide/spectide/internal/routing"
@@ -24,17 +28,31 @@ import (
 // Engine is deliberately provider-neutral. The built-in fake route is the offline,
 // deterministic acceptance path; real providers must be added only after a successful probe.
 type Engine struct {
-	store   *store.Store
-	ownerID string
-	mu      sync.Mutex
-	cancels map[string]context.CancelFunc
-	pauses  map[string]chan struct{}
-	resumes map[string]chan struct{}
-	locks   map[string]string
+	store    *store.Store
+	ownerID  string
+	adapters map[adapters.ProviderName]adapters.Adapter
+	discover func(string) (speckit.Installation, error)
+	mu       sync.Mutex
+	cancels  map[string]context.CancelFunc
+	pauses   map[string]chan struct{}
+	resumes  map[string]chan struct{}
+	locks    map[string]string
 }
 
 func New(s *store.Store) *Engine {
-	return &Engine{store: s, ownerID: uuid.NewString(), cancels: map[string]context.CancelFunc{}, pauses: map[string]chan struct{}{}, resumes: map[string]chan struct{}{}, locks: map[string]string{}}
+	return NewWithAdapters(s, claude.Adapter{}, codex.Adapter{}, opencode.Adapter{})
+}
+
+// NewWithAdapters allows deterministic adapter fixtures in workflow tests.
+// Production callers should use New, which registers the supported providers.
+func NewWithAdapters(s *store.Store, providers ...adapters.Adapter) *Engine {
+	registry := make(map[adapters.ProviderName]adapters.Adapter, len(providers))
+	for _, provider := range providers {
+		if provider != nil {
+			registry[provider.Name()] = provider
+		}
+	}
+	return &Engine{store: s, ownerID: uuid.NewString(), adapters: registry, discover: speckit.Discover, cancels: map[string]context.CancelFunc{}, pauses: map[string]chan struct{}{}, resumes: map[string]chan struct{}{}, locks: map[string]string{}}
 }
 
 var stages = []string{"constitution", "specify", "clarify", "plan", "checklist", "tasks", "analyze", "implement", "tests", "converge", "final_review", "report"}
@@ -75,21 +93,41 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 	}
 	decisions := make(map[string]config.Decision, len(stages))
 	blockedStage, blockedReason := "", ""
+	var installation speckit.Installation
+	var installationErr error
+	var featureDir string
 	for _, stage := range stages {
-		decision, e := cfg.Resolve(stage, prompt)
-		if e != nil {
-			return model.Run{}, false, e
+		decision, resolveErr := cfg.Resolve(stage, prompt)
+		if resolveErr != nil {
+			return model.Run{}, false, resolveErr
+		}
+		if decision.Route.Provider == "fake" {
+			continue
+		}
+		installation, installationErr = e.discover(workspace)
+		if installationErr == nil {
+			featureDir, installationErr = speckit.DiscoverFeatureDirectory(workspace)
+		}
+		break
+	}
+	for _, stage := range stages {
+		decision, resolveErr := cfg.Resolve(stage, prompt)
+		if resolveErr != nil {
+			return model.Run{}, false, resolveErr
 		}
 		if decision.Route.Provider != "fake" && blockedStage == "" {
-			blockedStage = stage
-			blockedReason = "LIVE_STAGE_EXECUTION_UNAVAILABLE: no verified authenticated adapter launch is available for " + decision.Route.Provider
-			if officialStage(stage) {
-				installation, discoverErr := speckit.Discover(workspace)
-				if discoverErr != nil {
-					blockedReason = discoverErr.Error()
-				} else if _, requireErr := speckit.RequireStage(installation, stage); requireErr != nil {
-					blockedReason = requireErr.Error()
-				}
+			if _, found := e.adapters[adapters.ProviderName(decision.Route.Provider)]; !found {
+				blockedStage, blockedReason = stage, "PROVIDER_ADAPTER_UNAVAILABLE: "+decision.Route.Provider
+			} else if !officialStage(stage) {
+				blockedStage, blockedReason = stage, "LIVE_STAGE_UNSUPPORTED: no verified Spec-Kit command for "+stage
+			} else if installationErr != nil {
+				blockedStage, blockedReason = stage, installationErr.Error()
+			} else if !installation.Verified {
+				blockedStage, blockedReason = stage, "SPEC_KIT_INTEGRATION_UNVERIFIED"
+			} else if _, requireErr := speckit.RequireStage(installation, stage); requireErr != nil {
+				blockedStage, blockedReason = stage, requireErr.Error()
+			} else if featureDir == "" {
+				blockedStage, blockedReason = stage, "SPECIFICATION_NOT_FOUND"
 			}
 		}
 		decisions[stage] = decision
@@ -140,7 +178,7 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 	e.locks[r.ID] = workspace
 	e.mu.Unlock()
 	go e.heartbeat(child, r.ID)
-	go e.execute(child, r, decisions)
+	go e.execute(child, r, decisions, installation, featureDir)
 	return r, false, nil
 }
 
@@ -430,7 +468,7 @@ func (e *Engine) Wait(ctx context.Context, id string) (model.Run, error) {
 	}
 }
 
-func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]config.Decision) {
+func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]config.Decision, installation speckit.Installation, featureDir string) {
 	e.mu.Lock()
 	pause, resume := e.pauses[r.ID], e.resumes[r.ID]
 	e.mu.Unlock()
@@ -440,6 +478,13 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 		_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
 		e.finish(r.ID)
 		return
+	}
+	hasLiveStages := false
+	for _, decision := range decisions {
+		if decision.Route.Provider != "fake" {
+			hasLiveStages = true
+			break
+		}
 	}
 	for i, key := range stages {
 		select {
@@ -466,7 +511,7 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			return
 		}
 		decision := decisions[key]
-		_ = e.store.Event(ctx, r.ID, key, "routing.resolved", "info", map[string]any{"provider": d.Provider, "profile": d.Profile, "model": d.Model, "effort": d.Effort, "policy": decision.Explanation, "simulated": true})
+		_ = e.store.Event(ctx, r.ID, key, "routing.resolved", "info", map[string]any{"provider": d.Provider, "profile": d.Profile, "model": d.Model, "effort": d.Effort, "policy": decision.Explanation, "simulated": d.Provider == "fake"})
 		if err := e.store.SaveRoutingDecision(ctx, r.ID, key, d.Provider, d.Profile, d.Model, d.Effort, decision.Mode, decision.Explanation); err != nil {
 			_ = e.store.SetStage(context.Background(), st.ID, model.StageFail)
 			_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
@@ -474,6 +519,50 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			return
 		}
 		_ = e.store.Event(ctx, r.ID, key, "stage.started", "info", map[string]any{"attempt": 1, "read_only": key == "analyze"})
+		if d.Provider != "fake" {
+			if err := e.store.SetStage(ctx, st.ID, model.StageRun); err != nil {
+				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
+				e.finish(r.ID)
+				return
+			}
+			evidence, cancelled, runErr := e.runLiveStageWithControl(ctx, r, key, d, installation, featureDir)
+			if runErr != nil {
+				if cancelled {
+					e.cancelRun(r.ID, key, st.ID)
+					e.finish(r.ID)
+					return
+				}
+				_ = e.store.SetStage(context.Background(), st.ID, model.StageFail)
+				_ = e.store.Event(context.Background(), r.ID, key, "stage.failed", "error", map[string]any{"reason": safeStageError(runErr), "execution": "LIVE"})
+				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
+				e.finish(r.ID)
+				return
+			}
+			if err := e.store.SetStage(ctx, st.ID, model.Succeeded); err != nil {
+				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
+				e.finish(r.ID)
+				return
+			}
+			evidence["execution"] = "LIVE"
+			_ = e.store.Event(ctx, r.ID, key, "stage.completed", "info", evidence)
+			next := ""
+			if i+1 < len(stages) {
+				next = stages[i+1]
+			}
+			state, marshalErr := json.Marshal(map[string]any{"completed_stage": key, "next_stage": next, "configuration_sha256": configuration.SHA256, "cursor_only": true, "execution": "LIVE"})
+			if marshalErr != nil {
+				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
+				e.finish(r.ID)
+				return
+			}
+			checkpoint := model.Checkpoint{RunID: r.ID, Stage: key, StateJSON: string(state), WorkspaceFingerprint: workspaceIdentityFingerprint(r.Project)}
+			if _, checkpointErr := e.store.SaveCheckpoint(ctx, checkpoint); checkpointErr != nil {
+				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
+				e.finish(r.ID)
+				return
+			}
+			continue
+		}
 		if !e.waitStage(ctx, r.ID, key, 90*time.Millisecond, pause, resume) {
 			if ctx.Err() != nil {
 				e.cancelRun(r.ID, key, st.ID)
@@ -511,6 +600,15 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			e.finish(r.ID)
 			return
 		}
+	}
+	if hasLiveStages {
+		for _, gate := range []string{"analyze_clean", "required_tests", "converged", "final_review", "simulated_e2e"} {
+			_ = e.store.Gate(ctx, r.ID, gate, "BLOCKED", "live stage outcomes are not yet integrated with run-level quality gates")
+		}
+		_ = e.store.Event(ctx, r.ID, "", "run.blocked", "warning", map[string]any{"reason": "LIVE_QUALITY_GATES_UNAVAILABLE", "execution": "LIVE"})
+		_ = e.store.SetRunState(ctx, r.ID, model.Blocked)
+		e.finish(r.ID)
+		return
 	}
 	for _, g := range []string{"analyze_clean", "required_tests", "converged", "final_review", "simulated_e2e"} {
 		_ = e.store.Gate(ctx, r.ID, g, "PASS", "simulated deterministic workflow")

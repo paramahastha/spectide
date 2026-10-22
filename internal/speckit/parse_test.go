@@ -74,3 +74,30 @@ func TestInspectArtifactsRejectsSymlinkEscape(t *testing.T) {
 		t.Fatal("artifact symlink escape accepted")
 	}
 }
+
+func TestDiscoverFeatureDirectoryRequiresOneCompleteProductSpec(t *testing.T) {
+	root := t.TempDir()
+	feature := filepath.Join(root, "specs", "001-product")
+	if err := os.MkdirAll(feature, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"spec.md", "plan.md", "tasks.md"} {
+		if err := os.WriteFile(filepath.Join(feature, name), []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := DiscoverFeatureDirectory(root)
+	if err != nil || got != feature {
+		t.Fatalf("feature=%q err=%v", got, err)
+	}
+	second := filepath.Join(root, "specs", "002-other")
+	if err := os.MkdirAll(second, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(second, "spec.md"), []byte("other"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = DiscoverFeatureDirectory(root); err == nil || !strings.Contains(err.Error(), "SPECIFICATION_AMBIGUOUS") {
+		t.Fatalf("ambiguous specs error=%v", err)
+	}
+}

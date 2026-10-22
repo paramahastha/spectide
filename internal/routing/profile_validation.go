@@ -99,7 +99,9 @@ func validateFallbackProfiles(project, stage string, route config.Route, profile
 	return nil
 }
 
-func validateCapability(stage string, route config.Route, profile model.Profile) error {
+// ValidateRouteCapability checks a specific persisted profile snapshot against
+// the policy required for one stage invocation.
+func ValidateRouteCapability(stage string, route config.Route, profile model.Profile) error {
 	capability := profile.Capability
 	if capability == nil {
 		return fmt.Errorf("PROFILE_CAPABILITY_NOT_PROBED: %s", profile.Name)
@@ -129,4 +131,8 @@ func validateCapability(stage string, route config.Route, profile model.Profile)
 		return fmt.Errorf("WORKSPACE_WRITE_UNVERIFIED: %s", profile.Name)
 	}
 	return nil
+}
+
+func validateCapability(stage string, route config.Route, profile model.Profile) error {
+	return ValidateRouteCapability(stage, route, profile)
 }

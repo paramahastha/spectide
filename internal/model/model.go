@@ -18,6 +18,7 @@ type StageState string
 
 const (
 	Pending   StageState = "PENDING"
+	StageRun  StageState = "RUNNING"
 	Succeeded StageState = "SUCCEEDED"
 	StageFail StageState = "FAILED"
 	Skipped   StageState = "SKIPPED_WITH_REASON"

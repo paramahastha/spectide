@@ -424,6 +424,13 @@
 - The route decision returned by preview and stored in the immutable run configuration retains the authorized fallback intent. The workflow does not execute provider fallbacks yet; live adapter execution remains T014.
 - Added config, routing, and API tests, including a cross-project dry-run rejection with zero runs created. Full `make verify` passed; latest SC-001 measurement is 20.573 ms. T024 is now complete; T014, T016, T031, T034–T036, T045, and T046 remain open.
 
+### Phase checkpoint — verified Spec-Kit live-stage workflow path
+
+- The workflow now registers the Claude, Codex, and OpenCode adapters and can execute a live canonical stage only after profile authorization, verified Spec-Kit command discovery, and a single complete product-spec directory check. Each invocation revalidates profile scope/capability to catch profile edits after run preflight.
+- Live stage stdout is parsed in memory; only redacted normalized event summaries and bounded metadata are persisted. Analyze compares hashes of `spec.md`, `plan.md`, and `tasks.md` before/after execution. Converge parses its report and enforces an unchanged task ledger for clean convergence or append-only validation for task additions. Provider cancellation interrupts the bounded subprocess, and stage attempts now persist an explicit `RUNNING` state (schema migration 8).
+- A fixture-backed engine test executes a verified plan command through an adapter and confirms the run remains `BLOCKED` with blocked quality gates instead of claiming simulated PASS results. `go test ./internal/workflow ./internal/speckit ./internal/store -count=1` and full `make verify` passed. Latest SC-001 measurement is 22.051 ms.
+- T014 is complete in the canonical task ledger. No real provider run was possible: installed provider CLIs report unauthenticated, and official Spec-Kit convergence remains unrun. T016/T035 quality-loop wiring, T031, T034, T036, T045, and T046 remain open.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified

@@ -73,6 +73,15 @@ func TestRunConfigurationAndStageAttemptsAreImmutable(t *testing.T) {
 	if err = s.AddStage(ctx, second); err != nil {
 		t.Fatal(err)
 	}
+	if err = s.SetStage(ctx, second.ID, model.StageRun); err != nil {
+		t.Fatalf("pending -> running failed: %v", err)
+	}
+	if err = s.SetStage(ctx, second.ID, model.Succeeded); err != nil {
+		t.Fatalf("running -> succeeded failed: %v", err)
+	}
+	if err = s.SetStage(ctx, second.ID, model.StageFail); err == nil {
+		t.Fatal("terminal running attempt was mutable")
+	}
 	if _, err = s.DB.Exec(`UPDATE stages SET profile='mutated' WHERE id=?`, second.ID); err == nil {
 		t.Fatal("database allowed stage attempt mutation")
 	}
@@ -80,7 +89,7 @@ func TestRunConfigurationAndStageAttemptsAreImmutable(t *testing.T) {
 		t.Fatal("terminal attempt was mutable")
 	}
 	stages, err := s.Stages(ctx, run.ID)
-	if err != nil || len(stages) != 2 || stages[0].Attempt != 1 || stages[0].State != model.StageFail || stages[1].Attempt != 2 {
+	if err != nil || len(stages) != 2 || stages[0].Attempt != 1 || stages[0].State != model.StageFail || stages[1].Attempt != 2 || stages[1].State != model.Succeeded {
 		t.Fatalf("attempt history=%+v err=%v", stages, err)
 	}
 }

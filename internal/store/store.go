@@ -124,6 +124,15 @@ func (s *Store) migrate() error {
 		if _, err = tx.Exec(`INSERT INTO schema_migrations(version,applied_at) VALUES(7,?)`, now().Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
+		version = 7
+	}
+	if version < 8 {
+		if _, err = tx.Exec(schemaV8); err != nil {
+			return fmt.Errorf("apply schema migration 8: %w", err)
+		}
+		if _, err = tx.Exec(`INSERT INTO schema_migrations(version,applied_at) VALUES(8,?)`, now().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -148,6 +157,9 @@ var schemaV6 string
 
 //go:embed migrations/007_profile_capabilities.sql
 var schemaV7 string
+
+//go:embed migrations/008_stage_running_state.sql
+var schemaV8 string
 
 func now() time.Time { return time.Now().UTC().Round(0) }
 func parse(v string) *time.Time {
@@ -445,7 +457,7 @@ func (s *Store) AddStage(ctx context.Context, st model.Stage) error {
 		if st.Attempt != previousAttempt+1 {
 			return fmt.Errorf("STAGE_ATTEMPT_NOT_APPEND_ONLY: expected %d", previousAttempt+1)
 		}
-		if previousState == model.Pending {
+		if previousState == model.Pending || previousState == model.StageRun {
 			return fmt.Errorf("STAGE_ATTEMPT_STILL_ACTIVE")
 		}
 		if st.Position != position || st.Provider != provider || st.Profile != profile || st.Model != modelName || st.Effort != effort {
@@ -469,10 +481,17 @@ func (s *Store) SetStage(ctx context.Context, id string, state model.StageState)
 	if err = tx.QueryRowContext(ctx, `SELECT state FROM stages WHERE id=?`, id).Scan(&current); err != nil {
 		return err
 	}
-	if current != model.Pending || (state != model.Succeeded && state != model.StageFail && state != model.Skipped) {
+	allowed := false
+	switch current {
+	case model.Pending:
+		allowed = state == model.StageRun || state == model.Succeeded || state == model.StageFail || state == model.Skipped
+	case model.StageRun:
+		allowed = state == model.Succeeded || state == model.StageFail || state == model.Skipped
+	}
+	if !allowed {
 		return fmt.Errorf("INVALID_STAGE_TRANSITION: %s -> %s", current, state)
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE stages SET state=? WHERE id=? AND state=?`, state, id, model.Pending); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE stages SET state=? WHERE id=? AND state=?`, state, id, current); err != nil {
 		return err
 	}
 	return tx.Commit()
