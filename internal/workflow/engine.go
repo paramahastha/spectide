@@ -16,6 +16,7 @@ import (
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
 	"github.com/spectide/spectide/internal/routing"
+	"github.com/spectide/spectide/internal/speckit"
 	"github.com/spectide/spectide/internal/store"
 	workspaceguard "github.com/spectide/spectide/internal/workspace"
 )
@@ -70,13 +71,23 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 		return model.Run{}, false, err
 	}
 	decisions := make(map[string]config.Decision, len(stages))
+	blockedStage, blockedReason := "", ""
 	for _, stage := range stages {
 		decision, e := cfg.Resolve(stage, prompt)
 		if e != nil {
 			return model.Run{}, false, e
 		}
-		if decision.Route.Provider != "fake" {
-			return model.Run{}, false, fmt.Errorf("LIVE_STAGE_EXECUTION_UNAVAILABLE: %s resolves to %s/%s; run not started", stage, decision.Route.Provider, decision.Route.Profile)
+		if decision.Route.Provider != "fake" && blockedStage == "" {
+			blockedStage = stage
+			blockedReason = "LIVE_STAGE_EXECUTION_UNAVAILABLE: no verified authenticated adapter launch is available for " + decision.Route.Provider
+			if officialStage(stage) {
+				installation, discoverErr := speckit.Discover(workspace)
+				if discoverErr != nil {
+					blockedReason = discoverErr.Error()
+				} else if _, requireErr := speckit.RequireStage(installation, stage); requireErr != nil {
+					blockedReason = requireErr.Error()
+				}
+			}
 		}
 		decisions[stage] = decision
 	}
@@ -96,7 +107,7 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 			Stage     string          `json:"stage"`
 			Decision  config.Decision `json:"decision"`
 			Simulated bool            `json:"simulated"`
-		}{Stage: stage, Decision: decisions[stage], Simulated: true})
+		}{Stage: stage, Decision: decisions[stage], Simulated: decisions[stage].Route.Provider == "fake"})
 	}
 	configurationJSON, err := json.Marshal(effective)
 	if err != nil {
@@ -108,6 +119,10 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 	}
 	if reused {
 		return r, true, nil
+	}
+	if blockedStage != "" {
+		blocked, blockErr := e.blockUnavailableStage(ctx, r, blockedStage, decisions[blockedStage], blockedReason)
+		return blocked, false, blockErr
 	}
 	if err = e.store.AcquireWorkspaceLockOwned(ctx, workspace, r.ID, e.ownerID); err != nil {
 		_ = e.store.Event(context.Background(), r.ID, "", "workspace.lock_denied", "warning", map[string]any{"reason": "another run owns this workspace"})
@@ -124,6 +139,48 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 	go e.heartbeat(child, r.ID)
 	go e.execute(child, r, decisions)
 	return r, false, nil
+}
+
+func officialStage(stage string) bool {
+	switch stage {
+	case "constitution", "specify", "clarify", "plan", "checklist", "tasks", "analyze", "implement", "converge":
+		return true
+	default:
+		return false
+	}
+}
+
+func (e *Engine) blockUnavailableStage(ctx context.Context, run model.Run, stage string, decision config.Decision, reason string) (model.Run, error) {
+	route := decision.Route
+	attempt := model.Stage{ID: uuid.NewString(), RunID: run.ID, Key: stage, Position: indexOfStage(stage), State: model.Pending, Provider: route.Provider, Profile: route.Profile, Model: route.Model, Effort: route.Effort, Attempt: 1}
+	if err := e.store.AddStage(ctx, attempt); err != nil {
+		return model.Run{}, err
+	}
+	if err := e.store.SaveRoutingDecision(ctx, run.ID, stage, route.Provider, route.Profile, route.Model, route.Effort, decision.Mode, decision.Explanation); err != nil {
+		return model.Run{}, err
+	}
+	if err := e.store.Event(ctx, run.ID, stage, "stage.blocked", "warning", map[string]any{"reason": reason, "execution": "NOT_RUN"}); err != nil {
+		return model.Run{}, err
+	}
+	if err := e.store.SetStage(ctx, attempt.ID, model.Skipped); err != nil {
+		return model.Run{}, err
+	}
+	if err := e.store.Gate(ctx, run.ID, "stage_execution_available", "BLOCKED", reason); err != nil {
+		return model.Run{}, err
+	}
+	if err := e.store.SetRunState(ctx, run.ID, model.Blocked); err != nil {
+		return model.Run{}, err
+	}
+	return e.store.GetRun(ctx, run.ID)
+}
+
+func indexOfStage(stage string) int {
+	for i, key := range stages {
+		if key == stage {
+			return i
+		}
+	}
+	return -1
 }
 
 func canonicalWorkspace(project string) (string, error) {

@@ -56,9 +56,24 @@ func TestUnavailableLiveRouteExitsAsBlocked(t *testing.T) {
 	if err := config.Save(config.ProjectPath(project), cfg); err != nil {
 		t.Fatal(err)
 	}
-	_, err := executeCLI(t, filepath.Join(t.TempDir(), "spectide.db"), "run", "--project", project, "inspect this project")
+	db := filepath.Join(t.TempDir(), "spectide.db")
+	state, err := store.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = state.SaveProfile(context.Background(), model.Profile{Name: "local-codex", Provider: "codex", Executable: "codex", AllowedScopes: []string{project}}); err != nil {
+		state.Close()
+		t.Fatal(err)
+	}
+	if err = state.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := executeCLI(t, db, "run", "--project", project, "inspect this project")
 	if got := ExitCode(err); got != ExitBlocked {
 		t.Fatalf("live route error=%v exit code=%d, want %d", err, got, ExitBlocked)
+	}
+	if !strings.Contains(output, "BLOCKED run:") || strings.Contains(output, "SIMULATED run") {
+		t.Fatalf("blocked live route was mislabeled: %s", output)
 	}
 }
 

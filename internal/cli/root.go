@@ -73,6 +73,10 @@ func Root() *cobra.Command {
 			}
 			return e
 		}
+		if r.State == model.Blocked {
+			fmt.Fprintf(c.OutOrStdout(), "BLOCKED run: %s\n", r.ID)
+			return runStateError(r.State)
+		}
 		fmt.Fprintf(c.OutOrStdout(), "SIMULATED run started: %s\n", r.ID)
 		result, e := a.Engine.Wait(context.Background(), r.ID)
 		if e != nil {

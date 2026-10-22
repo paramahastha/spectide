@@ -349,6 +349,12 @@
 - Added shared route validation requiring stored non-fake profiles to exist, match the configured provider, and authorize the canonical project root. Both preview and workflow start use it; tests prove unauthorized profiles are rejected before run creation.
 - Focused `go test ./internal/routing ./internal/workflow ./internal/api` passed. A full-gate regression in CLI status mapping was fixed, and `make verify` then passed. T024 remains open for capability-backed model/effort/read-only/write validation, fallback authorization, and live launch integration. Latest SC-001 measurement is 19.558 ms on the reference host.
 
+### Durable blocked outcome for unavailable live routes
+
+- Valid, scope-authorized non-fake routes now create an immutable run record and persist the first unavailable stage as `SKIPPED`, `stage.blocked`, `execution: NOT_RUN`, and a `BLOCKED` quality gate. The run is terminal `BLOCKED`; the CLI prints `BLOCKED run` rather than labeling it simulated. Unauthorized profile/workspace paths still create no run.
+- Effective run configuration marks only fake routes simulated. Spec-Kit discovery checks whether the configured official stage command exists, and emits a specific `SPEC_KIT_STAGE_UNAVAILABLE` reason when it does not. No live provider process is invoked.
+- Focused workflow/CLI/API/Spec-Kit tests and full `make verify` passed. T014 remains open for verified stage prompt invocation and live adapter integration; T024 remains open for capability validation and fallback policy. Latest SC-001 measurement is 17.535 ms on the reference host.
+
 ### Phase checkpoint — durable run-owner leases
 
 - Added migration 6 and per-run heartbeat leases. The workflow writes its owner lease atomically with the workspace lock, refreshes it while the worker is alive, and removes it at finish.

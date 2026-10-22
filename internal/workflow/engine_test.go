@@ -267,15 +267,31 @@ func TestEngineDoesNotSilentlySimulateLiveRoute(t *testing.T) {
 	if _, err = s.SaveProfile(context.Background(), model.Profile{Name: "work", Provider: "codex", Executable: "codex", AllowedScopes: []string{project}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = New(s).Start(context.Background(), project, "task"); err == nil || !strings.Contains(err.Error(), "LIVE_STAGE_EXECUTION_UNAVAILABLE") {
-		t.Fatalf("err=%v", err)
+	run, err := New(s).Start(context.Background(), project, "task")
+	if err != nil {
+		t.Fatal(err)
 	}
 	runs, err := s.Runs(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(runs) != 0 {
-		t.Fatalf("live configuration created a run that it cannot execute: %+v", runs)
+	if len(runs) != 1 || run.State != model.Blocked {
+		t.Fatalf("unavailable live route should create durable blocked evidence: state=%s runs=%+v", run.State, runs)
+	}
+	report, err := s.Report(context.Background(), run.ID)
+	if err != nil || len(report.Stages) != 1 || report.Stages[0].State != model.Skipped || len(report.Gates) != 1 || report.Gates[0].Verdict != "BLOCKED" {
+		t.Fatalf("blocked live-route evidence=%+v err=%v", report, err)
+	}
+	configuration, err := s.RunConfiguration(context.Background(), run.ID)
+	var configuredStages []struct {
+		Stage     string `json:"stage"`
+		Simulated bool   `json:"simulated"`
+	}
+	if err == nil {
+		err = json.Unmarshal([]byte(configuration.ConfigJSON), &configuredStages)
+	}
+	if err != nil || len(configuredStages) == 0 || configuredStages[0].Stage != "constitution" || configuredStages[0].Simulated {
+		t.Fatalf("live route was marked simulated: configuration=%+v stages=%+v err=%v", configuration, configuredStages, err)
 	}
 }
 
