@@ -58,6 +58,57 @@ type Decision struct {
 
 func ProjectPath(root string) string { return filepath.Join(root, ".spectide", FileName) }
 
+// SafeProjectPath resolves the project-owned configuration file while keeping
+// both the metadata directory and config file contained by the canonical root.
+// A symlinked path is accepted only when its resolved target remains inside
+// that root. The separately selected global configuration is not covered here.
+func SafeProjectPath(root string) (string, error) {
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("PROJECT_CONFIG_ROOT_UNAVAILABLE")
+	}
+	canonicalRoot, err = filepath.Abs(canonicalRoot)
+	if err != nil {
+		return "", fmt.Errorf("PROJECT_CONFIG_ROOT_UNAVAILABLE")
+	}
+	info, err := os.Stat(canonicalRoot)
+	if err != nil || !info.IsDir() {
+		return "", fmt.Errorf("PROJECT_CONFIG_ROOT_UNAVAILABLE")
+	}
+	metadataPath := filepath.Join(canonicalRoot, ".spectide")
+	metadataResolved, err := filepath.EvalSymlinks(metadataPath)
+	if os.IsNotExist(err) {
+		return filepath.Join(metadataPath, FileName), nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("PROJECT_CONFIG_UNAVAILABLE")
+	}
+	if !pathWithin(canonicalRoot, metadataResolved) {
+		return "", fmt.Errorf("PERMISSION_DENIED: project config escapes canonical root")
+	}
+	configPath := filepath.Join(metadataResolved, FileName)
+	resolved, err := filepath.EvalSymlinks(configPath)
+	if os.IsNotExist(err) {
+		return configPath, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("PROJECT_CONFIG_UNAVAILABLE")
+	}
+	if !pathWithin(canonicalRoot, resolved) {
+		return "", fmt.Errorf("PERMISSION_DENIED: project config escapes canonical root")
+	}
+	info, err = os.Stat(resolved)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", fmt.Errorf("PROJECT_CONFIG_NOT_REGULAR_FILE")
+	}
+	return resolved, nil
+}
+
+func pathWithin(root, candidate string) bool {
+	relative, err := filepath.Rel(root, candidate)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative)
+}
+
 func GlobalPath() string {
 	base, err := os.UserConfigDir()
 	if err != nil {

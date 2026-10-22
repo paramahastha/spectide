@@ -476,19 +476,11 @@ func canonicalProject(path string) (string, error) {
 }
 
 func safeProjectConfigPath(root string) (string, error) {
-	path := config.ProjectPath(root)
-	resolved, err := filepath.EvalSymlinks(path)
-	if os.IsNotExist(err) {
-		return path, nil
-	}
+	path, err := config.SafeProjectPath(root)
 	if err != nil {
-		return "", fmt.Errorf("PROJECT_CONFIG_UNAVAILABLE: %w", err)
+		return "", err
 	}
-	rel, err := filepath.Rel(root, resolved)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("PERMISSION_DENIED: project config escapes canonical root")
-	}
-	return resolved, nil
+	return path, nil
 }
 
 func (s *Server) run(w http.ResponseWriter, r *http.Request) {

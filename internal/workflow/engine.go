@@ -75,7 +75,11 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 		return model.Run{}, false, fmt.Errorf("PROJECT_REQUIRED")
 	}
 	project = workspace
-	cfg, err := config.LoadEffective(config.GlobalPath(), config.ProjectPath(workspace))
+	projectConfigPath, err := config.SafeProjectPath(workspace)
+	if err != nil {
+		return model.Run{}, false, err
+	}
+	cfg, err := config.LoadEffective(config.GlobalPath(), projectConfigPath)
 	if err != nil {
 		return model.Run{}, false, err
 	}

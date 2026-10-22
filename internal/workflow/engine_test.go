@@ -288,6 +288,50 @@ func TestStartRequiresExistingDirectoryAndEnforcesConfiguredScopes(t *testing.T)
 	}
 }
 
+func TestStartRejectsProjectConfigFileAndParentSymlinkEscapes(t *testing.T) {
+	for _, linkParent := range []bool{false, true} {
+		name := "config-file"
+		if linkParent {
+			name = "metadata-directory"
+		}
+		t.Run(name, func(t *testing.T) {
+			state, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer state.Close()
+			root := t.TempDir()
+			outside := t.TempDir()
+			outsideConfig := config.ProjectPath(outside)
+			if err := config.Save(outsideConfig, config.Default()); err != nil {
+				t.Fatal(err)
+			}
+			metadataPath := filepath.Join(root, ".spectide")
+			if err := os.MkdirAll(filepath.Dir(outsideConfig), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if linkParent {
+				if err := os.Symlink(filepath.Dir(outsideConfig), metadataPath); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := os.MkdirAll(metadataPath, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outsideConfig, config.ProjectPath(root)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := New(state).Start(context.Background(), root, "must not read escaped project configuration"); err == nil || !strings.Contains(err.Error(), "PERMISSION_DENIED") {
+				t.Fatalf("escaped project config was not rejected: %v", err)
+			}
+			if runs, err := state.Runs(context.Background()); err != nil || len(runs) != 0 {
+				t.Fatalf("config escape created run state: runs=%d err=%v", len(runs), err)
+			}
+		})
+	}
+}
+
 func TestStartCanonicalizesSymlinkWithinAllowedScope(t *testing.T) {
 	s, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {

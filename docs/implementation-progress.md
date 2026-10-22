@@ -664,3 +664,9 @@
 - Project display names and artifact kind metadata are redacted before persistence. Canonical project/run paths, allowed scopes, artifact IDs/stages/paths, route/profile/model/effort references, and config save paths reject values containing supported secret patterns rather than rewriting identity values.
 - Synthetic-secret tests cover config JSON save/load, SQLite project/artifact values, backup bytes and restore, report projection, CLI project listing, and API project/report responses.
 - `go test ./internal/config ./internal/store ./internal/cli ./internal/api -count=1` passed. T080 is complete; T081 is next.
+
+### T081 — Canonical project-config containment on actual start — 2026-10-23
+
+- Added shared `config.SafeProjectPath` resolution that canonicalizes the project root and verifies the `.spectide` metadata directory and `config.json` target remain within the project before settings are read. The independently authorized global config remains separately selected.
+- Engine start and API preview/config reads use the shared resolver. Engine-start tests cover a config-file symlink and a parent `.spectide` directory symlink escaping to an external config; both are rejected before any run is created. Existing canonical workspace and API config symlink-swap tests remain green.
+- Targeted config/workflow/API tests passed. T081 is complete; T082 is next.
