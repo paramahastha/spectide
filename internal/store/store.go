@@ -151,6 +151,14 @@ func (s *Store) migrate() error {
 			return err
 		}
 	}
+	if version < 11 {
+		if _, err = tx.Exec(schemaV11); err != nil {
+			return fmt.Errorf("apply schema migration 11: %w", err)
+		}
+		if _, err = tx.Exec(`INSERT INTO schema_migrations(version,applied_at) VALUES(11,?)`, now().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 
@@ -183,6 +191,9 @@ var schemaV9 string
 
 //go:embed migrations/010_gate_inventory.sql
 var schemaV10 string
+
+//go:embed migrations/011_gate_policy.sql
+var schemaV11 string
 
 func now() time.Time { return time.Now().UTC().Round(0) }
 func parse(v string) *time.Time {
@@ -487,6 +498,11 @@ func (s *Store) SaveRoutingDecision(ctx context.Context, runID, stage, provider,
 	if err != nil {
 		return err
 	}
+	if provider != "fake" {
+		if _, err = tx.ExecContext(ctx, `UPDATE quality_gates SET required=0,applicable=0 WHERE run_id=? AND gate_key='simulated_e2e'`, runID); err != nil {
+			return err
+		}
+	}
 	if err = appendEvent(ctx, tx, runID, stage, "routing.resolved", "info", map[string]any{"provider": provider, "profile": profile, "model": modelName, "effort": effort, "policy": policy, "explanation": explanation, "simulated": simulated}); err != nil {
 		return err
 	}
@@ -755,26 +771,62 @@ func (s *Store) EventsPage(ctx context.Context, runID string, after, through int
 	return events, rows.Err()
 }
 func (s *Store) Gate(ctx context.Context, runID, key, verdict, evidence string) error {
+	return s.gate(ctx, runID, key, verdict, evidence, nil, nil)
+}
+
+func (s *Store) GateWithPolicy(ctx context.Context, runID, key, verdict, evidence string, required, applicable bool) error {
+	return s.gate(ctx, runID, key, verdict, evidence, &required, &applicable)
+}
+
+func (s *Store) gate(ctx context.Context, runID, key, verdict, evidence string, required, applicable *bool) error {
 	evidence = security.Redact(evidence)
+	requiredValue, applicableValue := 1, 1
+	if required != nil {
+		if *required {
+			requiredValue = 1
+		} else {
+			requiredValue = 0
+		}
+	}
+	if applicable != nil {
+		if *applicable {
+			applicableValue = 1
+		} else {
+			applicableValue = 0
+		}
+	}
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, `INSERT INTO quality_gates VALUES(?,?,?,?) ON CONFLICT(run_id,gate_key) DO UPDATE SET verdict=excluded.verdict,evidence=excluded.evidence`, runID, key, verdict, evidence); err != nil {
+	if required == nil || applicable == nil {
+		_, err = tx.ExecContext(ctx, `INSERT INTO quality_gates(run_id,gate_key,verdict,evidence,required,applicable) VALUES(?,?,?,?,?,?) ON CONFLICT(run_id,gate_key) DO UPDATE SET verdict=excluded.verdict,evidence=excluded.evidence`, runID, key, verdict, evidence, requiredValue, applicableValue)
+	} else {
+		_, err = tx.ExecContext(ctx, `INSERT INTO quality_gates(run_id,gate_key,verdict,evidence,required,applicable) VALUES(?,?,?,?,?,?) ON CONFLICT(run_id,gate_key) DO UPDATE SET verdict=excluded.verdict,evidence=excluded.evidence,required=excluded.required,applicable=excluded.applicable`, runID, key, verdict, evidence, requiredValue, applicableValue)
+	}
+	if err != nil {
 		return err
 	}
 	severity := "info"
 	if verdict != "PASS" {
 		severity = "warning"
 	}
-	if err = appendEvent(ctx, tx, runID, "", "quality.gate_recorded", severity, map[string]any{"gate_key": key, "verdict": verdict, "evidence": evidence}); err != nil {
+	policyRequired, policyApplicable := requiredValue == 1, applicableValue == 1
+	if required == nil || applicable == nil {
+		var storedRequired, storedApplicable int
+		if err = tx.QueryRowContext(ctx, `SELECT required,applicable FROM quality_gates WHERE run_id=? AND gate_key=?`, runID, key).Scan(&storedRequired, &storedApplicable); err != nil {
+			return err
+		}
+		policyRequired, policyApplicable = storedRequired == 1, storedApplicable == 1
+	}
+	if err = appendEvent(ctx, tx, runID, "", "quality.gate_recorded", severity, map[string]any{"gate_key": key, "verdict": verdict, "evidence": evidence, "required": policyRequired, "applicable": policyApplicable}); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 func (s *Store) Gates(ctx context.Context, runID string) ([]model.Gate, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT gate_key,verdict,evidence FROM quality_gates WHERE run_id=? ORDER BY gate_key`, runID)
+	rows, err := s.DB.QueryContext(ctx, `SELECT gate_key,verdict,evidence,required,applicable FROM quality_gates WHERE run_id=? ORDER BY gate_key`, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -782,9 +834,10 @@ func (s *Store) Gates(ctx context.Context, runID string) ([]model.Gate, error) {
 	var o []model.Gate
 	for rows.Next() {
 		var g model.Gate
-		if e := rows.Scan(&g.Key, &g.Verdict, &g.Evidence); e != nil {
+		if e := rows.Scan(&g.Key, &g.Verdict, &g.Evidence, &g.Required, &g.Applicable); e != nil {
 			return nil, e
 		}
+		g.PolicySet = true
 		o = append(o, g)
 	}
 	return o, rows.Err()

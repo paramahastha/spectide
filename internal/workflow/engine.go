@@ -1115,7 +1115,8 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			e.failPersistence(r.ID)
 			return
 		}
-		acceptance := model.SummarizeAcceptance(acceptanceDecisions(decisions), gates)
+		acceptanceGates := withCandidateWorkflowVerdict(gates, "PASS", "candidate successful terminal outcome")
+		acceptance := model.SummarizeAcceptance(acceptanceDecisions(decisions), acceptanceGates)
 		terminal := model.Blocked
 		eventType := "run.blocked"
 		severity := "warning"
@@ -1144,15 +1145,44 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			return
 		}
 	}
-	if err := e.store.Event(ctx, r.ID, "", "run.completed", "info", map[string]any{"execution": "SIMULATED", "verdict": "SIMULATED"}); err != nil {
+	gates, err := e.store.Gates(ctx, r.ID)
+	if err != nil {
 		e.failPersistence(r.ID)
 		return
 	}
-	if err := e.store.SetRunState(ctx, r.ID, model.Completed); err != nil {
+	acceptance := model.SummarizeAcceptance(acceptanceDecisions(decisions), withCandidateWorkflowVerdict(gates, "PASS", "candidate successful terminal outcome"))
+	terminal, eventType, severity := model.Completed, "run.completed", "info"
+	if acceptance.Verdict != "SIMULATED" && acceptance.Verdict != "PASS" {
+		terminal, eventType, severity = model.Blocked, "run.blocked", "warning"
+		if acceptance.Verdict == "FAIL" {
+			terminal, eventType = model.Failed, "run.failed"
+		}
+	}
+	if err := e.store.Event(ctx, r.ID, "", eventType, severity, map[string]any{"execution": acceptance.Execution, "verdict": acceptance.Verdict}); err != nil {
+		e.failPersistence(r.ID)
+		return
+	}
+	if err := e.store.SetRunState(ctx, r.ID, terminal); err != nil {
 		e.failPersistence(r.ID)
 		return
 	}
 	e.finish(r.ID)
+}
+
+func withCandidateWorkflowVerdict(gates []model.Gate, verdict, evidence string) []model.Gate {
+	result := make([]model.Gate, 0, len(gates)+1)
+	found := false
+	for _, gate := range gates {
+		if gate.Key == "workflow_execution" {
+			gate.Verdict, gate.Evidence, gate.Required, gate.Applicable, gate.PolicySet = verdict, evidence, true, true, true
+			found = true
+		}
+		result = append(result, gate)
+	}
+	if !found {
+		result = append(result, model.Gate{Key: "workflow_execution", Verdict: verdict, Evidence: evidence, Required: true, Applicable: true, PolicySet: true})
+	}
+	return result
 }
 
 func (e *Engine) failSimulatedStage(ctx context.Context, runID, key, stageID string, cause error) error {

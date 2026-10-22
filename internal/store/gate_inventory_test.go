@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,6 +99,15 @@ func TestTerminalReportsPreserveRequiredGateMatrix(t *testing.T) {
 			if err = s.SaveRoutingDecision(ctx, run.ID, "analyze", "codex", "fixture", "", "", "hybrid", "live fixture", false); err != nil {
 				t.Fatal(err)
 			}
+			gates, gateErr := s.Gates(ctx, run.ID)
+			if gateErr != nil {
+				t.Fatal(gateErr)
+			}
+			for _, gate := range gates {
+				if gate.Key == "simulated_e2e" && (gate.Required || gate.Applicable) {
+					t.Fatalf("simulation-only gate policy remained required/applicable: %+v", gate)
+				}
+			}
 		}
 		return run
 	}
@@ -116,7 +126,7 @@ func TestTerminalReportsPreserveRequiredGateMatrix(t *testing.T) {
 	assertInventory := func(runID string, verdicts map[string]string) {
 		t.Helper()
 		got := gateMap(runID)
-		if len(got) != len(requiredGateInventory) {
+		if len(got) < len(requiredGateInventory) {
 			t.Fatalf("gate inventory has %d keys: %v", len(got), got)
 		}
 		for _, key := range requiredGateInventory {
@@ -128,7 +138,7 @@ func TestTerminalReportsPreserveRequiredGateMatrix(t *testing.T) {
 
 	missing := makeRun("missing integration", true)
 	assertInventory(missing.ID, map[string]string{"analyze_clean": "NOT_RUN", "required_tests": "NOT_RUN", "converged": "NOT_RUN", "final_review": "NOT_RUN", "simulated_e2e": "NOT_RUN", "workflow_execution": "NOT_RUN"})
-	if report, err := s.Report(ctx, missing.ID); err != nil || report.Acceptance.Execution != "LIVE" || report.Acceptance.Verdict != "BLOCKED" || len(report.Acceptance.RequiredGates) != 4 {
+	if report, err := s.Report(ctx, missing.ID); err != nil || report.Acceptance.Execution != "LIVE" || report.Acceptance.Verdict != "BLOCKED" || len(report.Acceptance.RequiredGates) != 5 {
 		t.Fatalf("missing integration report=%+v err=%v", report.Acceptance, err)
 	}
 	if err = s.SetRunState(ctx, missing.ID, model.Blocked); err != nil {
@@ -159,6 +169,36 @@ func TestTerminalReportsPreserveRequiredGateMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertInventory(cancelled.ID, map[string]string{"analyze_clean": "NOT_RUN", "required_tests": "NOT_RUN", "converged": "NOT_RUN", "final_review": "NOT_RUN", "simulated_e2e": "NOT_RUN", "workflow_execution": "BLOCKED"})
+	lateCancelled := makeRun("late cancellation after gates", true)
+	if err = s.SetRunState(ctx, lateCancelled.ID, model.Running); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"analyze_clean", "required_tests", "converged", "final_review"} {
+		if err = s.Gate(ctx, lateCancelled.ID, key, "PASS", "gate passed before cancellation"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = s.SetRunState(ctx, lateCancelled.ID, model.Cancelled); err != nil {
+		t.Fatal(err)
+	}
+	if report, reportErr := s.Report(ctx, lateCancelled.ID); reportErr != nil || report.Acceptance.Verdict != "BLOCKED" || gateByName(report.Acceptance.RequiredGates, "workflow_execution").Verdict != "BLOCKED" {
+		t.Fatalf("late cancellation retained acceptance pass: %+v err=%v", report.Acceptance, reportErr)
+	}
+	lateFailed := makeRun("late failure after gates", true)
+	if err = s.SetRunState(ctx, lateFailed.ID, model.Running); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"analyze_clean", "required_tests", "converged", "final_review"} {
+		if err = s.Gate(ctx, lateFailed.ID, key, "PASS", "gate passed before failure"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = s.SetRunState(ctx, lateFailed.ID, model.Failed); err != nil {
+		t.Fatal(err)
+	}
+	if report, reportErr := s.Report(ctx, lateFailed.ID); reportErr != nil || report.Acceptance.Verdict != "FAIL" {
+		t.Fatalf("late failure retained acceptance pass: %+v err=%v", report.Acceptance, reportErr)
+	}
 
 	interrupted := makeRun("interrupted", true)
 	if err = s.AcquireWorkspaceLockOwned(ctx, interrupted.Project, interrupted.ID, "expired-owner"); err != nil {
@@ -205,11 +245,38 @@ func TestTerminalReportsPreserveRequiredGateMatrix(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if err = s.Gate(ctx, live.ID, "required_security_review", "BLOCKED", "required supplementary gate is incomplete"); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SetRunState(ctx, live.ID, model.Completed); err == nil || !strings.Contains(err.Error(), "RUN_COMPLETION_REQUIRED_GATES_UNSATISFIED") {
+		t.Fatalf("run completed with an additional required blocked gate: %v", err)
+	}
+	if report, reportErr := s.Report(ctx, live.ID); reportErr != nil || report.Run.State != model.Running || report.Acceptance.Verdict != "BLOCKED" {
+		t.Fatalf("blocked required gate report=%+v err=%v", report.Acceptance, reportErr)
+	}
+	if err = s.Gate(ctx, live.ID, "required_security_review", "PASS", "required supplementary gate passed"); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.GateWithPolicy(ctx, live.ID, "optional_telemetry", "NOT_RUN", "optional gate was not selected", false, true); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.GateWithPolicy(ctx, live.ID, "platform_specific", "NOT_RUN", "platform gate does not apply to this project", true, false); err != nil {
+		t.Fatal(err)
+	}
 	if err = s.SetRunState(ctx, live.ID, model.Completed); err != nil {
 		t.Fatal(err)
 	}
 	assertInventory(live.ID, map[string]string{"analyze_clean": "PASS", "required_tests": "PASS", "converged": "PASS", "final_review": "PASS", "simulated_e2e": "NOT_RUN", "workflow_execution": "PASS"})
-	if report, err := s.Report(ctx, live.ID); err != nil || report.Acceptance.Execution != "LIVE" || report.Acceptance.Verdict != "PASS" || len(report.Acceptance.SimulationGates) != 1 || report.Acceptance.SimulationGates[0].Verdict != "NOT_RUN" {
+	if report, err := s.Report(ctx, live.ID); err != nil || report.Acceptance.Execution != "LIVE" || report.Acceptance.Verdict != "PASS" || len(report.Acceptance.SimulationGates) != 1 || report.Acceptance.SimulationGates[0].Verdict != "NOT_RUN" || gateByName(report.Acceptance.RequiredGates, "workflow_execution").Verdict != "PASS" || gateByName(report.Acceptance.RequiredGates, "optional_telemetry").Key != "" || gateByName(report.Acceptance.RequiredGates, "platform_specific").Key != "" {
 		t.Fatalf("live report=%+v err=%v", report.Acceptance, err)
 	}
+}
+
+func gateByName(gates []model.Gate, key string) model.Gate {
+	for _, gate := range gates {
+		if gate.Key == key {
+			return gate
+		}
+	}
+	return model.Gate{}
 }

@@ -78,11 +78,37 @@ func initializeGateInventoryTx(ctx context.Context, tx *sql.Tx, runID string) er
 		if key == "workflow_execution" {
 			evidence = "workflow has not reached a terminal outcome"
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO quality_gates(run_id,gate_key,verdict,evidence) VALUES(?,?,?,?)`, runID, key, "NOT_RUN", evidence); err != nil {
+		required, applicable := 1, 1
+		if key == "simulated_e2e" {
+			var encoded string
+			if err := tx.QueryRowContext(ctx, `SELECT config_json FROM run_configurations WHERE run_id=?`, runID).Scan(&encoded); err == nil && configurationHasLiveStage(encoded) {
+				required, applicable = 0, 0
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO quality_gates(run_id,gate_key,verdict,evidence,required,applicable) VALUES(?,?,?,?,?,?)`, runID, key, "NOT_RUN", evidence, required, applicable); err != nil {
 			return err
 		}
 	}
 	return appendEvent(ctx, tx, runID, "", "quality.inventory_initialized", "info", map[string]any{"gate_keys": requiredGateInventory, "initial_verdict": "NOT_RUN"})
+}
+
+func configurationHasLiveStage(encoded string) bool {
+	var snapshot struct {
+		Stages []struct {
+			Decision struct {
+				Route config.Route `json:"route"`
+			} `json:"decision"`
+		} `json:"stages"`
+	}
+	if json.Unmarshal([]byte(encoded), &snapshot) != nil {
+		return false
+	}
+	for _, stage := range snapshot.Stages {
+		if stage.Decision.Route.Provider != "" && stage.Decision.Route.Provider != "fake" {
+			return true
+		}
+	}
+	return false
 }
 
 func finalizeTerminalGatesTx(ctx context.Context, tx *sql.Tx, runID string, state model.RunState) error {
@@ -106,17 +132,18 @@ func finalizeTerminalGatesTx(ctx context.Context, tx *sql.Tx, runID string, stat
 	if err != nil {
 		return err
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT gate_key,verdict,evidence FROM quality_gates WHERE run_id=? ORDER BY gate_key`, runID)
+	rows, err := tx.QueryContext(ctx, `SELECT gate_key,verdict,evidence,required,applicable FROM quality_gates WHERE run_id=? ORDER BY gate_key`, runID)
 	if err != nil {
 		return err
 	}
 	var gates []model.Gate
 	for rows.Next() {
 		var gate model.Gate
-		if err = rows.Scan(&gate.Key, &gate.Verdict, &gate.Evidence); err != nil {
+		if err = rows.Scan(&gate.Key, &gate.Verdict, &gate.Evidence, &gate.Required, &gate.Applicable); err != nil {
 			rows.Close()
 			return err
 		}
+		gate.PolicySet = true
 		gates = append(gates, gate)
 	}
 	if err = rows.Err(); err != nil {
@@ -127,6 +154,9 @@ func finalizeTerminalGatesTx(ctx context.Context, tx *sql.Tx, runID string, stat
 		return err
 	}
 	acceptance := model.SummarizeAcceptance(decisions, gates)
+	if state == model.Completed && acceptance.Verdict != "PASS" && acceptance.Verdict != "SIMULATED" {
+		return fmt.Errorf("RUN_COMPLETION_REQUIRED_GATES_UNSATISFIED: %s", acceptance.Verdict)
+	}
 	return appendEvent(ctx, tx, runID, "", "run.acceptance", "info", map[string]any{"acceptance": acceptance, "terminal_state": state})
 }
 

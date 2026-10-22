@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-const currentSchemaVersion = 10
+const currentSchemaVersion = 11
 
 // Backup writes a transactionally consistent SQLite snapshot with private file
 // permissions. The destination must not already exist.

@@ -316,15 +316,24 @@ components:
       required: [run, acceptance, stages, execution_attempts, quality_executions, routing_decisions, gates, artifacts, checkpoints, approvals]
       properties:
         run: { $ref: '#/components/schemas/RunSummary' }
-        acceptance: { type: object, required: [verdict, execution, required_gates], properties: { verdict: { type: string }, execution: { type: string, enum: [SIMULATED, LIVE, MIXED] }, required_gates: { type: array, items: { type: object } }, simulation_gates: { type: array, items: { type: object } } } }
+        acceptance: { type: object, required: [verdict, execution, required_gates], properties: { verdict: { type: string }, execution: { type: string, enum: [SIMULATED, LIVE, MIXED] }, required_gates: { type: array, items: { $ref: '#/components/schemas/QualityGate' } }, simulation_gates: { type: array, items: { $ref: '#/components/schemas/QualityGate' } } } }
         stages: { type: array, items: { $ref: '#/components/schemas/Stage' } }
         execution_attempts: { type: array, items: { type: object } }
         quality_executions: { type: array, items: { type: object } }
         routing_decisions: { type: array, items: { type: object } }
-        gates: { type: array, items: { type: object } }
+        gates: { type: array, items: { $ref: '#/components/schemas/QualityGate' } }
         artifacts: { type: array, items: { $ref: '#/components/schemas/Artifact' } }
         checkpoints: { type: array, items: { type: object } }
         approvals: { type: array, items: { type: object } }
+    QualityGate:
+      type: object
+      required: [key, verdict, evidence, required, applicable]
+      properties:
+        key: { type: string }
+        verdict: { type: string, enum: [PASS, FAIL, BLOCKED, NOT_RUN, SIMULATED] }
+        evidence: { type: string }
+        required: { type: boolean }
+        applicable: { type: boolean }
     CapabilityResponse:
       type: object
       required: [providers, profiles]

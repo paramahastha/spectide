@@ -715,3 +715,9 @@
 - Approval actions bind the run, phase, workspace identity, provider, and profile. Only the same stored action can reuse an approved decision. Denials persist a blocked authorization gate and return before provider invocation; tests verify no attempt is created and cross-phase/workspace decisions are rejected.
 - The mixed live-engine fixture and approval phase tests pass with targeted checks; full store/workflow suites, vet, and diff checks passed.
 - T088 remains open pending checkpointed recovery of a pending phase-specific approval and process-exit tests across repair paths; this depends on the unfinished executable inner-loop cursor in T087.
+
+### T089 — Terminal acceptance and required gate aggregation — 2026-10-23
+
+- Added schema version 11 with persisted `required` and `applicable` gate policy. Gate reports and events expose the policy; live execution marks the simulation-only gate inapplicable.
+- Acceptance now includes `workflow_execution` and every applicable required gate. Failed/cancelled/blocked terminal workflow outcomes cannot report PASS, and `SetRunState(COMPLETED)` rejects any unsatisfied required gate. The engine evaluates a candidate successful terminal verdict before completing either live/mixed or simulated runs.
+- Tests cover terminal failure/cancellation, extra required blocked gates, optional and inapplicable gates, and live/mixed/simulated report matrices. `go test ./... -count=1`, `go vet ./...`, and `git diff --check` passed. T089 is complete; T087 remains the current partial item.

@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"sort"
+	"time"
+)
 
 type RunState string
 
@@ -107,18 +110,54 @@ func SummarizeAcceptance(decisions []RoutingDecision, gates []Gate) AcceptanceSu
 	for _, gate := range gates {
 		byKey[gate.Key] = gate
 	}
-	keys := []string{"analyze_clean", "required_tests", "converged", "final_review"}
+	keys := []string{"analyze_clean", "required_tests", "converged", "final_review", "workflow_execution"}
 	if !hasLive {
 		keys = append(keys, "simulated_e2e")
 	}
 	summary := AcceptanceSummary{Execution: execution}
 	allPass := true
 	hasFail := false
+	seen := make(map[string]bool, len(keys))
 	for _, key := range keys {
 		gate, ok := byKey[key]
 		if !ok {
-			gate = Gate{Key: key, Verdict: "NOT_RUN", Evidence: "required evidence was not recorded"}
+			gate = Gate{Key: key, Verdict: "NOT_RUN", Evidence: "required evidence was not recorded", Required: true, Applicable: true, PolicySet: true}
 		}
+		if key == "simulated_e2e" && hasLive {
+			gate.Required, gate.Applicable, gate.PolicySet = false, false, true
+		}
+		if key == "workflow_execution" {
+			gate.Required, gate.Applicable, gate.PolicySet = true, true, true
+		}
+		if !gate.PolicySet && !gate.Required && !gate.Applicable {
+			gate.Required, gate.Applicable = true, true
+		}
+		if !gate.Required || !gate.Applicable {
+			continue
+		}
+		summary.RequiredGates = append(summary.RequiredGates, gate)
+		seen[key] = true
+		if gate.Verdict != "PASS" {
+			allPass = false
+		}
+		if gate.Verdict == "FAIL" {
+			hasFail = true
+		}
+	}
+	additional := make([]Gate, 0)
+	for _, gate := range gates {
+		if seen[gate.Key] || (gate.Key == "simulated_e2e" && hasLive) {
+			continue
+		}
+		if !gate.PolicySet && !gate.Required && !gate.Applicable {
+			gate.Required, gate.Applicable = true, true
+		}
+		if gate.Required && gate.Applicable {
+			additional = append(additional, gate)
+		}
+	}
+	sort.Slice(additional, func(i, j int) bool { return additional[i].Key < additional[j].Key })
+	for _, gate := range additional {
 		summary.RequiredGates = append(summary.RequiredGates, gate)
 		if gate.Verdict != "PASS" {
 			allPass = false
@@ -130,7 +169,7 @@ func SummarizeAcceptance(decisions []RoutingDecision, gates []Gate) AcceptanceSu
 	if hasLive {
 		gate, ok := byKey["simulated_e2e"]
 		if !ok {
-			gate = Gate{Key: "simulated_e2e", Verdict: "NOT_RUN", Evidence: "simulation-only check does not apply to live execution"}
+			gate = Gate{Key: "simulated_e2e", Verdict: "NOT_RUN", Evidence: "simulation-only check does not apply to live execution", Required: false, Applicable: false, PolicySet: true}
 		}
 		summary.SimulationGates = append(summary.SimulationGates, gate)
 	}
@@ -210,9 +249,12 @@ type RoutingDecision struct {
 }
 
 type Gate struct {
-	Key      string `json:"key"`
-	Verdict  string `json:"verdict"`
-	Evidence string `json:"evidence"`
+	Key        string `json:"key"`
+	Verdict    string `json:"verdict"`
+	Evidence   string `json:"evidence"`
+	Required   bool   `json:"required"`
+	Applicable bool   `json:"applicable"`
+	PolicySet  bool   `json:"-"`
 }
 
 type Artifact struct {
