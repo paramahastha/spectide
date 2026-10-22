@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -15,11 +16,22 @@ import (
 	"github.com/spectide/spectide/internal/adapters"
 	"github.com/spectide/spectide/internal/app"
 	"github.com/spectide/spectide/internal/config"
+	"github.com/spectide/spectide/internal/events"
 	"github.com/spectide/spectide/internal/model"
 	"github.com/spectide/spectide/internal/quality"
+	"github.com/spectide/spectide/internal/security"
 	"github.com/spectide/spectide/internal/speckit"
 	"github.com/spf13/cobra"
 )
+
+func writeJSON(out io.Writer, value any) error {
+	encoded, err := json.Marshal(events.SanitizePayload(value))
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(out, security.Redact(string(encoded)))
+	return err
+}
 
 func persistedCapability(c adapters.Capability) model.ProfileCapability {
 	return model.ProfileCapability{
@@ -44,7 +56,7 @@ func Root() *cobra.Command {
 		if specErr != nil {
 			specStatus = specErr.Error()
 		}
-		return json.NewEncoder(c.OutOrStdout()).Encode(map[string]any{"database": app.DefaultDBPath(), "providers": providers, "spec_kit": specStatus, "live_workflows": "BLOCKED_UNTIL_ROUTE_CONFIGURATION_AND_STAGE_EXECUTION_ARE_COMPLETE"})
+		return writeJSON(c.OutOrStdout(), map[string]any{"database": app.DefaultDBPath(), "providers": providers, "spec_kit": specStatus, "live_workflows": "BLOCKED_UNTIL_ROUTE_CONFIGURATION_AND_STAGE_EXECUTION_ARE_COMPLETE"})
 	}})
 	serve := &cobra.Command{Use: "serve", Short: "Serve loopback dashboard and API", RunE: func(c *cobra.Command, _ []string) error {
 		a, e := open()
@@ -134,7 +146,7 @@ func Root() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		return json.NewEncoder(c.OutOrStdout()).Encode(v)
+		return writeJSON(c.OutOrStdout(), v)
 	}})
 	for _, name := range []string{"status", "report"} {
 		commandName := name
@@ -148,7 +160,7 @@ func Root() *cobra.Command {
 			if e != nil {
 				return e
 			}
-			return json.NewEncoder(c.OutOrStdout()).Encode(v)
+			return writeJSON(c.OutOrStdout(), v)
 		}})
 	}
 	root.AddCommand(&cobra.Command{Use: "cancel RUN_ID", Args: cobra.ExactArgs(1), RunE: func(c *cobra.Command, args []string) error {
@@ -188,7 +200,7 @@ func Root() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		return json.NewEncoder(c.OutOrStdout()).Encode(v)
+		return writeJSON(c.OutOrStdout(), v)
 	}})
 	projects := &cobra.Command{Use: "projects", Short: "List and register local projects", RunE: func(c *cobra.Command, _ []string) error {
 		a, e := open()
@@ -200,7 +212,7 @@ func Root() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		return json.NewEncoder(c.OutOrStdout()).Encode(v)
+		return writeJSON(c.OutOrStdout(), v)
 	}}
 	projects.AddCommand(&cobra.Command{Use: "list", Short: "List registered local projects", RunE: projects.RunE})
 	projects.AddCommand(&cobra.Command{Use: "register PATH", Args: cobra.ExactArgs(1), Short: "Register an existing local project directory", RunE: func(c *cobra.Command, args []string) error {
@@ -230,7 +242,7 @@ func Root() *cobra.Command {
 		}
 		for _, project := range registered {
 			if project.CanonicalPath == canonical {
-				return json.NewEncoder(c.OutOrStdout()).Encode(project)
+				return writeJSON(c.OutOrStdout(), project)
 			}
 		}
 		return fmt.Errorf("registered project was not returned by the store")
@@ -247,7 +259,7 @@ func Root() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		return json.NewEncoder(c.OutOrStdout()).Encode(v)
+		return writeJSON(c.OutOrStdout(), v)
 	}})
 	approvals.AddCommand(&cobra.Command{Use: "create RUN_ID ACTION", Args: cobra.ExactArgs(2), RunE: func(c *cobra.Command, args []string) error {
 		a, e := open()
@@ -259,7 +271,7 @@ func Root() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		return json.NewEncoder(c.OutOrStdout()).Encode(v)
+		return writeJSON(c.OutOrStdout(), v)
 	}})
 	approvals.AddCommand(&cobra.Command{Use: "resolve APPROVAL_ID APPROVED|DENIED", Args: cobra.ExactArgs(2), RunE: func(c *cobra.Command, args []string) error {
 		a, e := open()
@@ -271,7 +283,7 @@ func Root() *cobra.Command {
 		if e = a.Store.ResolveApproval(c.Context(), args[0], decision); e != nil {
 			return e
 		}
-		return json.NewEncoder(c.OutOrStdout()).Encode(map[string]string{"approval_id": args[0], "decision": decision})
+		return writeJSON(c.OutOrStdout(), map[string]string{"approval_id": args[0], "decision": decision})
 	}})
 	root.AddCommand(approvals)
 	profiles := &cobra.Command{Use: "profiles", Short: "Manage sanitized local profiles", RunE: func(c *cobra.Command, _ []string) error {
@@ -284,7 +296,7 @@ func Root() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		return json.NewEncoder(c.OutOrStdout()).Encode(p)
+		return writeJSON(c.OutOrStdout(), p)
 	}}
 	add := &cobra.Command{Use: "add NAME", Args: cobra.ExactArgs(1), RunE: func(c *cobra.Command, args []string) error {
 		a, e := open()
@@ -305,7 +317,7 @@ func Root() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		return json.NewEncoder(c.OutOrStdout()).Encode(p)
+		return writeJSON(c.OutOrStdout(), p)
 	}}
 	add.Flags().String("provider", "", "provider name")
 	add.Flags().String("executable", "", "local executable name or path")
@@ -332,7 +344,7 @@ func Root() *cobra.Command {
 			if _, probeErr = a.Store.SaveProfileCapability(c.Context(), profile.Name, persistedCapability(capability)); probeErr != nil {
 				return probeErr
 			}
-			return json.NewEncoder(c.OutOrStdout()).Encode(capability)
+			return writeJSON(c.OutOrStdout(), capability)
 		}
 		return fmt.Errorf("PROFILE_NOT_FOUND: %s", args[0])
 	}})
@@ -347,7 +359,7 @@ func Root() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		return json.NewEncoder(c.OutOrStdout()).Encode(map[string]any{"profiles": ps, "catalog": "NOT_PROBED", "reason": "Model IDs must be validated by each provider CLI in its authorized profile."})
+		return writeJSON(c.OutOrStdout(), map[string]any{"profiles": ps, "catalog": "NOT_PROBED", "reason": "Model IDs must be validated by each provider CLI in its authorized profile."})
 	}}
 	models.AddCommand(&cobra.Command{Use: "probe PROFILE", Args: cobra.ExactArgs(1), Short: "Probe executable readiness without reading model or credential stores", RunE: func(c *cobra.Command, args []string) error {
 		a, e := open()
@@ -370,7 +382,7 @@ func Root() *cobra.Command {
 			if _, probeErr = a.Store.SaveProfileCapability(c.Context(), profile.Name, persistedCapability(capability)); probeErr != nil {
 				return probeErr
 			}
-			return json.NewEncoder(c.OutOrStdout()).Encode(map[string]any{"profile": profile.Name, "executable_version": capability.Version, "authentication": "NOT_PROBED", "model_catalog": "NOT_PROBED"})
+			return writeJSON(c.OutOrStdout(), map[string]any{"profile": profile.Name, "executable_version": capability.Version, "authentication": "NOT_PROBED", "model_catalog": "NOT_PROBED"})
 		}
 		return fmt.Errorf("PROFILE_NOT_FOUND: %s", args[0])
 	}})
@@ -381,7 +393,7 @@ func Root() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		return json.NewEncoder(c.OutOrStdout()).Encode(v)
+		return writeJSON(c.OutOrStdout(), v)
 	}}
 	conf.Flags().String("file", config.ProjectPath("."), "configuration file path")
 	conf.AddCommand(&cobra.Command{Use: "validate", RunE: func(c *cobra.Command, _ []string) error {
@@ -390,7 +402,7 @@ func Root() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		return json.NewEncoder(c.OutOrStdout()).Encode(map[string]any{"valid": true, "config": v})
+		return writeJSON(c.OutOrStdout(), map[string]any{"valid": true, "config": v})
 	}})
 	conf.Commands()[0].Flags().String("file", config.ProjectPath("."), "configuration file path")
 	preview := &cobra.Command{Use: "preview", Short: "Preview deterministic routes without starting a run", RunE: func(c *cobra.Command, _ []string) error {
@@ -408,7 +420,7 @@ func Root() *cobra.Command {
 			}
 			decisions = append(decisions, d)
 		}
-		return json.NewEncoder(c.OutOrStdout()).Encode(map[string]any{"mode": cfg.RoutingMode, "decisions": decisions})
+		return writeJSON(c.OutOrStdout(), map[string]any{"mode": cfg.RoutingMode, "decisions": decisions})
 	}}
 	preview.Flags().String("file", config.ProjectPath("."), "configuration file path")
 	preview.Flags().String("prompt", "", "task intent for automatic risk routing")
@@ -454,7 +466,7 @@ func Root() *cobra.Command {
 		}
 		registry := quality.DefaultRegistry(nil)
 		results := registry.Run(c.Context(), abs)
-		if e = json.NewEncoder(c.OutOrStdout()).Encode(results); e != nil {
+		if e = writeJSON(c.OutOrStdout(), results); e != nil {
 			return e
 		}
 		if !registry.RequiredPassed(results) {

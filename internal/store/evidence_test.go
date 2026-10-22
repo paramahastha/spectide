@@ -118,6 +118,58 @@ func TestIdempotencyHashesOriginalPromptButPersistsRedactedPrompt(t *testing.T) 
 	}
 }
 
+func TestEvidenceAndCapabilityStringsAreRedactedBeforePersistence(t *testing.T) {
+	ctx := context.Background()
+	s, run := evidenceStore(t)
+	if _, err := s.SaveProfile(ctx, model.Profile{Name: "unsafe-reference", Provider: "codex", Executable: "codex api_key=profile-secret-123456", AllowedScopes: []string{"/tmp"}}); err == nil || !strings.Contains(err.Error(), "PROFILE_SECRET_REFERENCE_REJECTED") {
+		t.Fatalf("secret-bearing execution reference was persisted: %v", err)
+	}
+	gateSecret := "gate-synthetic-secret-123456"
+	if err := s.Gate(ctx, run.ID, "required_tests", "FAIL", "api_key="+gateSecret); err != nil {
+		t.Fatal(err)
+	}
+	approvalSecret := "approval-synthetic-secret-654321"
+	approval, err := s.CreateApproval(ctx, model.Approval{RunID: run.ID, Action: "token=" + approvalSecret})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.SaveProfile(ctx, model.Profile{Name: "safe-fixture", Provider: "codex", Executable: "codex", AllowedScopes: []string{"/tmp"}}); err != nil {
+		t.Fatal(err)
+	}
+	capabilitySecret := "capability-synthetic-secret-abcdef"
+	capability, err := s.SaveProfileCapability(ctx, "safe-fixture", model.ProfileCapability{Provider: "codex", Version: "api_key=" + capabilitySecret, Authenticated: "AUTHENTICATED", Warnings: []string{"password=" + capabilitySecret}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{capability.Version, capability.Warnings[0], approval.Action} {
+		if strings.Contains(value, gateSecret) || strings.Contains(value, approvalSecret) || strings.Contains(value, capabilitySecret) {
+			t.Fatalf("returned evidence leaked a secret: %q", value)
+		}
+	}
+	for table, column := range map[string]string{"quality_gates": "evidence", "approvals": "action"} {
+		var persisted string
+		query := `SELECT ` + column + ` FROM ` + table + ` WHERE run_id=?`
+		if err = s.DB.QueryRowContext(ctx, query, run.ID).Scan(&persisted); err != nil {
+			t.Fatal(err)
+		}
+		for _, secret := range []string{gateSecret, approvalSecret, capabilitySecret} {
+			if strings.Contains(persisted, secret) {
+				t.Fatalf("%s.%s leaked %q", table, column, secret)
+			}
+		}
+	}
+	var storedCapability string
+	if err = s.DB.QueryRowContext(ctx, `SELECT capability_json FROM profile_capabilities WHERE profile_name=?`, "safe-fixture").Scan(&storedCapability); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(storedCapability, capabilitySecret) {
+		t.Fatalf("capability metadata leaked: %s", storedCapability)
+	}
+	if _, _, err = s.CreateRunWithConfiguration(ctx, "", "/workspace", "safe prompt", []byte(`[{"model":"api_key=configuration-secret-123456"}]`)); err == nil || !strings.Contains(err.Error(), "RUN_CONFIGURATION_SECRET_REFERENCE_REJECTED") {
+		t.Fatalf("secret-bearing execution identity was persisted: %v", err)
+	}
+}
+
 func TestArtifactCheckpointAndApprovalRepositories(t *testing.T) {
 	ctx := context.Background()
 	s, run := evidenceStore(t)

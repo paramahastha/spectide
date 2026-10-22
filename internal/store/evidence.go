@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/spectide/spectide/internal/events"
 	"github.com/spectide/spectide/internal/model"
+	"github.com/spectide/spectide/internal/security"
 )
 
 func (s *Store) SaveArtifact(ctx context.Context, a model.Artifact) (model.Artifact, error) {
@@ -117,6 +118,7 @@ func (s *Store) Checkpoints(ctx context.Context, runID string) ([]model.Checkpoi
 }
 
 func (s *Store) CreateApproval(ctx context.Context, a model.Approval) (model.Approval, error) {
+	a.Action = security.Redact(a.Action)
 	if a.ID == "" {
 		a.ID = uuid.NewString()
 	}

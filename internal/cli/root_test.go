@@ -25,6 +25,52 @@ func executeCLI(t *testing.T, db string, args ...string) (string, error) {
 	return output.String(), err
 }
 
+func TestCLIJSONPresentationRedactsNestedSecretValues(t *testing.T) {
+	var output bytes.Buffer
+	secret := "cli-synthetic-secret-123456"
+	if err := writeJSON(&output, map[string]any{"report": map[string]any{"evidence": "api_key=" + secret, "token": secret}}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), secret) || !strings.Contains(output.String(), "[REDACTED]") {
+		t.Fatalf("CLI JSON leaked or failed to redact secret: %s", output.String())
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(output.Bytes(), &decoded); err != nil {
+		t.Fatalf("redacted CLI output is invalid JSON: %v", err)
+	}
+}
+
+func TestCLIReportPresentationRedactsPersistedEvidence(t *testing.T) {
+	ctx := context.Background()
+	s, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	run, err := s.CreateRun(ctx, "demo", "inspect")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gateSecret, approvalSecret := "cli-gate-secret-123456", "cli-approval-secret-654321"
+	if err = s.Gate(ctx, run.ID, "required_tests", "FAIL", "api_key="+gateSecret); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.CreateApproval(ctx, model.Approval{RunID: run.ID, Action: "token=" + approvalSecret}); err != nil {
+		t.Fatal(err)
+	}
+	report, err := s.Report(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err = writeJSON(&output, report); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), gateSecret) || strings.Contains(output.String(), approvalSecret) || !strings.Contains(output.String(), "[REDACTED]") {
+		t.Fatalf("CLI report leaked evidence secrets or omitted redaction: %s", output.String())
+	}
+}
+
 func TestRunStateExitCodesAreStable(t *testing.T) {
 	cases := []struct {
 		state model.RunState

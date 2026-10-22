@@ -473,6 +473,12 @@
 - Spec-Kit appended T055–T079 under a new Phase 9. Its own byte-level assertion verified the original 13,716-byte `tasks.md` prefix and all prior task IDs were unchanged; only the master task ledger was modified. No app code was changed by the official command.
 - The official run’s uncached `go test -count=1 ./...`, `go vet ./...`, and 26 dashboard tests passed. Outcome: `tasks_appended`, not converged. T045 remains open while the appended tasks are implemented; T031 and T046 browser/release evidence remain open.
 
+### Phase checkpoint — persistence and presentation redaction (T055)
+
+- Store writes now redact quality-gate evidence, approval actions, and capability version/effort/warning metadata. Secret-bearing immutable run configuration, profile identity, and routing identity references are rejected before persistence so provider launch identifiers remain accurate rather than being rewritten by display redaction.
+- API JSON/error responses and CLI JSON/report output sanitize nested secret-key values and redact inline secret patterns. Synthetic-secret coverage now checks SQLite, reports, CLI output, API responses/errors, and the prompt-to-SSE path from T036.
+- Focused `go test ./internal/store ./internal/api ./internal/cli -count=1` passed. Full `make verify` passed: Go vet/tests, dashboard typecheck/tests/build, binary build, secret scan, and offline smoke. Latest SC-001: 19.065 ms; smoke remained `SIMULATED`. T055 is complete. T056 is the next convergence task; T031, T045, and T046 remain open.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified

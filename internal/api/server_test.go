@@ -36,6 +36,24 @@ func TestRejectsNonLoopbackHost(t *testing.T) {
 		t.Fatalf("status=%d", w.Code)
 	}
 }
+
+func TestAPIJSONAndErrorResponsesRedactNestedSecrets(t *testing.T) {
+	secret := "api-synthetic-secret-123456"
+	jsonResponse := httptest.NewRecorder()
+	jsonOut(jsonResponse, http.StatusOK, map[string]any{"report": map[string]any{"evidence": "token=" + secret, "api_key": secret}})
+	if strings.Contains(jsonResponse.Body.String(), secret) || !strings.Contains(jsonResponse.Body.String(), "[REDACTED]") {
+		t.Fatalf("API JSON leaked or failed to redact secret: %s", jsonResponse.Body.String())
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(jsonResponse.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("redacted API output is invalid JSON: %v", err)
+	}
+	errorResponse := httptest.NewRecorder()
+	apiError(errorResponse, http.StatusBadRequest, "TEST_ERROR", "password="+secret)
+	if strings.Contains(errorResponse.Body.String(), secret) || !strings.Contains(errorResponse.Body.String(), "[REDACTED]") {
+		t.Fatalf("API error leaked or failed to redact secret: %s", errorResponse.Body.String())
+	}
+}
 func TestRunNeedsCSRF(t *testing.T) {
 	s := testServer(t)
 	r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs", nil)
@@ -164,11 +182,18 @@ func TestSecretPromptIsRedactedAcrossRunAPIReportAndSSE(t *testing.T) {
 	if err != nil || run.State != model.Completed || strings.Contains(run.Prompt, secret) || !strings.Contains(run.Prompt, "[REDACTED]") {
 		t.Fatalf("persisted run=%+v err=%v", run, err)
 	}
+	gateSecret, approvalSecret := "api-gate-secret-123456", "api-approval-secret-654321"
+	if err = server.Store.Gate(context.Background(), created.ID, "secret_check", "FAIL", "api_key="+gateSecret); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = server.Store.CreateApproval(context.Background(), model.Approval{RunID: created.ID, Action: "token=" + approvalSecret}); err != nil {
+		t.Fatal(err)
+	}
 	reportRequest := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/v1/runs/"+created.ID+"/report", nil)
 	reportRequest.Host = "127.0.0.1"
 	reportResponse := httptest.NewRecorder()
 	server.Handler().ServeHTTP(reportResponse, reportRequest)
-	if reportResponse.Code != http.StatusOK || strings.Contains(reportResponse.Body.String(), secret) {
+	if reportResponse.Code != http.StatusOK || strings.Contains(reportResponse.Body.String(), secret) || strings.Contains(reportResponse.Body.String(), gateSecret) || strings.Contains(reportResponse.Body.String(), approvalSecret) {
 		t.Fatalf("report status=%d body=%s", reportResponse.Code, reportResponse.Body.String())
 	}
 	streamContext, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)

@@ -183,6 +183,9 @@ func (s *Store) CreateRunIdempotent(ctx context.Context, key, project, prompt st
 }
 
 func (s *Store) CreateRunWithConfiguration(ctx context.Context, key, project, prompt string, configJSON []byte) (model.Run, bool, error) {
+	if len(configJSON) > 0 && security.Redact(string(configJSON)) != string(configJSON) {
+		return model.Run{}, false, fmt.Errorf("RUN_CONFIGURATION_SECRET_REFERENCE_REJECTED")
+	}
 	requestHash := ""
 	if key != "" {
 		sum := sha256.Sum256([]byte(project + "\x00" + prompt + "\x00" + string(configJSON)))
@@ -415,6 +418,11 @@ func (s *Store) ReleaseWorkspaceLock(ctx context.Context, path, runID string) er
 }
 
 func (s *Store) SaveRoutingDecision(ctx context.Context, runID, stage, provider, profile, modelName, effort, policy, explanation string) error {
+	for _, identity := range []string{provider, profile, modelName, effort, policy} {
+		if security.Redact(identity) != identity {
+			return fmt.Errorf("ROUTING_SECRET_REFERENCE_REJECTED")
+		}
+	}
 	_, err := s.DB.ExecContext(ctx, `INSERT INTO routing_decisions(run_id,stage,provider,profile,model,effort,policy,explanation,created_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(run_id,stage) DO UPDATE SET provider=excluded.provider,profile=excluded.profile,model=excluded.model,effort=excluded.effort,policy=excluded.policy,explanation=excluded.explanation,created_at=excluded.created_at`, runID, stage, provider, profile, modelName, effort, policy, security.Redact(explanation), now().Format(time.RFC3339Nano))
 	return err
 }
@@ -598,6 +606,7 @@ func (s *Store) EventsPage(ctx context.Context, runID string, after, through int
 	return events, rows.Err()
 }
 func (s *Store) Gate(ctx context.Context, runID, key, verdict, evidence string) error {
+	evidence = security.Redact(evidence)
 	_, err := s.DB.ExecContext(ctx, `INSERT INTO quality_gates VALUES(?,?,?,?) ON CONFLICT(run_id,gate_key) DO UPDATE SET verdict=excluded.verdict,evidence=excluded.evidence`, runID, key, verdict, evidence)
 	return err
 }
@@ -623,6 +632,11 @@ func (s *Store) SaveProfile(ctx context.Context, p model.Profile) (model.Profile
 	}
 	if p.Name == "" || p.Provider == "" || p.Executable == "" {
 		return p, fmt.Errorf("profile name, provider, and executable are required")
+	}
+	for _, identity := range append([]string{p.Name, p.Executable, p.ConfigDirectory}, p.AllowedScopes...) {
+		if security.Redact(identity) != identity {
+			return model.Profile{}, fmt.Errorf("PROFILE_SECRET_REFERENCE_REJECTED")
+		}
 	}
 	switch p.Provider {
 	case "claude", "codex", "opencode", "fake":
@@ -713,6 +727,8 @@ func (s *Store) SaveProfileCapability(ctx context.Context, name string, capabili
 	if capability.Provider != provider {
 		return capability, fmt.Errorf("PROFILE_PROVIDER_MISMATCH: %s", name)
 	}
+	capability.Version = security.Redact(capability.Version)
+	capability.EffortOverride = security.Redact(capability.EffortOverride)
 	capability.Warnings = append([]string(nil), capability.Warnings...)
 	for i, warning := range capability.Warnings {
 		capability.Warnings[i] = security.Redact(warning)

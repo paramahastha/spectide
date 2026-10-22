@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"github.com/spectide/spectide/internal/config"
+	"github.com/spectide/spectide/internal/events"
 	"github.com/spectide/spectide/internal/model"
 	"github.com/spectide/spectide/internal/routing"
+	"github.com/spectide/spectide/internal/security"
 	"github.com/spectide/spectide/internal/store"
 	"github.com/spectide/spectide/internal/webassets"
 	"github.com/spectide/spectide/internal/workflow"
@@ -84,7 +86,7 @@ var idempotencyPattern = regexp.MustCompile(`^[A-Za-z0-9:_-]{8,128}$`)
 const sseReplayPageSize = 512
 
 func apiError(w http.ResponseWriter, status int, code, message string) {
-	jsonOut(w, status, map[string]any{"error": map[string]string{"code": code, "message": message}})
+	jsonOut(w, status, map[string]any{"error": map[string]string{"code": code, "message": security.Redact(message)}})
 }
 
 func decodeRequest(w http.ResponseWriter, r *http.Request, limit int64, target any) error {
@@ -212,9 +214,14 @@ func (s *Server) secure(next http.Handler) http.Handler {
 	})
 }
 func jsonOut(w http.ResponseWriter, status int, v any) {
+	encoded, err := json.Marshal(events.SanitizePayload(v))
+	if err != nil {
+		status = http.StatusInternalServerError
+		encoded = []byte(`{"error":{"code":"SERIALIZATION_FAILED","message":"response serialization failed"}}`)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	_, _ = w.Write([]byte(security.Redact(string(encoded) + "\n")))
 }
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, 200, map[string]any{"status": "ok", "local_only": true})
