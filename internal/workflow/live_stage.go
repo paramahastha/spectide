@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -180,6 +181,18 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 			status = "CANCELLED"
 		}
 	}
+	if stage == "analyze" {
+		// Check the read-only boundary even when the provider exits with an
+		// error or cancellation; a failed invocation may still have written.
+		after, snapshotErr := workspaceFingerprint(installation.ProjectRoot)
+		if snapshotErr != nil {
+			runErr = fmt.Errorf("ANALYZE_MUTATION_CHECK_FAILED: %w", snapshotErr)
+			status = "FAILED"
+		} else if before != after {
+			runErr = fmt.Errorf("ANALYZE_MUTATED_ARTIFACTS")
+			status = "FAILED"
+		}
+	}
 	stdoutHash, stderrHash := hashString(result.Process.Stdout), hashString(result.Process.Stderr)
 	eventTypes := make([]string, 0, len(result.Events))
 	for _, event := range result.Events {
@@ -195,21 +208,14 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 	if runErr == nil {
 		switch stage {
 		case "analyze":
-			after, hashErr := workspaceFingerprint(installation.ProjectRoot)
-			if hashErr != nil {
-				runErr = hashErr
-			} else if before != after {
-				runErr = fmt.Errorf("ANALYZE_MUTATED_ARTIFACTS")
+			analysis, parseErr := speckit.ParseAnalysisOutput(result.Output)
+			if parseErr != nil {
+				runErr = parseErr
 			} else {
-				analysis, parseErr := speckit.ParseAnalysisOutput(result.Output)
-				if parseErr != nil {
-					runErr = parseErr
-				} else {
-					evidence["analysis_findings"] = len(analysis.Findings)
-					evidence["analysis_critical"] = analysis.Critical
-					evidence["analysis_high"] = analysis.High
-					evidence["analysis_medium"] = analysis.Medium
-				}
+				evidence["analysis_findings"] = len(analysis.Findings)
+				evidence["analysis_critical"] = analysis.Critical
+				evidence["analysis_high"] = analysis.High
+				evidence["analysis_medium"] = analysis.Medium
 			}
 		case "converge":
 			currentTasks, readErr := os.ReadFile(filepath.Join(featureDir, "tasks.md"))
@@ -407,7 +413,7 @@ func workspaceFiles(root string) (map[string]stageFile, error) {
 		if err != nil {
 			return err
 		}
-		if entry.IsDir() && (entry.Name() == ".git" || entry.Name() == "node_modules" || entry.Name() == ".next" || entry.Name() == "vendor" || entry.Name() == "dist" || entry.Name() == "build" || entry.Name() == "target" || entry.Name() == ".venv") {
+		if entry.IsDir() && (entry.Name() == ".git" || entry.Name() == "node_modules" || entry.Name() == ".next" || entry.Name() == "target" || entry.Name() == ".venv") {
 			return filepath.SkipDir
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
@@ -498,7 +504,66 @@ func workspaceFingerprint(root string) (string, error) {
 	for _, path := range paths {
 		_, _ = fmt.Fprintf(h, "%s:%s\n", path, files[path].SHA256)
 	}
+	// Include directory and symlink entries so empty-directory additions,
+	// removals, and link retargeting cannot evade read-only checks.
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	err = filepath.WalkDir(canonicalRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, relErr := filepath.Rel(canonicalRoot, path)
+		if relErr != nil {
+			return relErr
+		}
+		if path != canonicalRoot && entry.IsDir() && (entry.Name() == ".git" || entry.Name() == "node_modules" || entry.Name() == ".next" || entry.Name() == "target" || entry.Name() == ".venv") {
+			return filepath.SkipDir
+		}
+		if path == canonicalRoot {
+			return nil
+		}
+		if entry.IsDir() {
+			_, _ = fmt.Fprintf(h, "dir:%s\n", filepath.ToSlash(rel))
+			return nil
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			target, linkErr := os.Readlink(path)
+			if linkErr != nil {
+				return linkErr
+			}
+			_, _ = fmt.Fprintf(h, "symlink:%s:%s\n", filepath.ToSlash(rel), target)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	gitState, err := workspaceGitState(canonicalRoot)
+	if err != nil {
+		return "", err
+	}
+	_, _ = fmt.Fprintf(h, "git:%s\n", gitState)
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func workspaceGitState(root string) (string, error) {
+	if _, err := os.Lstat(filepath.Join(root, ".git")); os.IsNotExist(err) {
+		return "NO_GIT_METADATA", nil
+	} else if err != nil {
+		return "", err
+	}
+	cmd := exec.Command("git", "-C", root, "status", "--porcelain=v2", "--untracked-files=all", "--ignore-submodules=none")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("WORKSPACE_GIT_STATE_UNAVAILABLE: %w", err)
+	}
+	head, err := exec.Command("git", "-C", root, "rev-parse", "--verify", "HEAD").Output()
+	if err != nil {
+		return "", fmt.Errorf("WORKSPACE_GIT_HEAD_UNAVAILABLE: %w", err)
+	}
+	return hashString(string(head) + "\n" + string(output)), nil
 }
 
 func hashString(value string) string {

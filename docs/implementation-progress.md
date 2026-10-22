@@ -657,7 +657,7 @@
 - After T055–T076 and T079, `/speckit.converge` returned `tasks_appended`, not converged. It appended T080–T106 to the existing Phase 9: 10 critical, 15 high, and 2 medium findings. The official pass verified the preceding 26,772 bytes of `tasks.md` and the product spec, plan, and constitution hashes remained unchanged.
 - Findings include persistence redaction and config symlink containment, runner/process lock lifetime, read-only/owner-only workspace mutation checks, checkpoint/restart cursor semantics, repair-path approvals, final-gate aggregation, local stage routing, selected feature scope, semantic no-op evidence, parser compatibility, live event delivery, stream validation, quality-check discovery, migration compatibility, retention, dashboard evidence projections, CLI/API preview parity, release documentation, and packaging.
 - Fresh review checks: `go vet ./...`, `npm run typecheck`, `npm test -- --run` (29 tests), and targeted race tests passed. `go test -count=1 ./...` failed `TestHeartbeatOwnershipLossCancelsActiveWorker` (observed state `FAILED`); the focused `-count=5` retry failed 2/5. `make load-test-sse` failed in fixture setup with `UNIQUE constraint failed: events.run_id, events.seq` before any latency measurement. See T101/T102; do not replace those outcomes with earlier passes.
-- Official outcome: `tasks_appended`; T045 remains open. T077 remains blocked because the browser-origin policy denies local dashboard access. T080 is next.
+- Official outcome: `tasks_appended`; T045 remains open. T077 remains blocked because the browser-origin policy denies local dashboard access. T080–T084 are complete; T085 is next.
 
 ### T080 — Secret-safe project, artifact, and config persistence — 2026-10-23
 
@@ -682,3 +682,10 @@
 - `quality.Registry.RunControlled` accepts inherited descriptors and passes them into every registered check invocation. Workflow quality execution retrieves the active process-lock file under the engine mutex and supplies it to the registry.
 - Live shell check tests close the controller descriptor and exit a separate lock-owner helper while the child remains active. In both cases the kernel lock stays held, another process cannot acquire it, and the lease releases after the check exits.
 - `go test ./internal/quality ./internal/workflow -count=1`, the owner-process-exit focused test, `go vet ./internal/quality ./internal/workflow`, and `git diff --check` passed. T083 is complete; T084 is next.
+
+### T084 — Read-only analyze mutation enforcement — 2026-10-23
+
+- Analyze fingerprints now run after failed and cancelled provider invocations; a detected write takes precedence as `ANALYZE_MUTATED_ARTIFACTS` so failure cannot hide a boundary violation.
+- Workspace snapshots include generated `vendor`, `dist`, and `build` files, directory and symlink entries, and Git HEAD/status. Provider adapters retain verified read-only modes or fail closed when unsupported.
+- Tests cover mutation during a failed analyze, excluded/generated directories, symlink retargeting, and Git-only state changes.
+- `go test ./internal/workflow -count=1`, focused mutation tests, `go vet ./internal/workflow`, and `git diff --check` passed. T084 is complete; T085 is next.

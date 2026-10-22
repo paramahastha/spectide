@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -83,6 +84,110 @@ func TestReadOnlyAnalysisDetectsSourceAndContractWrites(t *testing.T) {
 				t.Fatalf("read-only analyze mutation was accepted: %v", err)
 			}
 		})
+	}
+}
+
+func TestReadOnlyAnalysisDetectsMutationsWhenInvocationFails(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "vendor", "generated.go")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("before"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hooks := AnalyzeHooks{
+		ArtifactHash: func(context.Context) (string, error) { return workspaceFingerprint(root) },
+		Analyze: func(context.Context) (string, error) {
+			if err := os.WriteFile(path, []byte("changed before failing"), 0o600); err != nil {
+				return "", err
+			}
+			return "", context.Canceled
+		},
+		Remediate: func(context.Context, speckit.Finding) error { return nil },
+	}
+	if _, err := RunAnalyzeGate(context.Background(), hooks, DefaultLoopLimits()); err == nil || !strings.Contains(err.Error(), "ANALYZE_MUTATED_ARTIFACTS") {
+		t.Fatalf("failed invocation mutation was not preserved as a boundary violation: %v", err)
+	}
+}
+
+func TestWorkspaceFingerprintIncludesGeneratedDirectoriesAndSymlinks(t *testing.T) {
+	for _, relative := range []string{"vendor/generated.go", "dist/app.js", "build/output.bin"} {
+		t.Run(relative, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, filepath.FromSlash(relative))
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("before"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			before, err := workspaceFingerprint(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = os.WriteFile(path, []byte("after"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			after, err := workspaceFingerprint(root)
+			if err != nil || before == after {
+				t.Fatalf("generated path mutation was omitted: before=%s after=%s err=%v", before, after, err)
+			}
+		})
+	}
+	t.Run("symlink retarget", func(t *testing.T) {
+		root := t.TempDir()
+		for _, name := range []string{"one", "two"} {
+			if err := os.WriteFile(filepath.Join(root, name), []byte(name), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		link := filepath.Join(root, "current")
+		if err := os.Symlink("one", link); err != nil {
+			t.Fatal(err)
+		}
+		before, err := workspaceFingerprint(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = os.Remove(link); err != nil {
+			t.Fatal(err)
+		}
+		if err = os.Symlink("two", link); err != nil {
+			t.Fatal(err)
+		}
+		after, err := workspaceFingerprint(root)
+		if err != nil || before == after {
+			t.Fatalf("symlink retarget was omitted: before=%s after=%s err=%v", before, after, err)
+		}
+	})
+}
+
+func TestWorkspaceFingerprintIncludesGitState(t *testing.T) {
+	root := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	run("init", "-q")
+	run("config", "user.email", "test@example.invalid")
+	run("config", "user.name", "SpecTide Test")
+	if err := os.WriteFile(filepath.Join(root, "source.go"), []byte("package source\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "source.go")
+	run("commit", "-qm", "initial")
+	before, err := workspaceFingerprint(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run("commit", "--allow-empty", "-qm", "state-only change")
+	after, err := workspaceFingerprint(root)
+	if err != nil || before == after {
+		t.Fatalf("Git state mutation was omitted: before=%s after=%s err=%v", before, after, err)
 	}
 }
 
