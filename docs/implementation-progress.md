@@ -355,6 +355,11 @@
 - Effective run configuration marks only fake routes simulated. Spec-Kit discovery checks whether the configured official stage command exists, and emits a specific `SPEC_KIT_STAGE_UNAVAILABLE` reason when it does not. No live provider process is invoked.
 - Focused workflow/CLI/API/Spec-Kit tests and full `make verify` passed. T014 remains open for verified stage prompt invocation and live adapter integration; T024 remains open for capability validation and fallback policy. Latest SC-001 measurement is 17.535 ms on the reference host.
 
+### Phase checkpoint — explicit fake-provider workspace and scenarios
+
+- Added an explicit portable fake route to the example workspace and checked-in scripted scenarios for success, typed failure, rate limit, and cancellation. Adapter tests load and execute each scenario fixture so future changes are checked against deterministic contract behavior.
+- `go test ./internal/adapters/fake` and full `make verify` passed. T038 is complete. Latest SC-001 measurement is 20.874 ms on the reference host.
+
 ### Phase checkpoint — durable run-owner leases
 
 - Added migration 6 and per-run heartbeat leases. The workflow writes its owner lease atomically with the workspace lock, refreshes it while the worker is alive, and removes it at finish.

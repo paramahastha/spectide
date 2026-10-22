@@ -1,0 +1,16 @@
+{
+  "success": [
+    { "type": "started", "summary": "fixture stage started" },
+    { "type": "completed", "summary": "fixture stage completed" }
+  ],
+  "failure": [
+    { "type": "started", "summary": "fixture stage started" },
+    { "failure_code": "SCRIPTED_FAILURE", "failure_message": "fixture provider failed safely" }
+  ],
+  "rate_limit": [
+    { "retry_after_ms": 250 }
+  ],
+  "cancellation": [
+    { "delay_ms": 3600000 }
+  ]
+}

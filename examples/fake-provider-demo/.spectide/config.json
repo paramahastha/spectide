@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "project": "fake-provider-demo",
+  "routing_mode": "hybrid",
+  "default_route": {
+    "provider": "fake",
+    "profile": "fake-demo",
+    "model": "deterministic",
+    "effort": "none"
+  }
+}
