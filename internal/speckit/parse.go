@@ -266,8 +266,9 @@ func featureDirectoryName(prompt string) string {
 
 var coverageLine = regexp.MustCompile(`^- Coverage:\s*([0-9]+(?:\.[0-9]+)?%)?(?:\s*\(([0-9]+)\s*/\s*([0-9]+)(?:\s+[^)]*)?\))?(?:\s+.+)?$`)
 var findingID = regexp.MustCompile(`^[A-Z][A-Z0-9_-]*[0-9]+$`)
-var taskLine = regexp.MustCompile(`^- \[([ xX])\] (T[0-9]{3,})\s+(.+?)\s*$`)
-var traceReference = regexp.MustCompile(`(?i)(?:\bFR-[0-9]{3}\b|\bSC-[0-9]{3}\b|\bUS[1-5]\b|\bAC[0-9]+\b|\bconstitution\b)`)
+var taskLine = regexp.MustCompile(`^- \[([ xX])\] (T[0-9]{3,}[a-z]?)\s+(.+?)\s*$`)
+var traceReference = regexp.MustCompile(`(?i)(?:\bFR-[0-9]{3}\b|\bSC-[0-9]{3}\b|\bUS[1-5]\b|\bAC[0-9]+\b|\bconstitution\b|\bplan:\s*[a-z0-9])`)
+var planPathReference = regexp.MustCompile(`(?:cmd|internal|web|docs|scripts|specs)/[A-Za-z0-9_./-]+\.(?:go|tsx?|jsx?|py|rs|java|sql|md|ya?ml|json|sh)`)
 var phaseLine = regexp.MustCompile(`^## Phase ([0-9]+):\s*(.+?)\s*$`)
 var convergenceTask = taskLine
 
@@ -428,6 +429,12 @@ func ParseAnalysisOutput(output string) (Analysis, error) {
 }
 
 func ParseConvergenceOutput(output string) (Convergence, error) {
+	return ParseConvergenceOutputWithPlan(output, "")
+}
+
+// ParseConvergenceOutputWithPlan permits a task to cite a concrete code or
+// artifact path only when that path appears in the canonical plan.
+func ParseConvergenceOutputWithPlan(output, plan string) (Convergence, error) {
 	c := Convergence{Appended: []string{}}
 	lines, err := reportLines(output)
 	if err != nil {
@@ -453,10 +460,10 @@ func ParseConvergenceOutput(output string) (Convergence, error) {
 		}
 		if strings.HasPrefix(line, "- [") {
 			match := convergenceTask.FindStringSubmatch(line)
-			if match == nil || match[1] != " " || !traceReference.MatchString(match[3]) {
+			if match == nil || match[1] != " " || !traceableTask(match[3], plan) {
 				return c, fmt.Errorf("CONVERGENCE_TASK_INVALID")
 			}
-			number, _ := strconv.Atoi(strings.TrimPrefix(match[2], "T"))
+			number := taskNumber(match[2])
 			if ids[match[2]] || (lastID != 0 && number != lastID+1) {
 				return c, fmt.Errorf("CONVERGENCE_TASK_IDS_NOT_CONSECUTIVE")
 			}
@@ -487,6 +494,12 @@ func ParseConvergenceOutput(output string) (Convergence, error) {
 // ValidateAppendOnly proves that the old task ledger is byte-for-byte intact
 // and that the new content contains one properly numbered convergence section.
 func ValidateAppendOnly(previous, current string) error {
+	return ValidateAppendOnlyWithPlan(previous, current, "")
+}
+
+// ValidateAppendOnlyWithPlan checks the same strict append contract while
+// allowing source-path traceability only when the selected plan names the path.
+func ValidateAppendOnlyWithPlan(previous, current, plan string) error {
 	if !strings.HasPrefix(current, previous) {
 		return fmt.Errorf("CONVERGENCE_NOT_APPEND_ONLY")
 	}
@@ -512,7 +525,7 @@ func ValidateAppendOnly(previous, current string) error {
 			return fmt.Errorf("CONVERGENCE_TASK_ID_REUSED: %s", item.id)
 		}
 		seen[item.id] = true
-		n, _ := strconv.Atoi(strings.TrimPrefix(item.id, "T"))
+		n := taskNumber(item.id)
 		if n > maxID {
 			maxID = n
 		}
@@ -555,14 +568,14 @@ func ValidateAppendOnly(previous, current string) error {
 		if seen[item.id] {
 			return fmt.Errorf("CONVERGENCE_TASK_ID_REUSED: %s", item.id)
 		}
-		n, _ := strconv.Atoi(strings.TrimPrefix(item.id, "T"))
+		n := taskNumber(item.id)
 		if n != maxID+i+1 {
 			return fmt.Errorf("CONVERGENCE_TASK_ID_NOT_CONSECUTIVE: %s", item.id)
 		}
 		if !item.unchecked {
 			return fmt.Errorf("CONVERGENCE_TASK_MUST_BE_UNCHECKED: %s", item.id)
 		}
-		if !traceReference.MatchString(item.description) {
+		if !traceableTask(item.description, plan) {
 			return fmt.Errorf("CONVERGENCE_TASK_NOT_TRACEABLE: %s", item.id)
 		}
 		seen[item.id] = true
@@ -573,7 +586,11 @@ func ValidateAppendOnly(previous, current string) error {
 // AppendedConvergenceTasks returns the unchecked tasks in the newly appended
 // ledger section, preserving order for comparison with a convergence report.
 func AppendedConvergenceTasks(previous, current string) ([]string, error) {
-	if err := ValidateAppendOnly(previous, current); err != nil {
+	return AppendedConvergenceTasksWithPlan(previous, current, "")
+}
+
+func AppendedConvergenceTasksWithPlan(previous, current, plan string) ([]string, error) {
+	if err := ValidateAppendOnlyWithPlan(previous, current, plan); err != nil {
 		return nil, err
 	}
 	appended := strings.TrimPrefix(current, previous)
@@ -586,6 +603,38 @@ func AppendedConvergenceTasks(previous, current string) ([]string, error) {
 		tasks = append(tasks, task.id+" "+task.description)
 	}
 	return tasks, nil
+}
+
+func taskNumber(id string) int {
+	digits := strings.TrimPrefix(id, "T")
+	for i, r := range digits {
+		if r < '0' || r > '9' {
+			digits = digits[:i]
+			break
+		}
+	}
+	n, _ := strconv.Atoi(digits)
+	return n
+}
+
+func traceableTask(description, plan string) bool {
+	if traceReference.MatchString(description) {
+		return true
+	}
+	if strings.TrimSpace(plan) == "" {
+		return false
+	}
+	paths := planPathReference.FindAllString(description, -1)
+	if len(paths) == 0 {
+		return false
+	}
+	for _, path := range paths {
+		clean := filepath.ToSlash(filepath.Clean(filepath.FromSlash(path)))
+		if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, "../") || !strings.Contains(plan, clean) {
+			return false
+		}
+	}
+	return true
 }
 
 type ledgerTask struct {

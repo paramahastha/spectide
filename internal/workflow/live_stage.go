@@ -134,6 +134,7 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 	var oldTasks []byte
 	var convergenceTaskPath string
 	var convergenceBefore string
+	var convergencePlan []byte
 	if stage == "converge" {
 		oldTasks, err = os.ReadFile(filepath.Join(featureDir, "tasks.md"))
 		if err != nil {
@@ -147,6 +148,10 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 		convergenceBefore, err = workspaceFingerprintExcept(installation.ProjectRoot, []string{convergenceTaskPath})
 		if err != nil {
 			return nil, err
+		}
+		convergencePlan, err = os.ReadFile(filepath.Join(featureDir, "plan.md"))
+		if err != nil {
+			return nil, fmt.Errorf("CONVERGENCE_PLAN_UNAVAILABLE: %w", err)
 		}
 	}
 	beforeArtifacts, err := captureStageArtifacts(installation.ProjectRoot, featureDir, stage)
@@ -229,7 +234,7 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 			runErr = fmt.Errorf("CONVERGENCE_TASKS_UNAVAILABLE: %w", readErr)
 			status = "FAILED"
 		} else if string(oldTasks) != string(currentTasks) {
-			if appendErr := speckit.ValidateAppendOnly(string(oldTasks), string(currentTasks)); appendErr != nil {
+			if appendErr := speckit.ValidateAppendOnlyWithPlan(string(oldTasks), string(currentTasks), string(convergencePlan)); appendErr != nil {
 				runErr = appendErr
 				status = "FAILED"
 			}
@@ -263,14 +268,14 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 			currentTasks, readErr := os.ReadFile(filepath.Join(featureDir, "tasks.md"))
 			if readErr != nil {
 				runErr = fmt.Errorf("CONVERGENCE_TASKS_UNAVAILABLE: %w", readErr)
-			} else if convergence, parseErr := speckit.ParseConvergenceOutput(result.Output); parseErr != nil {
+			} else if convergence, parseErr := speckit.ParseConvergenceOutputWithPlan(result.Output, string(convergencePlan)); parseErr != nil {
 				runErr = parseErr
 			} else if convergence.Converged && string(oldTasks) != string(currentTasks) {
 				runErr = fmt.Errorf("CONVERGENCE_CHANGED_TASKS_WITHOUT_APPEND_REPORT")
 			} else if !convergence.Converged {
-				if validateErr := speckit.ValidateAppendOnly(string(oldTasks), string(currentTasks)); validateErr != nil {
+				if validateErr := speckit.ValidateAppendOnlyWithPlan(string(oldTasks), string(currentTasks), string(convergencePlan)); validateErr != nil {
 					runErr = validateErr
-				} else if appended, appendErr := speckit.AppendedConvergenceTasks(string(oldTasks), string(currentTasks)); appendErr != nil {
+				} else if appended, appendErr := speckit.AppendedConvergenceTasksWithPlan(string(oldTasks), string(currentTasks), string(convergencePlan)); appendErr != nil {
 					runErr = appendErr
 				} else if !equalStrings(convergence.Appended, appended) {
 					runErr = fmt.Errorf("CONVERGENCE_REPORT_TASKS_MISMATCH")

@@ -14,6 +14,7 @@ import (
 type ConvergenceSnapshot struct {
 	SpecificationPath string
 	TaskLedger        string
+	PlanContent       string
 	GateVerdicts      map[string]string
 }
 
@@ -154,7 +155,7 @@ func runConvergenceWithBudget(ctx context.Context, hooks ConvergenceHooks, budge
 		if err != nil {
 			return false, err
 		}
-		result, err := speckit.ParseConvergenceOutput(output)
+		result, err := speckit.ParseConvergenceOutputWithPlan(output, before.PlanContent)
 		if err != nil {
 			return false, err
 		}
@@ -190,7 +191,7 @@ func runConvergenceWithBudget(ctx context.Context, hooks ConvergenceHooks, budge
 		}
 		var persistedTasks []string
 		if ledgerChanged {
-			persistedTasks, err = speckit.AppendedConvergenceTasks(before.TaskLedger, after.TaskLedger)
+			persistedTasks, err = speckit.AppendedConvergenceTasksWithPlan(before.TaskLedger, after.TaskLedger, before.PlanContent)
 			if err != nil {
 				return false, err
 			}

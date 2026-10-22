@@ -22,11 +22,15 @@ func (e *Engine) liveConvergenceHooks(run model.Run, phase string, decisions map
 			if err != nil {
 				return ConvergenceSnapshot{}, err
 			}
+			plan, err := os.ReadFile(filepath.Join(featureDir, "plan.md"))
+			if err != nil {
+				return ConvergenceSnapshot{}, err
+			}
 			path, err := filepath.Abs(filepath.Join(featureDir, "spec.md"))
 			if err != nil {
 				return ConvergenceSnapshot{}, err
 			}
-			return ConvergenceSnapshot{SpecificationPath: filepath.Clean(path), TaskLedger: string(content), GateVerdicts: cloneVerdicts(gateVerdicts)}, nil
+			return ConvergenceSnapshot{SpecificationPath: filepath.Clean(path), TaskLedger: string(content), PlanContent: string(plan), GateVerdicts: cloneVerdicts(gateVerdicts)}, nil
 		},
 		Converge: func(ctx context.Context) (string, error) {
 			stagePhase := "convergence"
@@ -44,7 +48,11 @@ func (e *Engine) liveConvergenceHooks(run model.Run, phase string, decisions map
 			if !ok {
 				return "", fmt.Errorf("CONVERGENCE_OUTPUT_MISSING")
 			}
-			result, err := speckit.ParseConvergenceOutput(output)
+			plan, err := os.ReadFile(filepath.Join(featureDir, "plan.md"))
+			if err != nil {
+				return "", err
+			}
+			result, err := speckit.ParseConvergenceOutputWithPlan(output, string(plan))
 			if err != nil {
 				return "", err
 			}

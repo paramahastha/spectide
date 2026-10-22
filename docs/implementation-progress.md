@@ -740,3 +740,10 @@
 - Clarify and implement prompts now define standalone `SPECTIDE_NO_CLARIFICATION:` and `SPECTIDE_NO_WORK:` markers for genuine no-change outcomes. The parser requires one unquoted, unfenced marker with a specific reason; missing, duplicate, or ambiguous claims fail closed.
 - A clarify no-op requires an inspectable selected specification with substantive sections and no changed artifact. An implementation no-op requires no changed files plus existing source evidence; subsequent required local quality checks still determine acceptance. A marker paired with a change is rejected.
 - Changed checklists must contain actual checkbox requirements; changed task ledgers must contain stable task IDs, alongside existing scoped owner-path enforcement. Tests cover valid/invalid markers, missing artifacts, no-op evidence, malformed owner artifacts, and the mixed live workflow. `go test ./internal/workflow ./internal/speckit -count=1`, package vet, and diff checks passed. T092 is complete; T093 is next. T087/T088 remain partial.
+
+### T093 — Master-ledger parser and convergence traceability — 2026-10-23
+
+- The strict task parser now accepts lowercase letter suffixes already present in the master ledger and computes the next task number from the numeric portion without rewriting historical IDs. The actual `specs/001-build-spectide/tasks.md` is used as a regression fixture.
+- Convergence parsing and append validation recognize the installed command's `plan: ...` trace form. Concrete source-file references are accepted only when named in the canonical plan; workflow convergence snapshots and live provider validation now pass that plan evidence through parsing and exact report/ledger comparison.
+- Clean and findings convergence formats and path traceability have fixtures. The next-numbered-phase rule remains enforced; same-phase runtime append behavior was not added under the explicit scope clarification.
+- `go test ./internal/speckit ./internal/workflow -count=1`, package vet, and `git diff --check` passed. T093 is complete; T094 is next. T087/T088 remain partial.

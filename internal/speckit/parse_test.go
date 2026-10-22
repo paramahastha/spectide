@@ -134,6 +134,32 @@ func TestValidateConvergenceAppendOnly(t *testing.T) {
 	}
 }
 
+func TestMasterLedgerIDsAndConvergencePlanTraceReferences(t *testing.T) {
+	master, err := os.ReadFile(filepath.Join("..", "..", "specs", "001-build-spectide", "tasks.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger := string(master)
+	appended := ledger + "\n## Phase 10: Convergence\n- [ ] T107 Repair the stage cursor per plan: recovery and task traceability (partial)\n"
+	if err = ValidateAppendOnly(ledger, appended); err != nil {
+		t.Fatalf("master ledger suffix IDs or plan reference rejected: %v", err)
+	}
+	if _, err = ParseConvergenceOutput("## Convergence Findings\nOutcome: tasks_appended\n- [ ] T107 Repair stage recovery per plan: recovery and traceability (partial)\n"); err != nil {
+		t.Fatalf("installed converge plan source reference rejected: %v", err)
+	}
+}
+
+func TestPlanFileReferencesRequireCanonicalPlanEvidence(t *testing.T) {
+	output := "## Convergence Findings\nOutcome: tasks_appended\n- [ ] T050 Repair the invocation path in internal/workflow/live_stage.go (partial)\n"
+	plan := "## Implementation\nUpdate internal/workflow/live_stage.go and verify its stage boundary.\n"
+	if _, err := ParseConvergenceOutputWithPlan(output, plan); err != nil {
+		t.Fatalf("plan-referenced source path rejected: %v", err)
+	}
+	if _, err := ParseConvergenceOutputWithPlan(output, "## Implementation\nNo source file cited.\n"); err == nil {
+		t.Fatal("source path absent from the canonical plan was accepted")
+	}
+}
+
 func TestInspectArtifactsRejectsSymlinkEscape(t *testing.T) {
 	root := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "spec.md")
