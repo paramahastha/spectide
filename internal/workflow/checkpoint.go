@@ -109,12 +109,24 @@ func workspaceCheckpointHashes(root, featureDir string, artifacts []model.Artifa
 	}
 	canonical = filepath.Clean(canonical)
 	artifactHashes := map[string]string{}
+	// Artifact rows are immutable observations. A checkpoint manifest is a
+	// separate current view: only the latest observation of each path should
+	// be compared with today's bytes.
+	latestArtifacts := make(map[string]model.Artifact, len(artifacts))
 	for _, artifact := range artifacts {
-		if err = addWorkspaceFileHash(canonical, artifact.Path, artifactHashes); err != nil {
+		path := filepath.ToSlash(filepath.Clean(filepath.FromSlash(artifact.Path)))
+		previous, exists := latestArtifacts[path]
+		if !exists || artifact.ObservedAt.After(previous.ObservedAt) ||
+			(artifact.ObservedAt.Equal(previous.ObservedAt) && artifact.ID > previous.ID) {
+			latestArtifacts[path] = artifact
+		}
+	}
+	for path, artifact := range latestArtifacts {
+		if err = addWorkspaceFileHash(canonical, path, artifactHashes); err != nil {
 			return nil, nil, "", "", err
 		}
-		if artifactHashes[filepath.ToSlash(filepath.Clean(artifact.Path))] != artifact.SHA256 {
-			return nil, nil, "", "", fmt.Errorf("WORKSPACE_DRIFT: registered artifact hash does not match: %s", artifact.Path)
+		if artifactHashes[path] != artifact.SHA256 {
+			return nil, nil, "", "", fmt.Errorf("WORKSPACE_DRIFT: latest registered artifact hash does not match: %s", path)
 		}
 	}
 	if featureDir != "" {

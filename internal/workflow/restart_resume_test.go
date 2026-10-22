@@ -78,6 +78,81 @@ func TestRestartResumeRequiresAndRestoresVerifiedCheckpoint(t *testing.T) {
 	t.Fatalf("resumed workflow did not complete, state=%s", resumed.State)
 }
 
+func TestCheckpointTracksLatestArtifactVersionsAndPreservesHistory(t *testing.T) {
+	ctx := context.Background()
+	project := initCheckpointGitProject(t)
+	feature := filepath.Join(project, "specs", "001-product")
+	if err := os.MkdirAll(feature, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"spec.md", "plan.md", "tasks.md"} {
+		if err := os.WriteFile(filepath.Join(feature, name), []byte("final "+name+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sourcePath := filepath.Join(project, "source.go")
+	if err := os.WriteFile(sourcePath, []byte("package source // final\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	run, _, err := s.CreateRunWithConfiguration(ctx, "", project, "checkpoint successive artifact revisions", fakeRunConfiguration(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := []string{"specs/001-product/spec.md", "specs/001-product/tasks.md", "source.go"}
+	baseTime := time.Date(2026, 10, 23, 1, 0, 0, 0, time.UTC)
+	for _, path := range paths {
+		oldContent := []byte("historical " + path + "\n")
+		currentPath := filepath.Join(project, filepath.FromSlash(path))
+		if err = os.MkdirAll(filepath.Dir(currentPath), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err = os.WriteFile(currentPath, oldContent, 0600); err != nil {
+			t.Fatal(err)
+		}
+		oldDigest := sha256.Sum256(oldContent)
+		if _, err = s.SaveArtifact(ctx, model.Artifact{RunID: run.ID, Stage: "specify", Path: path, Kind: "text", SHA256: hex.EncodeToString(oldDigest[:]), ObservedAt: baseTime}); err != nil {
+			t.Fatal(err)
+		}
+		finalContent := []byte("final " + path + "\n")
+		if path == "source.go" {
+			finalContent = []byte("package source // final\n")
+		}
+		if err = os.WriteFile(currentPath, finalContent, 0600); err != nil {
+			t.Fatal(err)
+		}
+		finalDigest := sha256.Sum256(finalContent)
+		if _, err = s.SaveArtifact(ctx, model.Artifact{RunID: run.ID, Stage: "implement", Path: path, Kind: "text", SHA256: hex.EncodeToString(finalDigest[:]), ObservedAt: baseTime.Add(time.Second)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	artifacts, err := s.Artifacts(ctx, run.ID)
+	if err != nil || len(artifacts) != 6 {
+		t.Fatalf("historical artifact observations were not preserved: count=%d err=%v", len(artifacts), err)
+	}
+	configuration, err := s.RunConfiguration(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := New(s)
+	if err = owner.saveCursorCheckpoint(ctx, run, feature, "starting", stages[0], configuration.SHA256, "SIMULATED", LoopLimits{}); err != nil {
+		t.Fatalf("checkpoint rejected latest artifact revisions: %v", err)
+	}
+	if _, _, err = owner.verifyRestartCheckpoint(ctx, run, configuration); err != nil {
+		t.Fatalf("latest-version checkpoint did not verify for restart: %v", err)
+	}
+	if err = os.WriteFile(sourcePath, []byte("external drift after checkpoint\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = owner.verifyRestartCheckpoint(ctx, run, configuration); err == nil || !strings.Contains(err.Error(), "WORKSPACE_DRIFT") {
+		t.Fatalf("genuine post-checkpoint drift was not rejected: %v", err)
+	}
+}
+
 func TestCLISubprocessResumeWaitsForDurableTerminalEvidence(t *testing.T) {
 	ctx := context.Background()
 	project := initCheckpointGitProject(t)

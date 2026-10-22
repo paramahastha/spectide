@@ -657,7 +657,7 @@
 - After T055–T076 and T079, `/speckit.converge` returned `tasks_appended`, not converged. It appended T080–T106 to the existing Phase 9: 10 critical, 15 high, and 2 medium findings. The official pass verified the preceding 26,772 bytes of `tasks.md` and the product spec, plan, and constitution hashes remained unchanged.
 - Findings include persistence redaction and config symlink containment, runner/process lock lifetime, read-only/owner-only workspace mutation checks, checkpoint/restart cursor semantics, repair-path approvals, final-gate aggregation, local stage routing, selected feature scope, semantic no-op evidence, parser compatibility, live event delivery, stream validation, quality-check discovery, migration compatibility, retention, dashboard evidence projections, CLI/API preview parity, release documentation, and packaging.
 - Fresh review checks: `go vet ./...`, `npm run typecheck`, `npm test -- --run` (29 tests), and targeted race tests passed. `go test -count=1 ./...` failed `TestHeartbeatOwnershipLossCancelsActiveWorker` (observed state `FAILED`); the focused `-count=5` retry failed 2/5. `make load-test-sse` failed in fixture setup with `UNIQUE constraint failed: events.run_id, events.seq` before any latency measurement. See T101/T102; do not replace those outcomes with earlier passes.
-- Official outcome: `tasks_appended`; T045 remains open. T077 remains blocked because the browser-origin policy denies local dashboard access. T080–T085 are complete; T086 is next.
+- Official outcome: `tasks_appended`; T045 remains open. T077 remains blocked because the browser-origin policy denies local dashboard access. T080–T086 are complete; T087 is next.
 
 ### T080 — Secret-safe project, artifact, and config persistence — 2026-10-23
 
@@ -695,3 +695,9 @@
 - Convergence snapshots the governed workspace before each provider invocation and compares it afterward, including on provider failure or cancellation. Only the selected existing `tasks.md` path is excluded from that comparison.
 - Git status filtering permits that ledger path while preserving HEAD and all other status changes. Existing append-only validation and exact report/ledger matching remain required; alternate-spec creation and changes to specs, plan, constitution, or source are rejected.
 - Targeted fingerprint and live mixed-engine convergence tests, `go test ./internal/workflow -count=1`, `go vet ./internal/workflow`, and `git diff --check` passed. T085 is complete; T086 is next.
+
+### T086 — Current checkpoint manifest over immutable artifact history — 2026-10-23
+
+- Checkpoint creation now selects the newest artifact observation for each normalized workspace path before validating current file bytes. It records one current hash per path without modifying or pruning any historical artifact rows.
+- The restart regression test records two versions each of spec, tasks, and source, confirms all six observations remain in the reportable store, saves and verifies a checkpoint against the latest versions, then confirms an external post-checkpoint source edit still produces `WORKSPACE_DRIFT`.
+- Targeted restart/recovery tests, `go test ./internal/workflow -count=1`, `go vet ./internal/workflow`, and `git diff --check` passed. T086 is complete; T087 is next.
