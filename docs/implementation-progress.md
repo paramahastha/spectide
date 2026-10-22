@@ -248,7 +248,13 @@
 
 **Remaining**
 
-- Fake adapter scripted failure/cancellation/rate-limit scenarios (T019) and canonical workflow integration remain open.
+- At this checkpoint, fake adapter scripted scenarios were still pending; canonical workflow integration remains open (T014).
+
+### Phase checkpoint — scripted fake provider behavior
+
+- The fake adapter can replay ordered event steps, deterministic failures, bounded cancellation-aware delays, and retry-after rate limits. Returned failures use typed `ProviderError` codes; event summaries are labeled `SIMULATED`, redacted, and contain no raw payload. Event types are constrained to a small safe character set.
+- Contract tests cover successful scripts, secret redaction, typed failure, rate-limit metadata, and context cancellation. `go test ./internal/adapters/... -count=1` passed. T019 is complete.
+- The scripted adapter is test support; canonical workflow orchestration still uses the existing deterministic lifecycle and does not invoke adapters (T014 remains open).
 
 ### Phase checkpoint — immutable run configuration and attempts
 

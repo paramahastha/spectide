@@ -48,7 +48,7 @@
 **Independent Test**: Valid configured profiles resolve per stage; invalid capabilities and forbidden profile boundaries cannot start.
 
 - [x] T018 [P] [US2] Add typed adapter errors and invocation-policy contract tests around the existing shared `Adapter` interface in `internal/adapters/`
-- [ ] T019 [P] [US2] Implement fake adapter scripted failures, cancellation, and rate limits against the shared `Adapter` interface in `internal/adapters/fake/`
+- [x] T019 [P] [US2] Implement fake adapter scripted failures, cancellation, and rate limits against the shared `Adapter` interface in `internal/adapters/fake/`
 - [x] T020 [P] [US2] Implement Claude fixture adapter and capability probe against the shared `Adapter` interface in `internal/adapters/claude/`
 - [x] T021 [P] [US2] Implement Codex fixture adapter and capability probe against the shared `Adapter` interface in `internal/adapters/codex/`
 - [x] T022 [P] [US2] Implement OpenCode fixture adapter and capability probe against the shared `Adapter` interface in `internal/adapters/opencode/`

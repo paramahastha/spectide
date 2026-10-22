@@ -24,9 +24,10 @@ const (
 // ProviderError gives callers a stable code while retaining a safe, readable
 // message and the underlying cause for local diagnostics.
 type ProviderError struct {
-	Code    string
-	Message string
-	Cause   error
+	Code       string
+	Message    string
+	RetryAfter time.Duration
+	Cause      error
 }
 
 func (e *ProviderError) Error() string {
@@ -47,6 +48,10 @@ func NewProviderError(code, message string) *ProviderError {
 
 func WrapProviderError(code, message string, cause error) *ProviderError {
 	return &ProviderError{Code: code, Message: message, Cause: cause}
+}
+
+func NewRateLimitError(retryAfter time.Duration) *ProviderError {
+	return &ProviderError{Code: "RATE_LIMITED", Message: "simulated provider rate limit", RetryAfter: retryAfter}
 }
 
 type Profile struct {
