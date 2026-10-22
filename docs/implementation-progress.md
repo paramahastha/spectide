@@ -466,6 +466,13 @@
 - Existing workflow acceptance tests verify exhaustion at exactly 3 analyze remediations, 4 test repairs, and 5 convergence rounds, plus no-progress termination; T034 restart tests verify continuation and checkpoint/workspace drift evidence preservation.
 - Focused workflow/API/store acceptance tests and full `make verify` passed, including static analysis, Go suites, dashboard tests/build, secret scan, and offline smoke. Latest SC-001: 19.849 ms; smoke remained `SIMULATED`. T036 is complete. T031 browser acceptance, T045 official Spec-Kit convergence, and T046 screenshot/release evidence remain open.
 
+### Phase checkpoint — first official Spec-Kit convergence
+
+- Invoked `speckit.converge` through the installed OpenCode integration using Specify CLI 1.2.2.dev0 and `openai/gpt-6.1-sol`. No `.specify/extensions.yml` hooks were registered.
+- The official assessment checked 30 functional requirements, 8 buildable success criteria, 14 acceptance scenarios, all 56 existing task entries, 9 plan areas, and 5 constitution principles. It reported 25 actionable findings: 9 CRITICAL, 14 HIGH, and 2 MEDIUM. Findings span transactional evidence/redaction, cross-database writer fencing, durable attempts/artifacts, strict parsers, initial artifact lifecycle, provider safety/streaming/capability verification, final gates, approvals/controls, API/dashboard truthfulness, simulated failure execution, browser coverage, release evidence, and Node 26 alignment.
+- Spec-Kit appended T055–T079 under a new Phase 9. Its own byte-level assertion verified the original 13,716-byte `tasks.md` prefix and all prior task IDs were unchanged; only the master task ledger was modified. No app code was changed by the official command.
+- The official run’s uncached `go test -count=1 ./...`, `go vet ./...`, and 26 dashboard tests passed. Outcome: `tasks_appended`, not converged. T045 remains open while the appended tasks are implemented; T031 and T046 browser/release evidence remain open.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified
