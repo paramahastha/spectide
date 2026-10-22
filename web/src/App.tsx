@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   runTone,
   summarizeRuns,
@@ -20,6 +20,7 @@ export function App() {
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [report, setReport] = useState<Report | null>(null)
   const [events, setEvents] = useState<LocalEvent[]>([])
+  const lastEventSeq = useRef(0)
   const [selected, setSelected] = useState('')
   const [view, setView] = useState<View>('workflow')
   const [project, setProject] = useState('./examples/fake-provider-demo')
@@ -91,36 +92,70 @@ export function App() {
   useEffect(() => {
     setReport(null)
     setEvents([])
+    lastEventSeq.current = 0
     if (!selected) return
     let live = true
+    let refreshTimer = 0
     api<Report>(`/api/v1/runs/${encodeURIComponent(selected)}`)
       .then((next) => { if (live) setReport(next) })
       .catch((error) => setMessage(`Unable to load run: ${String(error)}`))
-    const stream = new EventSource(`/api/v1/runs/${encodeURIComponent(selected)}/events?after=0`)
+    let stream: EventSource
+    let reconnectTimer = 0
     const receive = (event: Event) => {
       const messageEvent = event as MessageEvent<string>
       try {
         const item = JSON.parse(messageEvent.data) as LocalEvent
+        if (!item.run_id || item.run_id !== selected || !Number.isSafeInteger(item.seq) || item.seq < 1) return
         item.id = `${item.run_id}-${item.seq}`
+        lastEventSeq.current = Math.max(lastEventSeq.current, item.seq)
         setEvents((current) => {
           if (current.some((known) => known.id === item.id)) return current
-          return [item, ...current].slice(0, 80)
+          return [...current, item].sort((a, b) => a.seq - b.seq).slice(-80)
         })
+        window.clearTimeout(refreshTimer)
+        refreshTimer = window.setTimeout(() => { if (live) void refresh() }, 30)
       } catch { /* Ignore malformed frames and retain previously observed state. */ }
     }
-    stream.onmessage = receive
     const types = [
       'run.created', 'run.RUNNING', 'run.PAUSED', 'run.COMPLETED', 'run.CANCELLED', 'run.FAILED', 'run.BLOCKED',
-      'stage.started', 'stage.completed', 'stage.cancelled', 'analysis.clean', 'tests.passed', 'converge.converged',
-      'routing.resolved', 'run.interrupted',
-      'run.paused', 'run.resumed', 'approval.created', 'approval.resolved', 'approval.denied',
+      'run.paused', 'run.resumed', 'run.interrupted', 'run.recovery_claimed', 'run.acceptance',
+      'stage.created', 'stage.transition', 'stage.started', 'stage.completed', 'stage.cancelled', 'stage.failed', 'stage.blocked',
+      'stage.owner_artifact_present', 'stage.owner_artifact_invalid', 'analysis.clean', 'analysis.failed', 'analysis.remediated',
+      'tests.passed', 'tests.failed', 'converge.converged', 'convergence.report', 'routing.resolved',
+      'approval.created', 'approval.resolved', 'approval.denied', 'quality.inventory_initialized', 'quality.gate_recorded', 'quality.execution_completed',
+      'execution.attempt_started', 'execution.attempt_completed', 'checkpoint.failed', 'feature.directory_failed', 'workspace.lock_denied',
+      'profile.capability_invalidated',
+      'provider.codex.message', 'provider.codex.assistant', 'provider.codex.item.completed', 'provider.codex.turn.completed',
+      'provider.claude.message', 'provider.claude.assistant', 'provider.claude.content_block_delta', 'provider.claude.message_start', 'provider.claude.message_stop',
+      'provider.opencode.message', 'provider.opencode.text', 'provider.opencode.result', 'provider.fake.event', 'provider.fake.started',
     ]
-    types.forEach((type) => stream.addEventListener(type, receive))
+    const connect = () => {
+      if (!live) return
+      stream = new EventSource(`/api/v1/runs/${encodeURIComponent(selected)}/events?after=${lastEventSeq.current}`)
+      stream.onmessage = receive
+      stream.onopen = () => {
+        setConnection('connected')
+        window.clearTimeout(refreshTimer)
+        refreshTimer = window.setTimeout(() => { if (live) void refresh() }, 0)
+      }
+      stream.onerror = () => {
+        if (!live) return
+        setConnection('disconnected')
+        setMessage('Event stream disconnected · waiting to reconnect')
+        stream.close()
+        window.clearTimeout(reconnectTimer)
+        reconnectTimer = window.setTimeout(connect, 500)
+      }
+      types.forEach((type) => stream.addEventListener(type, receive))
+    }
+    connect()
     return () => {
       live = false
+      window.clearTimeout(refreshTimer)
+      window.clearTimeout(reconnectTimer)
       stream.close()
     }
-  }, [api, selected])
+  }, [api, refresh, selected])
 
   const selectedRun = useMemo(() => runs.find((run) => run.id === selected), [runs, selected])
   const simulatedRunIDs = useMemo(() => {
@@ -268,7 +303,7 @@ export function App() {
             </section>
 
             <section className="evidence-grid">
-              <div className="panel evidence-panel"><div className="panel-head"><div><div className="eyebrow">DURABLE EVENTS</div><h2>Activity stream</h2></div><span className="live-label"><i /> LIVE</span></div><EventList events={events} /></div>
+              <div className="panel evidence-panel"><div className="panel-head"><div><div className="eyebrow">DURABLE EVENTS</div><h2>Activity stream</h2></div><span className={`live-label ${connection === 'disconnected' ? 'offline' : ''}`} role="status" aria-label={`Event stream ${connection}`}><i /> {connection === 'disconnected' ? 'RECONNECTING' : 'LIVE'}</span></div><EventList events={events} /></div>
               <div className="panel evidence-panel"><div className="panel-head"><div><div className="eyebrow">RECORDED VERDICTS</div><h2>Quality gates</h2></div><span className="count">{report?.gates.length ?? 0}</span></div><GateList gates={report?.gates ?? []} /></div>
             </section>
             {report && <section className="panel artifacts-panel"><div className="panel-head"><div><div className="eyebrow">RUN OUTPUTS</div><h2>Artifacts &amp; approvals</h2></div></div>{report.artifacts?.length || report.approvals?.length ? <div className="artifact-list">{report.artifacts?.map((artifact) => <div className="artifact-row" key={artifact.id}><span>▤</span><strong>{artifact.path}</strong><code>{artifact.sha256.slice(0, 12)}</code></div>)}<ApprovalActions approvals={report.approvals ?? []} runState={report.run.state} busy={approvalBusy} onResolve={(id, decision) => void resolveApproval(id, decision)} /></div> : <div className="empty-inline">No artifacts or approvals recorded for this run.</div>}</section>}

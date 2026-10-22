@@ -617,3 +617,8 @@
 
 - No blocker to offline development.
 - Live-provider smoke checks are `NOT_RUN` pending authorized profiles; they must remain so until manually verified.
+### T073 — Dashboard event replay and connection recovery — 2026-10-23
+
+- The dashboard now subscribes to persisted run lifecycle, stage, provider, routing, failure, approval, attempt, and quality events. Each event refreshes canonical run/report data; stream errors show a disconnected/reconnecting state, reconnects request events after the last seen sequence, and recovery clears the stale state. Event rendering sorts by durable sequence and deduplicates by run/sequence.
+- A two-viewer React integration test injects a connection loss after sequence 1, changes the shared persisted report, then replays missed approval, quality, and failure events. Both viewers show the same refreshed report and ordered unique event list after reconnect. Frontend tests pass (28), typecheck and production build pass.
+- Full `make verify` passed: Go vet/tests, dashboard typecheck/tests/build, binary build, secret scan, and simulated smoke. Latest SC-001: 17.906 ms. Browser E2E and rendered accessibility checks remain T077/T031/T046. T073 is complete; T074 is next.

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import axe from 'axe-core'
@@ -147,6 +147,85 @@ describe('FR-026 dashboard page and state matrix', () => {
     expect(screen.getByText('NOT_RUN')).toBeTruthy()
     expect(screen.getAllByText('BLOCKED').length).toBeGreaterThanOrEqual(1)
     expect(screen.getAllByText('SIMULATED').length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('replays ordered missed events to two viewers and refreshes both canonical run snapshots', async () => {
+    const item = run('COMPLETED', 'shared-run')
+    let snapshot: Report = { run: item, stages: [], gates: [], routing_decisions: [], artifacts: [], approvals: [] }
+    class MockEventSource {
+      static instances: MockEventSource[] = []
+      onmessage: ((event: MessageEvent<string>) => void) | null = null
+      onopen: (() => void) | null = null
+      onerror: (() => void) | null = null
+      listeners = new Map<string, (event: MessageEvent<string>) => void>()
+      closed = false
+      url: string
+      constructor(url: string) { this.url = url; MockEventSource.instances.push(this) }
+      addEventListener(type: string, listener: EventListenerOrEventListenerObject) { this.listeners.set(type, listener as (event: MessageEvent<string>) => void) }
+      close() { this.closed = true }
+      emit(seq: number, type: string) {
+        const event = new MessageEvent(type, { data: JSON.stringify({ run_id: item.id, seq, type, stage: 'analyze' }) })
+        this.listeners.get(type)?.(event)
+      }
+    }
+    MockEventSource.instances = []
+    vi.stubGlobal('EventSource', MockEventSource)
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/version')) return json({ csrf_token: 'csrf-fixture' })
+      if (url.endsWith('/api/v1/profiles')) return json([])
+      if (url.endsWith('/api/v1/runs')) return json([item])
+      if (url.endsWith('/api/v1/runs/shared-run')) return json(snapshot)
+      return json({}, 404)
+    }))
+    const left = render(<App />)
+    const right = render(<App />)
+    await waitFor(() => expect(screen.getAllByRole('button', { name: /Review a bounded workflow.*COMPLETED/ })).toHaveLength(2))
+    screen.getAllByRole('button', { name: /Review a bounded workflow.*COMPLETED/ }).forEach((button) => fireEvent.click(button))
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThanOrEqual(2))
+    const originalStreams = MockEventSource.instances.slice(0, 2)
+    await act(async () => originalStreams.forEach((stream) => stream.emit(1, 'provider.codex.message')))
+    await act(async () => { originalStreams.forEach((stream) => stream.onerror?.()) })
+    expect(screen.getAllByText(/RECONNECTING/).length).toBe(2)
+
+    snapshot = {
+      ...snapshot,
+      run: { ...item, state: 'PAUSED' },
+      gates: [{ key: 'required_tests', verdict: 'PASS', evidence: 'shared quality evidence' }],
+      approvals: [{ id: 'approval-shared', action: 'Write project files', status: 'PENDING', decision: '' }],
+    }
+    await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThanOrEqual(4), { timeout: 2000 })
+    const replayStreams = MockEventSource.instances.slice(2, 4)
+    expect(replayStreams.map((stream) => stream.url)).toEqual([
+      '/api/v1/runs/shared-run/events?after=1', '/api/v1/runs/shared-run/events?after=1',
+    ])
+    await act(async () => replayStreams.forEach((stream) => stream.onopen?.()))
+    const backlog = [
+      [2, 'approval.created'], [3, 'quality.gate_recorded'], [4, 'analysis.failed'],
+    ] as const
+    await act(async () => {
+      replayStreams.forEach((stream) => {
+        backlog.forEach(([seq, type]) => stream.emit(seq, type))
+        stream.emit(3, 'quality.gate_recorded')
+      })
+    })
+
+    await waitFor(() => {
+      expect(screen.getAllByText('shared quality evidence').length).toBe(2)
+      expect(screen.getAllByText('Write project files').length).toBe(2)
+    })
+    for (const container of [left.container, right.container]) {
+      const rows = [...container.querySelectorAll('.event-row')]
+      expect(rows.map((row) => row.textContent)).toEqual([
+        expect.stringContaining('provider codex message'),
+        expect.stringContaining('approval created'),
+        expect.stringContaining('quality gate_recorded'),
+        expect.stringContaining('analysis failed'),
+      ])
+      expect(container.querySelectorAll('.event-row')).toHaveLength(4)
+      expect(container.querySelector('[aria-label="Event stream connected"]')?.textContent).toContain('LIVE')
+    }
+    expect(replayStreams[0].url).toContain('after=1')
   })
 })
 
