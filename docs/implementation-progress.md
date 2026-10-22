@@ -577,6 +577,13 @@
 - Focused quality/workflow/store/API tests and full `make verify` passed: `go vet ./...`, `go test ./...`, dashboard typecheck, 27 frontend tests, production build, secret scan, and simulated smoke. SC-001: 21.163 ms.
 - T070 is complete; T071 is next. T031, T045, and T046 remain open. Live provider execution remains `NOT_RUN`.
 
+### T071 — Foreground CLI restart resume lifetime — 2026-10-23
+
+- `spectide resume RUN_ID` now keeps the app/store open until the resumed worker or existing owner completes. It then returns the stable terminal-state exit code and reports durable completion; it no longer exits immediately after starting restart recovery.
+- A subprocess test creates a stale-owner paused run with a verified checkpoint, builds the CLI, invokes `resume`, and confirms the subprocess remains alive through the recovery-claimed event, completed run state, and persisted terminal acceptance report.
+- `go test ./internal/workflow -run TestCLISubprocessResumeWaitsForDurableTerminalEvidence -count=1` passed. Full `make verify` will be recorded after the remaining tasks at the next verification gate.
+- T071 is complete; T072 is next. T031, T045, and T046 remain open. Authenticated provider execution remains `NOT_RUN`.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified

@@ -189,7 +189,18 @@ func Root() *cobra.Command {
 			return e
 		}
 		defer a.Close()
-		return a.Engine.Resume(args[0])
+		if e = a.Engine.Resume(args[0]); e != nil {
+			return e
+		}
+		result, e := a.Engine.Wait(context.Background(), args[0])
+		if e != nil {
+			return e
+		}
+		if result.State != model.Completed {
+			return runStateError(result.State)
+		}
+		fmt.Fprintf(c.OutOrStdout(), "Run %s completed with durable evidence\n", result.ID)
+		return nil
 	}})
 	root.AddCommand(&cobra.Command{Use: "dashboard", Short: "Print the local dashboard URL", Run: func(c *cobra.Command, _ []string) {
 		fmt.Fprintln(c.OutOrStdout(), "Start `spectide serve` then open http://127.0.0.1:4747")

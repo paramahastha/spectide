@@ -78,6 +78,91 @@ func TestRestartResumeRequiresAndRestoresVerifiedCheckpoint(t *testing.T) {
 	t.Fatalf("resumed workflow did not complete, state=%s", resumed.State)
 }
 
+func TestCLISubprocessResumeWaitsForDurableTerminalEvidence(t *testing.T) {
+	ctx := context.Background()
+	project := initCheckpointGitProject(t)
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	state, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, reused, err := state.CreateRunWithConfiguration(ctx, "", project, "resume in a foreground CLI", fakeRunConfiguration(t))
+	if err != nil || reused {
+		t.Fatalf("run=%+v reused=%v err=%v", run, reused, err)
+	}
+	if err = state.AcquireWorkspaceLockOwned(ctx, project, run.ID, "expired-owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.SetRunState(ctx, run.ID, model.Running); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.SetRunState(ctx, run.ID, model.Paused); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.Event(ctx, run.ID, stages[0], "run.paused", "info", map[string]any{"stage": stages[0]}); err != nil {
+		t.Fatal(err)
+	}
+	configuration, err := state.RunConfiguration(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = New(state).saveCursorCheckpoint(ctx, run, "", "starting", stages[0], configuration.SHA256, "SIMULATED", LoopLimits{}); err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().UTC().Add(-store.RunOwnerLease - time.Second).Format(time.RFC3339Nano)
+	if _, err = state.DB.ExecContext(ctx, `UPDATE run_owners SET heartbeat_at=? WHERE run_id=?`, stale, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	binary := filepath.Join(t.TempDir(), "spectide")
+	build := exec.Command("go", "build", "-o", binary, "../../cmd/spectide")
+	if output, buildErr := build.CombinedOutput(); buildErr != nil {
+		t.Fatalf("build CLI: %v: %s", buildErr, output)
+	}
+	started := time.Now()
+	command := exec.Command(binary, "--db", dbPath, "resume", run.ID)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("resume CLI: %v: %s", err, output)
+	}
+	if elapsed := time.Since(started); elapsed < 500*time.Millisecond {
+		t.Fatalf("resume CLI exited before foreground work completed (%s): %s", elapsed, output)
+	}
+
+	state, err = store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	completed, err := state.GetRun(ctx, run.ID)
+	if err != nil || completed.State != model.Completed {
+		t.Fatalf("resumed run=%+v err=%v", completed, err)
+	}
+	report, err := state.Report(ctx, run.ID)
+	if err != nil || report.Acceptance.Verdict != "SIMULATED" {
+		t.Fatalf("terminal report acceptance=%+v err=%v", report.Acceptance, err)
+	}
+	events, err := state.Events(ctx, run.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, terminal := false, false
+	for _, event := range events {
+		if event.Type == "run.recovery_claimed" {
+			claimed = true
+		}
+		if event.Type == "run.COMPLETED" {
+			terminal = true
+		}
+	}
+	if !claimed || !terminal {
+		t.Fatalf("resumed terminal events missing: recovery=%v completed=%v", claimed, terminal)
+	}
+}
+
 func TestRestartResumeBlocksOnManagedWorkspaceDriftWithoutOverwriting(t *testing.T) {
 	ctx := context.Background()
 	project := initCheckpointGitProject(t)
