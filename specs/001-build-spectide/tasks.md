@@ -34,7 +34,7 @@
 
 - [x] T012 [P] [US1] Add deterministic lifecycle acceptance test in `internal/workflow/engine_test.go`
 - [x] T013 [US1] Implement deterministic fake stage execution and quality evidence in `internal/workflow/engine.go`
-- [ ] T014 [US1] Implement actual Spec-Kit discovery, stage mapping, artifact inspection, analyze and converge parsing in `internal/speckit/`
+- [x] T014 [US1] Implement actual Spec-Kit discovery, stage mapping, artifact inspection, analyze and converge parsing in `internal/speckit/`
 - [ ] T015 [US1] Implement required test registry and evidence collection in `internal/quality/`
 - [ ] T016 [US1] Implement bounded analyze remediation and converge no-progress loops in `internal/workflow/`
 - [ ] T017 [US1] Implement CLI run, status, list, logs, report, and exit-code behavior in `internal/cli/`

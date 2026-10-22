@@ -89,6 +89,19 @@
 
 - Checkpoints do not yet enable resume; workspace fingerprint verification, owner reconciliation, and immutable attempt-history semantics remain incomplete.
 
+### Phase checkpoint — Spec-Kit artifact and quality report parsing
+
+**Verified in this checkpoint**
+
+- Added safe inspection of the canonical feature `spec.md`, `plan.md`, and `tasks.md`, rejecting symlinks that escape the feature directory.
+- Added structured parsers for analysis findings and convergence outcomes.
+- Added an append-only convergence validator that proves the preexisting task ledger is unchanged, rejects reused or out-of-order task IDs, and requires the next phase number.
+- Parser tests passed, including malformed reports, secret-free output assumptions, symlink escapes, and changed/reused convergence task data. Task T014 is checked complete.
+
+**Remaining**
+
+- Parsing support does not execute agent commands. Workflow orchestration must still run installed Spec-Kit commands, persist their evidence, and handle remediation and convergence bounds.
+
 ### Earlier checkpoint summary
 
 ### Completed and verified
