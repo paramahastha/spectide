@@ -238,7 +238,31 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if in.DryRun {
-			jsonOut(w, 200, map[string]any{"dry_run": true, "provider": "fake", "stages": 12, "security": "local simulated route"})
+			root, err := canonicalProject(in.Project)
+			if err != nil {
+				apiError(w, http.StatusUnprocessableEntity, "ROUTE_PREVIEW_BLOCKED", err.Error())
+				return
+			}
+			configPath, err := safeProjectConfigPath(root)
+			if err != nil {
+				apiError(w, http.StatusUnprocessableEntity, "ROUTE_PREVIEW_BLOCKED", err.Error())
+				return
+			}
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				apiError(w, http.StatusUnprocessableEntity, "ROUTE_PREVIEW_BLOCKED", err.Error())
+				return
+			}
+			decisions := make([]config.Decision, 0, len(config.StageKeys))
+			for _, stage := range config.StageKeys {
+				decision, resolveErr := cfg.Resolve(stage, in.Prompt)
+				if resolveErr != nil {
+					apiError(w, http.StatusUnprocessableEntity, "ROUTE_PREVIEW_BLOCKED", resolveErr.Error())
+					return
+				}
+				decisions = append(decisions, decision)
+			}
+			jsonOut(w, http.StatusOK, map[string]any{"dry_run": true, "execution": "NOT_RUN", "mode": cfg.RoutingMode, "decisions": decisions})
 			return
 		}
 		run, reused, e := s.Engine.StartIdempotent(r.Context(), idempotencyKey, in.Project, in.Prompt)
@@ -255,6 +279,39 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 	}
 }
+
+func canonicalProject(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	root, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("PROJECT_PATH_UNAVAILABLE: %w", err)
+	}
+	info, err := os.Stat(root)
+	if err != nil || !info.IsDir() {
+		return "", fmt.Errorf("PROJECT_NOT_DIRECTORY")
+	}
+	return filepath.Clean(root), nil
+}
+
+func safeProjectConfigPath(root string) (string, error) {
+	path := config.ProjectPath(root)
+	resolved, err := filepath.EvalSymlinks(path)
+	if os.IsNotExist(err) {
+		return path, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("PROJECT_CONFIG_UNAVAILABLE: %w", err)
+	}
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("PERMISSION_DENIED: project config escapes canonical root")
+	}
+	return resolved, nil
+}
+
 func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/v1/runs/"), "/")
 	id := parts[0]

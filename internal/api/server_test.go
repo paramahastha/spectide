@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/store"
 	"github.com/spectide/spectide/internal/workflow"
 	"net/http"
@@ -107,6 +108,47 @@ func TestCreateRun(t *testing.T) {
 		t.Fatalf("key mismatch status=%d body=%s", w.Code, w.Body.String())
 	}
 	_ = context.Background()
+}
+
+func TestDryRunPreviewsConfiguredRoutesWithoutCreatingRun(t *testing.T) {
+	s := testServer(t)
+	project := t.TempDir()
+	r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs", strings.NewReader(`{"project":"`+project+`","prompt":"inspect","dry_run":true}`))
+	r.Host = "127.0.0.1"
+	r.Header.Set("X-SpecTide-CSRF", s.CSRF)
+	r.Header.Set("Idempotency-Key", "preview-request-123")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"execution":"NOT_RUN"`) || !strings.Contains(w.Body.String(), `"decisions":[`) {
+		t.Fatalf("preview status=%d body=%s", w.Code, w.Body.String())
+	}
+	runs, err := s.Store.Runs(context.Background())
+	if err != nil || len(runs) != 0 {
+		t.Fatalf("dry run created records: runs=%d err=%v", len(runs), err)
+	}
+}
+
+func TestDryRunRejectsProjectConfigSymlinkEscape(t *testing.T) {
+	s := testServer(t)
+	project, outside := t.TempDir(), t.TempDir()
+	if err := config.Save(config.ProjectPath(outside), config.Default()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(project, ".spectide"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(config.ProjectPath(outside), config.ProjectPath(project)); err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs", strings.NewReader(`{"project":"`+project+`","prompt":"inspect","dry_run":true}`))
+	r.Host = "127.0.0.1"
+	r.Header.Set("X-SpecTide-CSRF", s.CSRF)
+	r.Header.Set("Idempotency-Key", "preview-request-456")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "PERMISSION_DENIED") {
+		t.Fatalf("symlink escape status=%d body=%s", w.Code, w.Body.String())
+	}
 }
 
 func TestCreateAndListProfile(t *testing.T) {

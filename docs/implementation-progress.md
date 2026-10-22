@@ -313,6 +313,13 @@
 - Tests cover private backup permissions, round-trip restore, refusing overwrite/newer schema, 90-day expiration with active-run protection, terminal-first pruning, preserved verdicts, and all-active cap rejection.
 - `go test ./internal/store -count=1` passed. T051 is complete.
 
+### Phase checkpoint — authorized route preview
+
+- Replaced the API's hardcoded fake dry-run response with route decisions resolved from the selected existing project's configuration. The response explicitly says `execution: NOT_RUN` and includes no provider invocation.
+- The preview resolves the project through symlinks, requires an existing directory, and rejects project configuration symlinks that escape the canonical root. It does not create a run or alter state.
+- API tests verify all configured routes are returned without creating a run and that a config-file symlink escape is rejected. `go test ./internal/api -count=1` passed.
+- T024 remains open for profile/provider/model/capability validation and direct/fallback authorization through actual launch policy.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified
