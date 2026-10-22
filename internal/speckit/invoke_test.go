@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -177,7 +178,7 @@ func (streamingFixtureAdapter) Probe(context.Context, adapters.Profile) (adapter
 	return adapters.Capability{}, nil
 }
 func (streamingFixtureAdapter) Build(request adapters.Request) (runner.Invocation, error) {
-	return runner.Invocation{Binary: "/bin/sh", Args: []string{"-c", `printf '%s' '{"type":"text","text":"terminal output"}'`}, Dir: request.ProjectRoot}, nil
+	return runner.Invocation{Binary: "/bin/sh", Args: []string{"-c", `printf '%s\n' '{"type":"text","text":"terminal output"}' '{"type":"step_finish"}'`}, Dir: request.ProjectRoot}, nil
 }
 func (streamingFixtureAdapter) Normalize(raw []byte) ([]adapters.Event, error) {
 	return adapters.NormalizeJSONL(adapters.OpenCode, raw)
@@ -203,7 +204,58 @@ func TestExecuteStageParsesStreamingProviderTerminalText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Output != "terminal output" || len(result.Events) != 1 || result.Events[0].Type != "opencode.text" {
+	if result.Output != "terminal output" || len(result.Events) != 2 || result.Events[0].Type != "opencode.text" || result.Events[1].Type != "opencode.step_finish" {
 		t.Fatalf("stream result=%+v", result)
+	}
+}
+
+type malformedStreamingFixtureAdapter struct{}
+
+func (malformedStreamingFixtureAdapter) Name() adapters.ProviderName { return adapters.OpenCode }
+func (malformedStreamingFixtureAdapter) Probe(context.Context, adapters.Profile) (adapters.Capability, error) {
+	return adapters.Capability{}, nil
+}
+func (malformedStreamingFixtureAdapter) Build(request adapters.Request) (runner.Invocation, error) {
+	return runner.Invocation{Binary: "/bin/sh", Args: []string{"-c", `printf '%s\n' '{malformed}'`}, Dir: request.ProjectRoot}, nil
+}
+func (malformedStreamingFixtureAdapter) Normalize([]byte) ([]adapters.Event, error) {
+	return nil, nil
+}
+func (malformedStreamingFixtureAdapter) NewOutputStream() *adapters.OutputStream {
+	return adapters.NewOutputStream(adapters.OpenCode)
+}
+
+func TestExecuteStagePreservesTypedProviderStreamErrors(t *testing.T) {
+	root := t.TempDir()
+	rel := filepath.Join(".opencode", "commands", "speckit.analyze.md")
+	command := filepath.Join(root, rel)
+	if err := os.MkdirAll(filepath.Dir(command), 0700); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("Analyze: $ARGUMENTS")
+	if err := os.WriteFile(command, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(body)
+	installation := Installation{ProjectRoot: root, Verified: true, Commands: map[string]string{"analyze": "/speckit.analyze"}, CommandFiles: map[string]string{"analyze": filepath.ToSlash(rel)}, CommandHashes: map[string]string{"analyze": hex.EncodeToString(digest[:])}}
+	_, err := ExecuteStage(context.Background(), installation, malformedStreamingFixtureAdapter{}, adapters.Request{Profile: adapters.Profile{Provider: adapters.OpenCode}}, "analyze", "inspect")
+	var providerErr *adapters.ProviderError
+	if !errors.As(err, &providerErr) || providerErr.Code != "MALFORMED_PROVIDER_EVENT" {
+		t.Fatalf("typed provider parse error was erased: %v", err)
+	}
+}
+
+func TestProviderStreamCompletionDistinguishesMissingAndTruncatedTerminal(t *testing.T) {
+	missing := adapters.NewProviderError("PROVIDER_TERMINAL_EVENT_MISSING", "missing")
+	if got := providerStreamCompletionError(missing, false); got != missing {
+		t.Fatalf("non-truncated stream error changed: %v", got)
+	}
+	var truncated *adapters.ProviderError
+	if err := providerStreamCompletionError(missing, true); !errors.As(err, &truncated) || truncated.Code != "PROVIDER_STREAM_TRUNCATED" {
+		t.Fatalf("truncated terminal error=%v", err)
+	}
+	parseErr := adapters.NewProviderError("MALFORMED_PROVIDER_EVENT", "parse")
+	if got := providerStreamCompletionError(parseErr, true); got != parseErr {
+		t.Fatalf("specific parse error was hidden by truncation: %v", got)
 	}
 }

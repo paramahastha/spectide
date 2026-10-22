@@ -31,13 +31,22 @@ func TestBuildersDoNotContainBypassFlags(t *testing.T) {
 }
 
 func TestProviderNormalizersAcceptJSONLAndDiscardRawPayload(t *testing.T) {
-	cases := []adapters.Adapter{claude.Adapter{}, codex.Adapter{}, opencode.Adapter{}}
-	for _, a := range cases {
-		events, err := a.Normalize([]byte("{\"type\":\"system\",\"message\":\"private body\"}\n{\"type\":\"assistant\"}\n"))
+	cases := []struct {
+		adapter adapters.Adapter
+		output  string
+		count   int
+	}{
+		{claude.Adapter{}, `{"type":"system","message":"private body"}` + "\n" + `{"type":"assistant"}` + "\n" + `{"type":"result","result":"done"}` + "\n", 3},
+		{codex.Adapter{}, `{"type":"item.completed","item":{"type":"agent_message","text":"part"}}` + "\n" + `{"type":"turn.completed","last_agent_message":"done"}` + "\n", 2},
+		{opencode.Adapter{}, `{"type":"text","text":"done"}` + "\n" + `{"type":"step_finish"}` + "\n", 2},
+	}
+	for _, tc := range cases {
+		a := tc.adapter
+		events, err := a.Normalize([]byte(tc.output))
 		if err != nil {
 			t.Fatalf("%s: %v", a.Name(), err)
 		}
-		if len(events) != 2 {
+		if len(events) != tc.count {
 			t.Fatalf("%s events=%d", a.Name(), len(events))
 		}
 		if events[0].Raw != nil || strings.Contains(events[0].Summary, "private body") {

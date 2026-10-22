@@ -831,7 +831,7 @@ func TestSSEReceivesProviderStreamEventBeforeProcessExits(t *testing.T) {
 	processDone := make(chan error, 1)
 	go func() {
 		_, runErr := runner.Run(context.Background(), runner.Invocation{
-			Binary: "/bin/sh", Args: []string{"-c", `printf '%s\n' '{"type":"message","text":"early activity"}'; sleep 0.8; printf '%s\n' '{"type":"turn.completed","last_agent_message":"finished"}'`},
+			Binary: "/bin/sh", Args: []string{"-c", `printf '%s\n' '{"type":"item.started","item":{"type":"agent_message"}}'; sleep 0.8; printf '%s\n' '{"type":"turn.completed","last_agent_message":"finished"}'`},
 			Dir: t.TempDir(), Timeout: 3 * time.Second, StreamStdout: stream.Feed,
 		})
 		if closeErr := stream.Close(); runErr == nil {
@@ -852,7 +852,7 @@ func TestSSEReceivesProviderStreamEventBeforeProcessExits(t *testing.T) {
 				t.Fatalf("SSE ended before provider event: %v", scanner.Err())
 			}
 			frame := <-line
-			if strings.Contains(frame, `"provider_event_type":"codex.message"`) {
+			if strings.Contains(frame, `"provider_event_type":"codex.item.started"`) {
 				received = true
 			}
 		case <-deadline:

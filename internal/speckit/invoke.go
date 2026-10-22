@@ -2,6 +2,7 @@ package speckit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -115,10 +116,10 @@ func ExecuteStageWithTemplate(ctx context.Context, installation Installation, ad
 	result := StageResult{Process: process, Output: process.Stdout}
 	if stream != nil {
 		streamErr := stream.Close()
-		if process.StdoutTruncated && streamErr == nil {
-			streamErr = adapters.NewProviderError("PROVIDER_STREAM_LIMIT", "provider output exceeded the retained stream limit")
+		if process.StdoutTruncated {
+			streamErr = providerStreamCompletionError(streamErr, true)
 		}
-		if runErr == nil && streamErr != nil {
+		if streamErr != nil {
 			runErr = streamErr
 		}
 		result.Events = stream.Events()
@@ -134,6 +135,17 @@ func ExecuteStageWithTemplate(ctx context.Context, installation Installation, ad
 		}
 	}
 	return result, nil
+}
+
+func providerStreamCompletionError(streamErr error, truncated bool) error {
+	if !truncated {
+		return streamErr
+	}
+	var providerErr *adapters.ProviderError
+	if streamErr == nil || (errors.As(streamErr, &providerErr) && providerErr.Code == "PROVIDER_TERMINAL_EVENT_MISSING") {
+		return adapters.NewProviderError("PROVIDER_STREAM_TRUNCATED", "provider output was truncated before its terminal result could be verified")
+	}
+	return streamErr
 }
 
 func stageOutcomeInstructions(stage, arguments string) string {

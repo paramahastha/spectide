@@ -113,14 +113,15 @@ type StreamingAdapter interface{ NewOutputStream() *OutputStream }
 // OutputStream incrementally parses bounded provider JSONL and retains only
 // normalized event metadata plus the final user-visible answer text.
 type OutputStream struct {
-	provider ProviderName
-	onEvent  func(Event)
-	pending  []byte
-	events   []Event
-	terminal strings.Builder
-	total    int
-	failed   error
-	closed   bool
+	provider     ProviderName
+	onEvent      func(Event)
+	pending      []byte
+	events       []Event
+	terminal     strings.Builder
+	total        int
+	failed       error
+	closed       bool
+	terminalSeen bool
 }
 
 func NewOutputStream(provider ProviderName) *OutputStream     { return &OutputStream{provider: provider} }
@@ -174,6 +175,14 @@ func (s *OutputStream) Close() error {
 			return err
 		}
 	}
+	if !s.terminalSeen {
+		s.failed = NewProviderError("PROVIDER_TERMINAL_EVENT_MISSING", "provider stream ended without a terminal result")
+		return s.failed
+	}
+	if strings.TrimSpace(s.terminal.String()) == "" {
+		s.failed = NewProviderError("PROVIDER_TERMINAL_OUTPUT_MISSING", "provider terminal result contained no user-visible output")
+		return s.failed
+	}
 	return nil
 }
 func (s *OutputStream) Events() []Event { return append([]Event(nil), s.events...) }
@@ -189,16 +198,29 @@ func (s *OutputStream) consume(line []byte) error {
 	if strings.TrimSpace(typ) == "" {
 		return NewProviderError("UNSUPPORTED_PROVIDER_EVENT", "provider event has no supported type")
 	}
-	if version, ok := record["version"].(string); ok && version != "1" {
-		return NewProviderError("UNSUPPORTED_PROVIDER_EVENT_VERSION", "provider event version is not supported")
+	if versionValue, exists := record["version"]; exists {
+		version, ok := versionValue.(string)
+		if !ok || version != "1" {
+			return NewProviderError("UNSUPPORTED_PROVIDER_EVENT_VERSION", "provider event version is not supported")
+		}
 	}
-	if typ == "error" || strings.HasSuffix(typ, ".failed") || record["is_error"] == true {
-		return NewProviderError("PROVIDER_REPORTED_ERROR", "provider reported an execution error")
+	if !supportedEventType(s.provider, typ) {
+		return NewProviderError("UNSUPPORTED_PROVIDER_EVENT", "provider event type is not supported")
+	}
+	if typ == "error" || strings.HasSuffix(typ, ".failed") || typ == "turn.failed" || typ == "step_error" || typ == "rate_limits.error" || record["is_error"] == true {
+		code := "PROVIDER_REPORTED_ERROR"
+		if rateLimited, _ := record["rate_limited"].(bool); rateLimited || typ == "rate_limits.error" {
+			code = "RATE_LIMITED"
+		}
+		return NewProviderError(code, "provider reported an execution error")
 	}
 	if typ == "result" {
 		if subtype, ok := record["subtype"].(string); ok && subtype != "success" {
 			return NewProviderError("PROVIDER_REPORTED_ERROR", "provider reported an unsuccessful result")
 		}
+	}
+	if err := validateEventShape(s.provider, typ, record); err != nil {
+		return err
 	}
 	if len(s.events) >= maxStreamEvents {
 		return NewProviderError("PROVIDER_EVENT_LIMIT", "provider event count exceeds the stream limit")
@@ -208,15 +230,67 @@ func (s *OutputStream) consume(line []byte) error {
 	if s.onEvent != nil {
 		s.onEvent(event)
 	}
+	if terminalEvent(s.provider, typ) {
+		s.terminalSeen = true
+	}
 	s.extract(typ, record)
+	return nil
+}
+
+func supportedEventType(provider ProviderName, typ string) bool {
+	var supported []string
+	switch provider {
+	case Claude:
+		supported = []string{"system", "assistant", "content_block_start", "content_block_delta", "content_block_stop", "message_start", "message_delta", "message_stop", "result", "ping", "error"}
+	case Codex:
+		supported = []string{"thread.started", "turn.started", "turn.completed", "turn.failed", "item.started", "item.updated", "item.completed", "rate_limits", "rate_limits.error", "error"}
+	case OpenCode:
+		supported = []string{"step_start", "text", "reasoning", "tool_use", "tool_result", "step_finish", "session.idle", "step_error", "error"}
+	default:
+		return false
+	}
+	for _, candidate := range supported {
+		if typ == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func terminalEvent(provider ProviderName, typ string) bool {
+	switch provider {
+	case Claude:
+		return typ == "result"
+	case Codex:
+		return typ == "turn.completed"
+	case OpenCode:
+		return typ == "step_finish" || typ == "session.idle"
+	default:
+		return false
+	}
+}
+
+func validateEventShape(provider ProviderName, typ string, record map[string]any) error {
+	if provider == Claude && typ == "result" {
+		if _, ok := record["result"].(string); !ok {
+			return NewProviderError("PROVIDER_EVENT_SHAPE_INVALID", "provider terminal result has an invalid payload")
+		}
+	}
+	if provider == Codex && typ == "turn.completed" {
+		if _, ok := record["last_agent_message"].(string); !ok {
+			return NewProviderError("PROVIDER_EVENT_SHAPE_INVALID", "provider terminal result has an invalid payload")
+		}
+	}
+	if provider == OpenCode && typ == "text" {
+		if _, ok := record["text"].(string); !ok {
+			return NewProviderError("PROVIDER_EVENT_SHAPE_INVALID", "provider text event has an invalid payload")
+		}
+	}
 	return nil
 }
 func (s *OutputStream) extract(typ string, record map[string]any) {
 	appendText := func(value string) {
 		if value != "" && s.terminal.Len()+len(value) <= maxEventLine {
-			if s.terminal.Len() > 0 {
-				s.terminal.WriteByte('\n')
-			}
 			s.terminal.WriteString(value)
 		}
 	}

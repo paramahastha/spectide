@@ -77,13 +77,16 @@ func TestProviderOutputStreamHandlesPartialFramesAndExtractsTerminalText(t *test
 	if err := stream.Feed([]byte(`complete"}]}}` + "\n")); err != nil {
 		t.Fatal(err)
 	}
+	if err := stream.Feed([]byte(`{"type":"result","result":"review complete"}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
 	if err := stream.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if got := stream.TerminalText(); got != "review complete" {
 		t.Fatalf("terminal=%q", got)
 	}
-	if events := stream.Events(); len(events) != 1 || events[0].Summary != "structured provider event" {
+	if events := stream.Events(); len(events) != 2 || events[0].Summary != "structured provider event" {
 		t.Fatalf("events=%+v", events)
 	}
 }
@@ -102,17 +105,14 @@ func TestProviderOutputStreamUsesTerminalResultAndRejectsErrors(t *testing.T) {
 		t.Fatalf("terminal=%q", got)
 	}
 	bad := NewOutputStream(OpenCode)
-	if err := bad.Feed([]byte(`{"type":"error","message":"sensitive provider body"}`)); err != nil {
-		t.Fatal(err)
+	if err := bad.Feed([]byte(`{"type":"error","message":"sensitive provider body"}` + "\n")); err == nil {
+		t.Fatal("provider error event accepted")
 	}
 	if err := bad.Close(); err == nil || !strings.Contains(err.Error(), "PROVIDER_REPORTED_ERROR") || strings.Contains(err.Error(), "sensitive") {
 		t.Fatalf("provider error=%v", err)
 	}
 	unsupported := NewOutputStream(OpenCode)
-	if err := unsupported.Feed([]byte(`{"type":"text","version":"99","text":"hidden"}`)); err != nil {
-		t.Fatal(err)
-	}
-	if err := unsupported.Close(); err == nil || !strings.Contains(err.Error(), "UNSUPPORTED_PROVIDER_EVENT_VERSION") {
+	if err := unsupported.Feed([]byte(`{"type":"text","version":"99","text":"hidden"}` + "\n")); err == nil || !strings.Contains(err.Error(), "UNSUPPORTED_PROVIDER_EVENT_VERSION") {
 		t.Fatalf("version error=%v", err)
 	}
 }
@@ -128,18 +128,87 @@ func TestProviderOutputStreamPublishesEventsDuringFeed(t *testing.T) {
 	stream := NewOutputStream(Codex)
 	events := make(chan Event, 1)
 	stream.SetEventCallback(func(event Event) { events <- event })
-	if err := stream.Feed([]byte(`{"type":"message","text":"progress"}` + "\n")); err != nil {
+	if err := stream.Feed([]byte(`{"type":"item.started","item":{"type":"agent_message"}}` + "\n")); err != nil {
 		t.Fatal(err)
 	}
 	select {
 	case event := <-events:
-		if event.Type != "codex.message" || event.Summary != "structured provider event" {
+		if event.Type != "codex.item.started" || event.Summary != "structured provider event" {
 			t.Fatalf("stream callback event=%+v", event)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("provider event was not published until stream completion")
 	}
+	if err := stream.Feed([]byte(`{"type":"turn.completed","last_agent_message":"progress"}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
 	if err := stream.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestProviderOutputStreamPreservesTextDeltaFramingAndRequiresTerminal(t *testing.T) {
+	stream := NewOutputStream(Claude)
+	for _, frame := range []string{`{"type":"content_block_delta","delta":{"text":"spec"}}`, `{"type":"content_block_delta","delta":{"text":"tide"}}`} {
+		if err := stream.Feed([]byte(frame + "\n")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := stream.TerminalText(); got != "spectide" {
+		t.Fatalf("text delta framing changed: %q", got)
+	}
+	if err := stream.Close(); err == nil || !strings.Contains(err.Error(), "PROVIDER_TERMINAL_EVENT_MISSING") {
+		t.Fatalf("missing terminal event error=%v", err)
+	}
+}
+
+func TestProviderOutputStreamRejectsInvalidVersionShapesAndUnknownTypes(t *testing.T) {
+	for _, frame := range []string{
+		`{"type":"text","version":1,"text":"x"}`,
+		`{"type":"text","version":{"major":1},"text":"x"}`,
+	} {
+		stream := NewOutputStream(OpenCode)
+		if err := stream.Feed([]byte(frame + "\n")); err == nil || !strings.Contains(err.Error(), "UNSUPPORTED_PROVIDER_EVENT_VERSION") {
+			t.Errorf("accepted invalid version shape %s: %v", frame, err)
+		}
+	}
+	stream := NewOutputStream(OpenCode)
+	if err := stream.Feed([]byte(`{"type":"mystery.event"}` + "\n")); err == nil || !strings.Contains(err.Error(), "UNSUPPORTED_PROVIDER_EVENT") {
+		t.Fatalf("unknown provider event type error=%v", err)
+	}
+}
+
+func TestProviderOutputStreamRetainsRateLimitAndFailureCodes(t *testing.T) {
+	for _, testCase := range []struct{ frame, code string }{
+		{`{"type":"rate_limits.error"}`, "RATE_LIMITED"},
+		{`{"type":"turn.failed"}`, "PROVIDER_REPORTED_ERROR"},
+	} {
+		stream := NewOutputStream(Codex)
+		if err := stream.Feed([]byte(testCase.frame + "\n")); err == nil || !strings.Contains(err.Error(), testCase.code) {
+			t.Errorf("%s error=%v", testCase.code, err)
+		}
+	}
+}
+
+func TestProviderOutputStreamRejectsPartialTerminalPayloads(t *testing.T) {
+	cases := []struct {
+		provider ProviderName
+		frame    string
+		code     string
+	}{
+		{Codex, `{"type":"turn.completed"}`, "PROVIDER_EVENT_SHAPE_INVALID"},
+		{OpenCode, `{"type":"step_finish"}`, "PROVIDER_TERMINAL_OUTPUT_MISSING"},
+	}
+	for _, testCase := range cases {
+		stream := NewOutputStream(testCase.provider)
+		if err := stream.Feed([]byte(testCase.frame + "\n")); err != nil {
+			if !strings.Contains(err.Error(), testCase.code) {
+				t.Errorf("%s error=%v", testCase.code, err)
+			}
+			continue
+		}
+		if err := stream.Close(); err == nil || !strings.Contains(err.Error(), testCase.code) {
+			t.Errorf("%s terminal error=%v", testCase.code, err)
+		}
 	}
 }

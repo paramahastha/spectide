@@ -192,7 +192,7 @@ func Run(ctx context.Context, in Invocation) (Result, error) {
 		return res, fmt.Errorf("RUN_CANCELLED: provider stage was cancelled")
 	}
 	if streamOut.streamErr != nil {
-		return res, fmt.Errorf("PROVIDER_STREAM_INVALID")
+		return res, fmt.Errorf("PROVIDER_STREAM_INVALID: %w", streamOut.streamErr)
 	}
 	if exit, ok := err.(*exec.ExitError); ok {
 		res.ExitCode = exit.ExitCode()
