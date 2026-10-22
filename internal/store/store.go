@@ -924,5 +924,5 @@ func (s *Store) Report(ctx context.Context, id string) (model.Report, error) {
 	} else if configErr != sql.ErrNoRows {
 		return model.Report{}, configErr
 	}
-	return model.Report{Run: r, Configuration: configuration, Stages: st, Attempts: attempts, QualityExecutions: qualityExecutions, Decisions: d, Gates: g, Artifacts: a, Checkpoints: cp, Approvals: ap}, nil
+	return model.Report{Run: r, Acceptance: model.SummarizeAcceptance(d, g), Configuration: configuration, Stages: st, Attempts: attempts, QualityExecutions: qualityExecutions, Decisions: d, Gates: g, Artifacts: a, Checkpoints: cp, Approvals: ap}, nil
 }

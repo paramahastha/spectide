@@ -545,6 +545,12 @@
 - Routing validates exact model and effort values, and the immutable run configuration freezes catalog status and observed values. Tests cover anonymized auth success/failure, catalog and effort parsing, secret omission, exact-value rejection, capability drift, and a fixture-backed offline launch carrying a configured model/effort.
 - Focused adapter/routing/store/CLI/workflow tests and `make verify` passed. The full verification included Go vet/tests, dashboard typecheck/tests/build, binary build, secret scan, and offline simulated smoke. Latest SC-001: 35.811 ms. T065 is complete; T066 is next. T031, T045, and T046 remain open; live account verification remains `NOT_RUN`.
 
+### T066 — Evidence-based final acceptance and report — 2026-10-23
+
+- Replaced the terminal unconditional live block with explicit gate aggregation. Live/mixed execution requires inspectable `PASS` evidence for `analyze_clean`, `required_tests`, `converged`, and `final_review`. Missing evidence becomes `BLOCKED`; failures remain `FAIL`. The simulation-only `simulated_e2e` gate is `NOT_RUN` for live/mixed runs and remains required for a simulated-only completion.
+- Added a report acceptance projection and ordered `run.acceptance`/terminal events. The summary labels execution `LIVE`, `MIXED`, or `SIMULATED`, preserves each gate verdict, and reports `PASS`, `FAIL`, `BLOCKED`, or `SIMULATED` without treating deterministic fake output as live evidence.
+- The fixture-backed mixed workflow now completes after all applicable live/local gates pass. Model tests cover successful mixed acceptance, fake evidence failing a live gate, a failing gate, and missing simulated evidence. Focused model/store/workflow/API/CLI tests and full `make verify` passed. Latest SC-001: 22.210 ms; offline smoke remains `SIMULATED`. T066 is complete; T067 is next. T031, T045, and T046 remain open.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified

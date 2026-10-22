@@ -964,6 +964,16 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			e.failPersistence(r.ID)
 			return
 		}
+		if hasLiveStages {
+			gateKey := map[string]string{"analyze": "analyze_clean", "converge": "converged", "final_review": "final_review"}[key]
+			if gateKey != "" {
+				runGateVerdicts[gateKey] = "SIMULATED"
+				if err := e.store.Gate(ctx, r.ID, gateKey, "SIMULATED", "deterministic fake-provider stage; does not satisfy a live acceptance gate"); err != nil {
+					e.failPersistence(r.ID)
+					return
+				}
+			}
+		}
 		next := ""
 		if i+1 < len(stages) {
 			next = stages[i+1]
@@ -974,21 +984,46 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 		}
 	}
 	if hasLiveStages {
-		for _, gate := range []string{"analyze_clean", "required_tests", "converged", "final_review", "simulated_e2e"} {
+		for _, gate := range []string{"analyze_clean", "required_tests", "converged", "final_review"} {
 			verdict, ok := runGateVerdicts[gate]
 			if !ok {
 				verdict = "BLOCKED"
 			}
-			if err := e.store.Gate(ctx, r.ID, gate, verdict, "live stage outcomes remain incomplete for final acceptance"); err != nil {
+			if err := e.store.Gate(ctx, r.ID, gate, verdict, "required live/local evidence for final acceptance"); err != nil {
 				e.failPersistence(r.ID)
 				return
 			}
 		}
-		if err := e.store.Event(ctx, r.ID, "", "run.blocked", "warning", map[string]any{"reason": "LIVE_QUALITY_GATES_UNAVAILABLE", "execution": "LIVE"}); err != nil {
+		if err := e.store.Gate(ctx, r.ID, "simulated_e2e", "NOT_RUN", "simulation-only gate does not apply to live or mixed execution"); err != nil {
 			e.failPersistence(r.ID)
 			return
 		}
-		if err := e.store.SetRunState(ctx, r.ID, model.Blocked); err != nil {
+		gates, gateErr := e.store.Gates(ctx, r.ID)
+		if gateErr != nil {
+			e.failPersistence(r.ID)
+			return
+		}
+		acceptance := model.SummarizeAcceptance(acceptanceDecisions(decisions), gates)
+		if err := e.store.Event(ctx, r.ID, "", "run.acceptance", "info", map[string]any{"acceptance": acceptance}); err != nil {
+			e.failPersistence(r.ID)
+			return
+		}
+		terminal := model.Blocked
+		eventType := "run.blocked"
+		severity := "warning"
+		if acceptance.Verdict == "PASS" {
+			terminal = model.Completed
+			eventType = "run.completed"
+			severity = "info"
+		} else if acceptance.Verdict == "FAIL" {
+			terminal = model.Failed
+			eventType = "run.failed"
+		}
+		if err := e.store.Event(ctx, r.ID, "", eventType, severity, map[string]any{"execution": acceptance.Execution, "verdict": acceptance.Verdict}); err != nil {
+			e.failPersistence(r.ID)
+			return
+		}
+		if err := e.store.SetRunState(ctx, r.ID, terminal); err != nil {
 			e.failPersistence(r.ID)
 			return
 		}
@@ -1001,11 +1036,34 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			return
 		}
 	}
+	gates, gateErr := e.store.Gates(ctx, r.ID)
+	if gateErr != nil {
+		e.failPersistence(r.ID)
+		return
+	}
+	acceptance := model.SummarizeAcceptance(acceptanceDecisions(decisions), gates)
+	if err := e.store.Event(ctx, r.ID, "", "run.acceptance", "info", map[string]any{"acceptance": acceptance}); err != nil {
+		e.failPersistence(r.ID)
+		return
+	}
+	if err := e.store.Event(ctx, r.ID, "", "run.completed", "info", map[string]any{"execution": acceptance.Execution, "verdict": acceptance.Verdict}); err != nil {
+		e.failPersistence(r.ID)
+		return
+	}
 	if err := e.store.SetRunState(ctx, r.ID, model.Completed); err != nil {
 		e.failPersistence(r.ID)
 		return
 	}
 	e.finish(r.ID)
+}
+
+func acceptanceDecisions(decisions map[string]config.Decision) []model.RoutingDecision {
+	out := make([]model.RoutingDecision, 0, len(decisions))
+	for stage, decision := range decisions {
+		route := decision.Route
+		out = append(out, model.RoutingDecision{Stage: stage, Provider: route.Provider, Profile: route.Profile, Model: route.Model, Effort: route.Effort, Policy: string(decision.Mode), Explanation: decision.Explanation})
+	}
+	return out
 }
 
 // workspaceIdentityFingerprint binds a cursor checkpoint to its canonical

@@ -63,7 +63,7 @@ func (a *liveFixtureAdapter) Build(request adapters.Request) (runner.Invocation,
 	return runner.Invocation{Binary: "/bin/sh", Args: []string{"-c", "printf '%s' '" + output + "'"}, Dir: request.ProjectRoot, Timeout: request.Timeout}, nil
 }
 
-func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *testing.T) {
+func TestEngineCompletesVerifiedMixedRunWithApplicableEvidence(t *testing.T) {
 	ctx := context.Background()
 	state, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
@@ -165,12 +165,15 @@ func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *t
 	if !stringSliceContains(fixtureAdapter.models, "fixture/model") || !stringSliceContains(fixtureAdapter.efforts, "medium") {
 		t.Fatalf("verified configured model/effort did not reach offline launch: models=%v efforts=%v", fixtureAdapter.models, fixtureAdapter.efforts)
 	}
-	if err != nil || run.State != model.Blocked {
+	if err != nil || run.State != model.Completed {
 		t.Fatalf("live workflow run=%+v err=%v", run, err)
 	}
 	report, err := state.Report(ctx, run.ID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if report.Acceptance.Verdict != "PASS" || report.Acceptance.Execution != "MIXED" {
+		t.Fatalf("mixed-run acceptance=%+v", report.Acceptance)
 	}
 	if len(report.Checkpoints) == 0 {
 		t.Fatal("live feature scope has no checkpoint")
@@ -240,8 +243,8 @@ func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *t
 		case "converged":
 			converged = gate.Verdict
 		case "simulated_e2e":
-			if gate.Verdict != "BLOCKED" {
-				t.Fatalf("live workflow claimed simulated quality verdict: %+v", gate)
+			if gate.Verdict != "NOT_RUN" {
+				t.Fatalf("live workflow misreported simulation-only gate: %+v", gate)
 			}
 		}
 	}

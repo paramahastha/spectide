@@ -66,6 +66,7 @@ type Event struct {
 
 type Report struct {
 	Run               Run                `json:"run"`
+	Acceptance        AcceptanceSummary  `json:"acceptance"`
 	Configuration     *RunConfiguration  `json:"configuration,omitempty"`
 	Stages            []Stage            `json:"stages"`
 	Attempts          []ExecutionAttempt `json:"execution_attempts"`
@@ -75,6 +76,75 @@ type Report struct {
 	Artifacts         []Artifact         `json:"artifacts"`
 	Checkpoints       []Checkpoint       `json:"checkpoints"`
 	Approvals         []Approval         `json:"approvals"`
+}
+
+type AcceptanceSummary struct {
+	Verdict         string `json:"verdict"`
+	Execution       string `json:"execution"`
+	RequiredGates   []Gate `json:"required_gates"`
+	SimulationGates []Gate `json:"simulation_gates,omitempty"`
+}
+
+// SummarizeAcceptance distinguishes evidence that satisfies live/local gates
+// from deterministic simulation evidence. Missing gates remain NOT_RUN.
+func SummarizeAcceptance(decisions []RoutingDecision, gates []Gate) AcceptanceSummary {
+	hasLive, hasSimulated := false, false
+	for _, decision := range decisions {
+		if decision.Provider == "fake" {
+			hasSimulated = true
+		} else {
+			hasLive = true
+		}
+	}
+	execution := "SIMULATED"
+	if hasLive && hasSimulated {
+		execution = "MIXED"
+	} else if hasLive {
+		execution = "LIVE"
+	}
+	byKey := make(map[string]Gate, len(gates))
+	for _, gate := range gates {
+		byKey[gate.Key] = gate
+	}
+	keys := []string{"analyze_clean", "required_tests", "converged", "final_review"}
+	if !hasLive {
+		keys = append(keys, "simulated_e2e")
+	}
+	summary := AcceptanceSummary{Execution: execution}
+	allPass := true
+	hasFail := false
+	for _, key := range keys {
+		gate, ok := byKey[key]
+		if !ok {
+			gate = Gate{Key: key, Verdict: "NOT_RUN", Evidence: "required evidence was not recorded"}
+		}
+		summary.RequiredGates = append(summary.RequiredGates, gate)
+		if gate.Verdict != "PASS" {
+			allPass = false
+		}
+		if gate.Verdict == "FAIL" {
+			hasFail = true
+		}
+	}
+	if hasLive {
+		gate, ok := byKey["simulated_e2e"]
+		if !ok {
+			gate = Gate{Key: "simulated_e2e", Verdict: "NOT_RUN", Evidence: "simulation-only check does not apply to live execution"}
+		}
+		summary.SimulationGates = append(summary.SimulationGates, gate)
+	}
+	if allPass {
+		if hasLive {
+			summary.Verdict = "PASS"
+		} else {
+			summary.Verdict = "SIMULATED"
+		}
+	} else if hasFail {
+		summary.Verdict = "FAIL"
+	} else {
+		summary.Verdict = "BLOCKED"
+	}
+	return summary
 }
 
 // ExecutionAttempt records one actual or attempted provider invocation. Its
