@@ -4,11 +4,12 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"github.com/spectide/spectide/internal/runner"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/spectide/spectide/internal/runner"
+	"github.com/spectide/spectide/internal/security"
 )
 
 const maxEventLine = 1 << 20
@@ -56,10 +57,13 @@ func NewRateLimitError(retryAfter time.Duration) *ProviderError {
 }
 
 type Profile struct {
-	Name                  string
-	Provider              ProviderName
-	Executable, ConfigDir string
-	AllowedProjects       []string
+	Name                     string
+	Provider                 ProviderName
+	Executable, ConfigDir    string
+	AllowedProjects          []string
+	ApprovedExecutablePath   string
+	ApprovedExecutableSHA256 string
+	ApprovedConfigDirectory  string
 }
 type Request struct {
 	ProjectRoot, Stage, Prompt, Model, Effort string
@@ -69,16 +73,19 @@ type Request struct {
 	Profile                                   Profile
 }
 type Capability struct {
-	Provider          ProviderName `json:"provider"`
-	ExecutableFound   bool         `json:"executable_found"`
-	Version           string       `json:"version"`
-	Authenticated     string       `json:"authenticated"`
-	StreamingEvents   bool         `json:"streaming_events"`
-	ModelOverride     bool         `json:"model_override"`
-	EffortOverride    string       `json:"effort_override"`
-	ReadOnlyExecution bool         `json:"read_only_execution"`
-	WorkspaceWrite    bool         `json:"workspace_write"`
-	Warnings          []string     `json:"warnings"`
+	Provider                ProviderName `json:"provider"`
+	ExecutableFound         bool         `json:"executable_found"`
+	ApprovedExecutablePath  string       `json:"approved_executable_path,omitempty"`
+	ExecutableSHA256        string       `json:"executable_sha256,omitempty"`
+	ApprovedConfigDirectory string       `json:"approved_config_directory,omitempty"`
+	Version                 string       `json:"version"`
+	Authenticated           string       `json:"authenticated"`
+	StreamingEvents         bool         `json:"streaming_events"`
+	ModelOverride           bool         `json:"model_override"`
+	EffortOverride          string       `json:"effort_override"`
+	ReadOnlyExecution       bool         `json:"read_only_execution"`
+	WorkspaceWrite          bool         `json:"workspace_write"`
+	Warnings                []string     `json:"warnings"`
 }
 type Event struct {
 	Type, Summary string
@@ -93,14 +100,21 @@ type Adapter interface {
 
 func ProbeBinary(p Profile) (Capability, error) {
 	c := Capability{Provider: p.Provider, Authenticated: "NOT_PROBED", Warnings: []string{"Authentication is never read from credential files."}}
-	path, e := exec.LookPath(p.Executable)
+	reference, e := security.ResolveExecutableReference(p.Executable)
 	if e != nil {
 		return c, WrapProviderError("EXECUTABLE_NOT_FOUND", p.Executable, e)
 	}
 	c.ExecutableFound = true
+	c.ApprovedExecutablePath = reference.Path
+	c.ExecutableSHA256 = reference.SHA256
+	configDirectory, e := security.ResolveConfigDirectory(p.ConfigDir)
+	if e != nil {
+		return c, WrapProviderError("CONFIG_DIRECTORY_INVALID", "provider configuration reference is invalid", e)
+	}
+	c.ApprovedConfigDirectory = configDirectory
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	result, err := runner.Run(ctx, runner.Invocation{Binary: path, Args: []string{"--version"}})
+	result, err := runner.Run(ctx, runner.Invocation{Binary: reference.Path, Args: []string{"--version"}, ExpectedExecutablePath: reference.Path, ExpectedExecutableSHA256: reference.SHA256})
 	if err != nil {
 		return c, WrapProviderError("PROVIDER_VERSION_PROBE_FAILED", "provider version probe failed", err)
 	}

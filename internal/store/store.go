@@ -774,8 +774,8 @@ func (s *Store) SaveProfileCapability(ctx context.Context, name string, capabili
 			return capability, fmt.Errorf("PROFILE_CAPABILITY_LIMIT_EXCEEDED")
 		}
 	}
-	var provider string
-	if err := s.DB.QueryRowContext(ctx, `SELECT provider FROM profiles WHERE name=?`, name).Scan(&provider); err != nil {
+	var provider, executable, configDirectory string
+	if err := s.DB.QueryRowContext(ctx, `SELECT provider,executable,config_directory FROM profiles WHERE name=?`, name).Scan(&provider, &executable, &configDirectory); err != nil {
 		if err == sql.ErrNoRows {
 			return capability, fmt.Errorf("PROFILE_NOT_FOUND: %s", name)
 		}
@@ -783,6 +783,19 @@ func (s *Store) SaveProfileCapability(ctx context.Context, name string, capabili
 	}
 	if capability.Provider != provider {
 		return capability, fmt.Errorf("PROFILE_PROVIDER_MISMATCH: %s", name)
+	}
+	if capability.ExecutableFound {
+		if capability.ApprovedExecutablePath == "" || len(capability.ExecutableSHA256) != 64 || security.Redact(capability.ApprovedExecutablePath) != capability.ApprovedExecutablePath || security.Redact(capability.ApprovedConfigDirectory) != capability.ApprovedConfigDirectory {
+			return capability, fmt.Errorf("PROFILE_CAPABILITY_REFERENCE_REQUIRED")
+		}
+		reference, err := security.ResolveExecutableReference(executable)
+		if err != nil || reference.Path != capability.ApprovedExecutablePath || reference.SHA256 != capability.ExecutableSHA256 {
+			return capability, fmt.Errorf("PROFILE_CAPABILITY_EXECUTABLE_REFERENCE_INVALID")
+		}
+		approvedConfig, err := security.ResolveConfigDirectory(configDirectory)
+		if err != nil || approvedConfig != capability.ApprovedConfigDirectory {
+			return capability, fmt.Errorf("PROFILE_CAPABILITY_CONFIG_REFERENCE_INVALID")
+		}
 	}
 	capability.Version = security.Redact(capability.Version)
 	capability.EffortOverride = security.Redact(capability.EffortOverride)
@@ -798,6 +811,33 @@ func (s *Store) SaveProfileCapability(ctx context.Context, name string, capabili
 	_, err = s.DB.ExecContext(ctx, `INSERT INTO profile_capabilities(profile_name,capability_json,observed_at) VALUES(?,?,?) ON CONFLICT(profile_name) DO UPDATE SET capability_json=excluded.capability_json,observed_at=excluded.observed_at`, name, string(encoded), capability.ObservedAt.Format(time.RFC3339Nano))
 	return capability, err
 }
+
+func (s *Store) InvalidateProfileCapability(ctx context.Context, name string) error {
+	if name == "" {
+		return fmt.Errorf("PROFILE_NAME_REQUIRED")
+	}
+	_, err := s.DB.ExecContext(ctx, `DELETE FROM profile_capabilities WHERE profile_name=?`, name)
+	return err
+}
+
+func (s *Store) InvalidateProfileCapabilityForRun(ctx context.Context, name, runID string) error {
+	if name == "" || runID == "" {
+		return fmt.Errorf("PROFILE_NAME_AND_RUN_REQUIRED")
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `DELETE FROM profile_capabilities WHERE profile_name=?`, name); err != nil {
+		return err
+	}
+	if err = appendEvent(ctx, tx, runID, "", "profile.capability_invalidated", "warning", map[string]any{"profile": name, "reason": "approved executable or configuration reference drifted"}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) Report(ctx context.Context, id string) (model.Report, error) {
 	r, e := s.GetRun(ctx, id)
 	if e != nil {

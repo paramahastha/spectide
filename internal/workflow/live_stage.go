@@ -105,6 +105,10 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 	if err := routing.ValidateRouteCapability(stage, route, *profile); err != nil {
 		return nil, err
 	}
+	approvedExecutable, approvedConfig, err := e.validateProfileReferences(ctx, run.ID, *profile)
+	if err != nil {
+		return nil, err
+	}
 	var before string
 	if stage == "analyze" {
 		before, err = workspaceFingerprint(installation.ProjectRoot)
@@ -130,8 +134,10 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 		Effort:      route.Effort,
 		Profile: adapters.Profile{
 			Name: profile.Name, Provider: adapters.ProviderName(profile.Provider),
-			Executable: profile.Executable, ConfigDir: profile.ConfigDirectory,
-			AllowedProjects: append([]string(nil), profile.AllowedScopes...),
+			Executable: profile.Executable, ConfigDir: approvedConfig,
+			AllowedProjects:        append([]string(nil), profile.AllowedScopes...),
+			ApprovedExecutablePath: approvedExecutable.Path, ApprovedExecutableSHA256: approvedExecutable.SHA256,
+			ApprovedConfigDirectory: approvedConfig,
 		},
 	}
 	option := liveStageOptions{}
@@ -285,6 +291,28 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 	}
 	evidence["_stage_output"] = result.Process.Stdout
 	return evidence, nil
+}
+
+func (e *Engine) validateProfileReferences(ctx context.Context, runID string, profile model.Profile) (security.ExecutableReference, string, error) {
+	capability := profile.Capability
+	if capability == nil || !capability.ExecutableFound || capability.ApprovedExecutablePath == "" || capability.ExecutableSHA256 == "" {
+		return security.ExecutableReference{}, "", fmt.Errorf("PROFILE_CAPABILITY_REFERENCE_NOT_PROBED")
+	}
+	executable, err := security.ResolveExecutableReference(profile.Executable)
+	if err != nil {
+		return security.ExecutableReference{}, "", err
+	}
+	configDirectory, err := security.ResolveConfigDirectory(profile.ConfigDirectory)
+	if err != nil {
+		return security.ExecutableReference{}, "", err
+	}
+	if executable.Path != capability.ApprovedExecutablePath || executable.SHA256 != capability.ExecutableSHA256 || configDirectory != capability.ApprovedConfigDirectory {
+		if err = e.store.InvalidateProfileCapabilityForRun(context.Background(), profile.Name, runID); err != nil {
+			return security.ExecutableReference{}, "", err
+		}
+		return security.ExecutableReference{}, "", fmt.Errorf("PROFILE_CAPABILITY_REFERENCE_DRIFT")
+	}
+	return executable, configDirectory, nil
 }
 
 type stageFile struct {

@@ -2,10 +2,12 @@ package store
 
 import (
 	"context"
-	"github.com/spectide/spectide/internal/model"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spectide/spectide/internal/model"
+	"github.com/spectide/spectide/internal/security"
 )
 
 func TestProfilesNeverStoreSecrets(t *testing.T) {
@@ -114,11 +116,20 @@ func TestProfileCapabilityPersistenceAndInvalidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	profile := model.Profile{Name: "local", Provider: "codex", Executable: "codex", AllowedScopes: []string{"/workspace"}}
+	profile := model.Profile{Name: "local", Provider: "codex", Executable: "/bin/sh", AllowedScopes: []string{"/workspace"}}
 	if _, err = s.SaveProfile(ctx, profile); err != nil {
 		t.Fatal(err)
 	}
-	capability := model.ProfileCapability{Provider: "codex", ExecutableFound: true, Version: "1.2.3", Authenticated: "NOT_PROBED", Warnings: []string{"token=supersecret123456"}}
+	reference, err := security.ResolveExecutableReference(profile.Executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability := model.ProfileCapability{Provider: "codex", ExecutableFound: true, ApprovedExecutablePath: reference.Path, ExecutableSHA256: reference.SHA256, Version: "1.2.3", Authenticated: "NOT_PROBED", Warnings: []string{"token=supersecret123456"}}
+	badReference := capability
+	badReference.ExecutableSHA256 = strings.Repeat("a", 64)
+	if _, err = s.SaveProfileCapability(ctx, profile.Name, badReference); err == nil {
+		t.Fatal("mismatched executable identity was persisted as capability evidence")
+	}
 	if _, err = s.SaveProfileCapability(ctx, profile.Name, capability); err != nil {
 		t.Fatal(err)
 	}
@@ -128,6 +139,19 @@ func TestProfileCapabilityPersistenceAndInvalidation(t *testing.T) {
 	}
 	if profiles[0].Capability.Authenticated != "NOT_PROBED" || strings.Contains(strings.Join(profiles[0].Capability.Warnings, " "), "supersecret") {
 		t.Fatalf("capability was not safely persisted: %+v", profiles[0].Capability)
+	}
+	if profiles[0].Capability.ApprovedExecutablePath != capability.ApprovedExecutablePath || profiles[0].Capability.ExecutableSHA256 != capability.ExecutableSHA256 {
+		t.Fatalf("approved executable identity was not persisted: %+v", profiles[0].Capability)
+	}
+	if err = s.InvalidateProfileCapability(ctx, profile.Name); err != nil {
+		t.Fatal(err)
+	}
+	profiles, err = s.Profiles(ctx)
+	if err != nil || profiles[0].Capability != nil {
+		t.Fatalf("reference-drift invalidation retained stale capability: profiles=%+v err=%v", profiles, err)
+	}
+	if _, err = s.SaveProfileCapability(ctx, profile.Name, capability); err != nil {
+		t.Fatal(err)
 	}
 	if _, err = s.SaveProfile(ctx, profile); err != nil {
 		t.Fatal(err)

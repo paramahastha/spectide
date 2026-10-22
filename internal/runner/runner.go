@@ -8,18 +8,24 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"time"
 
 	"github.com/spectide/spectide/internal/security"
 )
 
 type Invocation struct {
-	Binary     string
-	Args, Env  []string
-	ExtraFiles []*os.File
-	Dir        string
-	Stdin      []byte
-	Timeout    time.Duration
+	Binary                   string
+	Args, Env                []string
+	ExtraFiles               []*os.File
+	Dir                      string
+	Stdin                    []byte
+	Timeout                  time.Duration
+	ExpectedExecutablePath   string
+	ExpectedExecutableSHA256 string
+	ExpectedWorkingDirectory string
+	ExpectedConfigDirectory  string
+	EnforceConfigDirectory   bool
 }
 type Result struct {
 	Stdout, Stderr string
@@ -66,8 +72,29 @@ func (c *cappedBuffer) String() string {
 }
 
 func Run(ctx context.Context, in Invocation) (Result, error) {
-	if err := security.ValidateProcess(security.ProcessPolicy{Binary: in.Binary, Dir: in.Dir, Env: in.Env, Timeout: in.Timeout, MinTime: minStageTimeout, MaxTime: maxStageTimeout}); err != nil {
+	policy := security.ProcessPolicy{Binary: in.Binary, Dir: in.Dir, Env: in.Env, Timeout: in.Timeout, MinTime: minStageTimeout, MaxTime: maxStageTimeout, ExpectedExecutablePath: in.ExpectedExecutablePath, ExpectedExecutableSHA256: in.ExpectedExecutableSHA256, ExpectedWorkingDirectory: in.ExpectedWorkingDirectory, ExpectedConfigDirectory: in.ExpectedConfigDirectory, EnforceConfigDirectory: in.EnforceConfigDirectory}
+	if err := security.ValidateProcess(policy); err != nil {
 		return Result{}, err
+	}
+	executable := in.Binary
+	if in.ExpectedExecutablePath != "" {
+		reference, err := security.ResolveExecutableReference(in.Binary)
+		if err != nil || reference.Path != in.ExpectedExecutablePath || reference.SHA256 != in.ExpectedExecutableSHA256 {
+			return Result{}, fmt.Errorf("EXECUTABLE_REFERENCE_DRIFT")
+		}
+		executable = reference.Path
+	}
+	workingDirectory := in.Dir
+	if in.ExpectedWorkingDirectory != "" {
+		resolved, err := filepath.EvalSymlinks(in.Dir)
+		if err != nil {
+			return Result{}, fmt.Errorf("WORKING_DIRECTORY_INVALID: %w", err)
+		}
+		expected, err := filepath.EvalSymlinks(in.ExpectedWorkingDirectory)
+		if err != nil || filepath.Clean(resolved) != filepath.Clean(expected) {
+			return Result{}, fmt.Errorf("WORKING_DIRECTORY_REFERENCE_DRIFT")
+		}
+		workingDirectory = resolved
 	}
 	timeout := in.Timeout
 	if timeout == 0 {
@@ -77,10 +104,10 @@ func Run(ctx context.Context, in Invocation) (Result, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	start := time.Now()
-	cmd := exec.CommandContext(ctx, in.Binary, in.Args...)
+	cmd := exec.CommandContext(ctx, executable, in.Args...)
 	cmd.ExtraFiles = in.ExtraFiles
 	configureProcessGroup(cmd)
-	cmd.Dir = in.Dir
+	cmd.Dir = workingDirectory
 	home, _ := os.UserHomeDir()
 	cmd.Env = []string{"PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin", "HOME=" + home, "USERPROFILE=" + home, "TMPDIR=" + os.TempDir()}
 	for _, value := range in.Env {

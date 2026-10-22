@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
+	"github.com/spectide/spectide/internal/security"
 	"github.com/spectide/spectide/internal/store"
 	"os"
 	"path/filepath"
@@ -294,10 +295,15 @@ func TestEngineDoesNotSilentlySimulateLiveRoute(t *testing.T) {
 	if err = config.Save(config.ProjectPath(project), cfg); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.SaveProfile(context.Background(), model.Profile{Name: "work", Provider: "codex", Executable: "codex", AllowedScopes: []string{project}}); err != nil {
+	profile := model.Profile{Name: "work", Provider: "codex", Executable: "/bin/sh", AllowedScopes: []string{project}}
+	if _, err = s.SaveProfile(context.Background(), profile); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.SaveProfileCapability(context.Background(), "work", model.ProfileCapability{Provider: "codex", ExecutableFound: true, Version: "1.2.3", Authenticated: "AUTHENTICATED", ModelOverride: true, EffortOverride: "verified", ReadOnlyExecution: true, WorkspaceWrite: true}); err != nil {
+	reference, err := security.ResolveExecutableReference(profile.Executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.SaveProfileCapability(context.Background(), "work", model.ProfileCapability{Provider: "codex", ExecutableFound: true, ApprovedExecutablePath: reference.Path, ExecutableSHA256: reference.SHA256, Version: "1.2.3", Authenticated: "AUTHENTICATED", ModelOverride: true, EffortOverride: "verified", ReadOnlyExecution: true, WorkspaceWrite: true}); err != nil {
 		t.Fatal(err)
 	}
 	run, err := New(s).Start(context.Background(), project, "task")

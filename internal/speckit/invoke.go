@@ -53,6 +53,11 @@ func ExecuteStageWithTemplate(ctx context.Context, installation Installation, ad
 		return StageResult{}, fmt.Errorf("PERMISSION_DENIED: provider invocation working directory differs from canonical Spec-Kit root")
 	}
 	invocation.ExtraFiles = append(invocation.ExtraFiles, request.InheritedFiles...)
+	invocation.ExpectedExecutablePath = request.Profile.ApprovedExecutablePath
+	invocation.ExpectedExecutableSHA256 = request.Profile.ApprovedExecutableSHA256
+	invocation.ExpectedWorkingDirectory = installation.ProjectRoot
+	invocation.ExpectedConfigDirectory = request.Profile.ApprovedConfigDirectory
+	invocation.EnforceConfigDirectory = request.Profile.ApprovedExecutablePath != ""
 	process, runErr := runner.Run(ctx, invocation)
 	result := StageResult{Process: process}
 	if runErr != nil {

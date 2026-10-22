@@ -36,7 +36,9 @@ func writeJSON(out io.Writer, value any) error {
 func persistedCapability(c adapters.Capability) model.ProfileCapability {
 	return model.ProfileCapability{
 		Provider: string(c.Provider), ExecutableFound: c.ExecutableFound, Version: c.Version,
-		Authenticated: c.Authenticated, StreamingEvents: c.StreamingEvents,
+		ApprovedExecutablePath: c.ApprovedExecutablePath, ExecutableSHA256: c.ExecutableSHA256,
+		ApprovedConfigDirectory: c.ApprovedConfigDirectory,
+		Authenticated:           c.Authenticated, StreamingEvents: c.StreamingEvents,
 		ModelOverride: c.ModelOverride, EffortOverride: c.EffortOverride,
 		ReadOnlyExecution: c.ReadOnlyExecution, WorkspaceWrite: c.WorkspaceWrite,
 		Warnings: c.Warnings,
@@ -337,7 +339,7 @@ func Root() *cobra.Command {
 			if profile.Name != args[0] {
 				continue
 			}
-			capability, probeErr := adapters.ProbeBinary(adapters.Profile{Provider: adapters.ProviderName(profile.Provider), Executable: profile.Executable})
+			capability, probeErr := adapters.ProbeBinary(adapters.Profile{Provider: adapters.ProviderName(profile.Provider), Executable: profile.Executable, ConfigDir: profile.ConfigDirectory})
 			if probeErr != nil {
 				return probeErr
 			}
@@ -375,7 +377,7 @@ func Root() *cobra.Command {
 			if profile.Name != args[0] {
 				continue
 			}
-			capability, probeErr := adapters.ProbeBinary(adapters.Profile{Provider: adapters.ProviderName(profile.Provider), Executable: profile.Executable})
+			capability, probeErr := adapters.ProbeBinary(adapters.Profile{Provider: adapters.ProviderName(profile.Provider), Executable: profile.Executable, ConfigDir: profile.ConfigDirectory})
 			if probeErr != nil {
 				return probeErr
 			}

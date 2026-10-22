@@ -13,11 +13,25 @@ import (
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
 	"github.com/spectide/spectide/internal/runner"
+	"github.com/spectide/spectide/internal/security"
 	"github.com/spectide/spectide/internal/speckit"
 	"github.com/spectide/spectide/internal/store"
 )
 
 type liveFixtureAdapter struct{}
+
+func verifiedFixtureCapability(t *testing.T, provider, executable, configDirectory string) model.ProfileCapability {
+	t.Helper()
+	reference, err := security.ResolveExecutableReference(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approvedConfig, err := security.ResolveConfigDirectory(configDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return model.ProfileCapability{Provider: provider, ExecutableFound: true, ApprovedExecutablePath: reference.Path, ExecutableSHA256: reference.SHA256, ApprovedConfigDirectory: approvedConfig, Version: "fixture-1", Authenticated: "AUTHENTICATED", ReadOnlyExecution: true, WorkspaceWrite: true}
+}
 
 func (liveFixtureAdapter) Name() adapters.ProviderName { return adapters.Codex }
 func (liveFixtureAdapter) Probe(context.Context, adapters.Profile) (adapters.Capability, error) {
@@ -38,7 +52,7 @@ func (liveFixtureAdapter) Build(request adapters.Request) (runner.Invocation, er
 	} else if request.Stage == "converge" {
 		output = "✅ Converged — required gates pass."
 	}
-	return runner.Invocation{Binary: "/usr/bin/printf", Args: []string{"%s", output}, Dir: request.ProjectRoot}, nil
+	return runner.Invocation{Binary: "/bin/sh", Args: []string{"-c", "printf '%s' '" + output + "'"}, Dir: request.ProjectRoot}, nil
 }
 
 func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *testing.T) {
@@ -104,10 +118,10 @@ func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *t
 	if err = config.Save(config.ProjectPath(project), cfg); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = state.SaveProfile(ctx, model.Profile{Name: "fixture", Provider: "codex", Executable: "codex", AllowedScopes: []string{project}}); err != nil {
+	if _, err = state.SaveProfile(ctx, model.Profile{Name: "fixture", Provider: "codex", Executable: "/bin/sh", AllowedScopes: []string{project}}); err != nil {
 		t.Fatal(err)
 	}
-	capability := model.ProfileCapability{Provider: "codex", ExecutableFound: true, Version: "fixture-1", Authenticated: "AUTHENTICATED", ReadOnlyExecution: true, WorkspaceWrite: true}
+	capability := verifiedFixtureCapability(t, "codex", "/bin/sh", "")
 	if _, err = state.SaveProfileCapability(ctx, "fixture", capability); err != nil {
 		t.Fatal(err)
 	}
@@ -256,10 +270,10 @@ func TestRunLiveStageUsesVerifiedCommandAndPersistsSanitizedEvidence(t *testing.
 	}
 	digest := sha256.Sum256(command)
 	installation := speckit.Installation{ProjectRoot: project, Verified: true, Commands: map[string]string{"plan": "/speckit.plan"}, CommandFiles: map[string]string{"plan": rel}, CommandHashes: map[string]string{"plan": hex.EncodeToString(digest[:])}}
-	if _, err = state.SaveProfile(ctx, model.Profile{Name: "fixture", Provider: "codex", Executable: "codex", AllowedScopes: []string{project}}); err != nil {
+	if _, err = state.SaveProfile(ctx, model.Profile{Name: "fixture", Provider: "codex", Executable: "/bin/sh", AllowedScopes: []string{project}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = state.SaveProfileCapability(ctx, "fixture", model.ProfileCapability{Provider: "codex", ExecutableFound: true, Version: "fixture-1", Authenticated: "AUTHENTICATED", ReadOnlyExecution: true, WorkspaceWrite: true}); err != nil {
+	if _, err = state.SaveProfileCapability(ctx, "fixture", verifiedFixtureCapability(t, "codex", "/bin/sh", "")); err != nil {
 		t.Fatal(err)
 	}
 	run, _, err := state.CreateRunWithConfiguration(ctx, "", project, "implement a bounded cache", []byte(`[]`))
@@ -303,7 +317,7 @@ func TestRunLiveStageUsesVerifiedCommandAndPersistsSanitizedEvidence(t *testing.
 	if len(attempts[0].ArtifactIDs) != 1 || attempts[0].ArtifactIDs[0] != artifactIDs[0] {
 		t.Fatalf("attempt does not link its registered artifact: %+v", attempts[0])
 	}
-	if _, err = state.SaveProfile(ctx, model.Profile{Name: "fixture", Provider: "codex", Executable: "codex", AllowedScopes: []string{project}}); err != nil {
+	if _, err = state.SaveProfile(ctx, model.Profile{Name: "fixture", Provider: "codex", Executable: "/bin/sh", AllowedScopes: []string{project}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = engine.runLiveStage(ctx, run, "plan", config.Route{Provider: "codex", Profile: "fixture"}, installation, feature); err == nil || !strings.Contains(err.Error(), "PROFILE_CAPABILITY_NOT_PROBED") {
@@ -349,5 +363,54 @@ func TestLiveStageRequiresChangedArtifactAndRejectsSymlinkEscape(t *testing.T) {
 	}
 	if _, err = captureStageArtifacts(root, feature, "plan"); err == nil || !strings.Contains(err.Error(), "STAGE_ARTIFACT_PATH_ESCAPE") {
 		t.Fatalf("expected artifact symlink escape rejection, got %v", err)
+	}
+}
+
+func TestExecutableReplacementAfterProbeInvalidatesProfileCapability(t *testing.T) {
+	ctx := context.Background()
+	state, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	project := t.TempDir()
+	executable := filepath.Join(t.TempDir(), "provider")
+	if err = os.WriteFile(executable, []byte("#!/bin/sh\necho version one\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	reference, err := security.ResolveExecutableReference(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := model.Profile{Name: "fixture", Provider: "codex", Executable: executable, AllowedScopes: []string{project}}
+	if _, err = state.SaveProfile(ctx, profile); err != nil {
+		t.Fatal(err)
+	}
+	capability := model.ProfileCapability{Provider: "codex", ExecutableFound: true, ApprovedExecutablePath: reference.Path, ExecutableSHA256: reference.SHA256, Authenticated: "AUTHENTICATED"}
+	profile.Capability = &capability
+	if _, err = state.SaveProfileCapability(ctx, profile.Name, capability); err != nil {
+		t.Fatal(err)
+	}
+	run, _, err := state.CreateRunWithConfiguration(ctx, "", project, "verify identity", []byte(`[]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := New(state)
+	if _, _, err = engine.validateProfileReferences(ctx, run.ID, profile); err != nil {
+		t.Fatalf("initial capability reference rejected: %v", err)
+	}
+	if err = os.WriteFile(executable, []byte("#!/bin/sh\necho replaced provider\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = engine.validateProfileReferences(ctx, run.ID, profile); err == nil || !strings.Contains(err.Error(), "PROFILE_CAPABILITY_REFERENCE_DRIFT") {
+		t.Fatalf("replaced executable was accepted: %v", err)
+	}
+	profiles, err := state.Profiles(ctx)
+	if err != nil || len(profiles) != 1 || profiles[0].Capability != nil {
+		t.Fatalf("stale capability was not invalidated: profiles=%+v err=%v", profiles, err)
+	}
+	events, err := state.Events(ctx, run.ID, 0)
+	if err != nil || len(events) == 0 || events[len(events)-1].Type != "profile.capability_invalidated" {
+		t.Fatalf("capability invalidation was not reported: events=%+v err=%v", events, err)
 	}
 }

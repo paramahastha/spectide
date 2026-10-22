@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/spectide/spectide/internal/model"
+	"github.com/spectide/spectide/internal/security"
 )
 
 func evidenceStore(t *testing.T) (*Store, model.Run) {
@@ -134,11 +135,16 @@ func TestEvidenceAndCapabilityStringsAreRedactedBeforePersistence(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.SaveProfile(ctx, model.Profile{Name: "safe-fixture", Provider: "codex", Executable: "codex", AllowedScopes: []string{"/tmp"}}); err != nil {
+	profile := model.Profile{Name: "safe-fixture", Provider: "codex", Executable: "/bin/sh", AllowedScopes: []string{"/tmp"}}
+	if _, err = s.SaveProfile(ctx, profile); err != nil {
 		t.Fatal(err)
 	}
 	capabilitySecret := "capability-synthetic-secret-abcdef"
-	capability, err := s.SaveProfileCapability(ctx, "safe-fixture", model.ProfileCapability{Provider: "codex", Version: "api_key=" + capabilitySecret, Authenticated: "AUTHENTICATED", Warnings: []string{"password=" + capabilitySecret}})
+	reference, err := security.ResolveExecutableReference(profile.Executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability, err := s.SaveProfileCapability(ctx, "safe-fixture", model.ProfileCapability{Provider: "codex", ExecutableFound: true, ApprovedExecutablePath: reference.Path, ExecutableSHA256: reference.SHA256, Version: "api_key=" + capabilitySecret, Authenticated: "AUTHENTICATED", Warnings: []string{"password=" + capabilitySecret}})
 	if err != nil {
 		t.Fatal(err)
 	}

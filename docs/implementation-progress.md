@@ -517,6 +517,13 @@
 - Owner-only remediation uses the verified Spec-Kit `clarify`, `plan`, or `tasks` prompt template on the implementation route; the prompt restricts changes to the one owner and explicitly forbids product implementation. Attempt completion also rejects files outside that owner.
 - Tests cover source and contract changes during read-only analysis, source/contract changes or deletion during remediation, new non-owner files, referenced/unreferenced contracts, symlink escape, and owner-specific prompt selection. Full `make verify` passed; Go vet/tests, dashboard typecheck/tests/build, binary build, secret scan, and offline smoke all passed. Latest SC-001: 21.574 ms; smoke remains `SIMULATED`. T061 is complete; T062 is next. T031, T045, and T046 remain open.
 
+### T062 — Bind process launches to approved profile references — 2026-10-22
+
+- Capability probes resolve the provider executable through symlinks, require a regular executable with safe permissions, and persist its canonical path and SHA-256 together with the canonical provider configuration directory. Store persistence compares those references to the current profile before accepting the capability.
+- Live stage requests carry the approved identity into the runner. Immediately before launch, the runner revalidates the executable path/content and permissions, confirms the config environment points to the approved directory, and verifies the working directory still resolves to the canonical project root; execution uses the canonical executable and directory.
+- Executable and configuration symlink retargets, binary replacement/content changes, unsafe file permissions, and working-directory changes fail closed. Profile reference drift removes the capability snapshot and records an ordered invalidation event in one transaction.
+- Focused security/runner/adapter/store/workflow tests and full `make verify` passed. Go vet/tests, dashboard typecheck/tests/build, binary build, secret scan, and offline smoke all passed. Latest SC-001: 18.126 ms; smoke remains `SIMULATED`. T062 is complete; T063 is next. T031, T045, and T046 remain open.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified

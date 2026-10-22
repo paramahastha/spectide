@@ -121,7 +121,7 @@ func TestProbeUsesVersionCommandWithoutCheckingCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !c.ExecutableFound || c.Version != "--version" || c.Authenticated != "NOT_PROBED" {
+	if !c.ExecutableFound || c.Version != "--version" || c.Authenticated != "NOT_PROBED" || c.ApprovedExecutablePath == "" || len(c.ExecutableSHA256) != 64 {
 		t.Fatalf("capability=%+v", c)
 	}
 }

@@ -192,17 +192,20 @@ type Profile struct {
 // ProfileCapability contains non-secret, observed provider readiness. It is
 // deliberately separate from profile configuration and never stores tokens.
 type ProfileCapability struct {
-	Provider          string    `json:"provider"`
-	ExecutableFound   bool      `json:"executable_found"`
-	Version           string    `json:"version"`
-	Authenticated     string    `json:"authenticated"`
-	StreamingEvents   bool      `json:"streaming_events"`
-	ModelOverride     bool      `json:"model_override"`
-	EffortOverride    string    `json:"effort_override"`
-	ReadOnlyExecution bool      `json:"read_only_execution"`
-	WorkspaceWrite    bool      `json:"workspace_write"`
-	Warnings          []string  `json:"warnings,omitempty"`
-	ObservedAt        time.Time `json:"observed_at"`
+	Provider                string    `json:"provider"`
+	ExecutableFound         bool      `json:"executable_found"`
+	ApprovedExecutablePath  string    `json:"approved_executable_path,omitempty"`
+	ExecutableSHA256        string    `json:"executable_sha256,omitempty"`
+	ApprovedConfigDirectory string    `json:"approved_config_directory,omitempty"`
+	Version                 string    `json:"version"`
+	Authenticated           string    `json:"authenticated"`
+	StreamingEvents         bool      `json:"streaming_events"`
+	ModelOverride           bool      `json:"model_override"`
+	EffortOverride          string    `json:"effort_override"`
+	ReadOnlyExecution       bool      `json:"read_only_execution"`
+	WorkspaceWrite          bool      `json:"workspace_write"`
+	Warnings                []string  `json:"warnings,omitempty"`
+	ObservedAt              time.Time `json:"observed_at"`
 }
 
 type Project struct {
