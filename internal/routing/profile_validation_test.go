@@ -61,3 +61,36 @@ func TestValidateProfileCapabilitiesRequiresVerifiedAuthorization(t *testing.T) 
 		t.Fatalf("unverified read-only error=%v", err)
 	}
 }
+
+func TestFallbackProfilesAreAuthorizedAndRemainWithinProjectBoundary(t *testing.T) {
+	project := t.TempDir()
+	outside := t.TempDir()
+	cfg := config.Default()
+	cfg.DefaultRoute = config.Route{
+		Provider: "codex", Profile: "primary",
+		FallbackAuthorized: true,
+		Fallback:           []config.Route{{Provider: "claude", Profile: "backup"}},
+	}
+	capability := func(provider string) *model.ProfileCapability {
+		return &model.ProfileCapability{Provider: provider, ExecutableFound: true, Version: "1.0", Authenticated: "AUTHENTICATED", ReadOnlyExecution: true, WorkspaceWrite: true}
+	}
+	profiles := []model.Profile{
+		{Name: "primary", Provider: "codex", AllowedScopes: []string{project}, Capability: capability("codex")},
+		{Name: "backup", Provider: "claude", AllowedScopes: []string{project}, Capability: capability("claude")},
+	}
+	if err := ValidateProfileRoutes(cfg, project, profiles); err != nil {
+		t.Fatalf("authorized same-project fallback rejected: %v", err)
+	}
+	if err := ValidateProfileCapabilities(cfg, profiles); err != nil {
+		t.Fatalf("verified fallback capability rejected: %v", err)
+	}
+	profiles[1].AllowedScopes = []string{outside}
+	if err := ValidateProfileRoutes(cfg, project, profiles); err == nil || !strings.Contains(err.Error(), "FALLBACK_PROFILE_NOT_ALLOWED") {
+		t.Fatalf("cross-project fallback error=%v", err)
+	}
+	profiles[1].AllowedScopes = []string{project}
+	profiles[1].Provider = "opencode"
+	if err := ValidateProfileRoutes(cfg, project, profiles); err == nil || !strings.Contains(err.Error(), "FALLBACK_PROVIDER_MISMATCH") {
+		t.Fatalf("fallback provider mismatch error=%v", err)
+	}
+}

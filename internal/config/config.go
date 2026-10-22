@@ -12,10 +12,12 @@ import (
 const FileName = "config.json"
 
 type Route struct {
-	Provider string `json:"provider"`
-	Profile  string `json:"profile"`
-	Model    string `json:"model,omitempty"`
-	Effort   string `json:"effort,omitempty"`
+	Provider           string  `json:"provider"`
+	Profile            string  `json:"profile"`
+	Model              string  `json:"model,omitempty"`
+	Effort             string  `json:"effort,omitempty"`
+	FallbackAuthorized bool    `json:"fallback_authorized,omitempty"`
+	Fallback           []Route `json:"fallback,omitempty"`
 }
 type Config struct {
 	Version       int              `json:"version"`
@@ -118,7 +120,7 @@ func merge(base, override Config) Config {
 	if override.RoutingMode != "" {
 		base.RoutingMode = override.RoutingMode
 	}
-	if override.DefaultRoute != (Route{}) {
+	if !routeEmpty(override.DefaultRoute) {
 		base.DefaultRoute = mergeRoute(base.DefaultRoute, override.DefaultRoute)
 	} else if override.RoutingMode == "manual" {
 		base.DefaultRoute = Route{}
@@ -137,6 +139,10 @@ func merge(base, override Config) Config {
 	return base
 }
 
+func routeEmpty(route Route) bool {
+	return route.Provider == "" && route.Profile == "" && route.Model == "" && route.Effort == "" && !route.FallbackAuthorized && route.Fallback == nil
+}
+
 func mergeRoute(base, override Route) Route {
 	if override.Provider != "" {
 		base.Provider = override.Provider
@@ -149,6 +155,12 @@ func mergeRoute(base, override Route) Route {
 	}
 	if override.Effort != "" {
 		base.Effort = override.Effort
+	}
+	if override.Fallback != nil {
+		base.Fallback = append([]Route(nil), override.Fallback...)
+		base.FallbackAuthorized = override.FallbackAuthorized
+	} else if override.FallbackAuthorized {
+		base.FallbackAuthorized = true
 	}
 	return base
 }
@@ -195,12 +207,38 @@ func Validate(c Config) error {
 		if !knownProvider(r.Provider) {
 			return fmt.Errorf("UNKNOWN_PROVIDER: %s", r.Provider)
 		}
+		if err := validateFallbacks(r); err != nil {
+			return fmt.Errorf("INVALID_STAGE_ROUTE: %s: %w", stage, err)
+		}
 	}
 	if c.DefaultRoute.Provider != "" && !knownProvider(c.DefaultRoute.Provider) {
 		return fmt.Errorf("UNKNOWN_PROVIDER: %s", c.DefaultRoute.Provider)
 	}
+	if c.DefaultRoute.Provider != "" {
+		if err := validateFallbacks(c.DefaultRoute); err != nil {
+			return fmt.Errorf("INVALID_DEFAULT_ROUTE: %w", err)
+		}
+	}
 	if c.RoutingMode != "manual" && (c.DefaultRoute.Provider == "" || c.DefaultRoute.Profile == "") {
 		return fmt.Errorf("DEFAULT_ROUTE_REQUIRED")
+	}
+	return nil
+}
+
+func validateFallbacks(route Route) error {
+	if len(route.Fallback) > 0 && !route.FallbackAuthorized {
+		return fmt.Errorf("FALLBACK_NOT_AUTHORIZED")
+	}
+	for i, fallback := range route.Fallback {
+		if fallback.Provider == "" || fallback.Profile == "" {
+			return fmt.Errorf("FALLBACK_ROUTE_INCOMPLETE: %d", i)
+		}
+		if !knownProvider(fallback.Provider) {
+			return fmt.Errorf("UNKNOWN_FALLBACK_PROVIDER: %s", fallback.Provider)
+		}
+		if fallback.FallbackAuthorized || len(fallback.Fallback) > 0 {
+			return fmt.Errorf("NESTED_FALLBACK_UNSUPPORTED: %d", i)
+		}
 	}
 	return nil
 }

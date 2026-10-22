@@ -106,3 +106,23 @@ func TestLoadEffectiveUsesDefaultsWhenLayersAreAbsent(t *testing.T) {
 		t.Fatalf("effective config=%+v err=%v", cfg, err)
 	}
 }
+
+func TestFallbackRoutesRequireExplicitAuthorizationAndValidBoundaries(t *testing.T) {
+	cfg := Default()
+	cfg.DefaultRoute.Fallback = []Route{{Provider: "codex", Profile: "backup"}}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "FALLBACK_NOT_AUTHORIZED") {
+		t.Fatalf("unauthorized fallback validation error=%v", err)
+	}
+	cfg.DefaultRoute.FallbackAuthorized = true
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("authorized fallback rejected: %v", err)
+	}
+	decision, err := cfg.Resolve("implement", "task")
+	if err != nil || !decision.Route.FallbackAuthorized || len(decision.Route.Fallback) != 1 {
+		t.Fatalf("fallback intent not retained in route decision: decision=%+v err=%v", decision, err)
+	}
+	cfg.DefaultRoute.Fallback[0].Fallback = []Route{{Provider: "fake", Profile: "nested"}}
+	if err = Validate(cfg); err == nil || !strings.Contains(err.Error(), "NESTED_FALLBACK_UNSUPPORTED") {
+		t.Fatalf("nested fallback validation error=%v", err)
+	}
+}

@@ -415,8 +415,14 @@
 - Added schema migration 7 and persisted versioned profile capability snapshots. Profile edits invalidate stale snapshots; warnings are redacted; provider mismatch and invalid authentication states are rejected. Version-only `profiles probe`/`models probe` results persist as `NOT_PROBED` for authentication and do not claim read-only or workspace-write verification.
 - Route preview and run start now validate persisted executable/version, authentication, model/effort override, and stage execution-mode evidence. Unverified live profiles are rejected before run creation; tests cover denial, persistence, redaction, profile-edit invalidation, and a verified capability fixture. The CLI probe remains intentionally unable to assert authentication.
 - Focused `go test ./internal/store ./internal/routing ./internal/workflow ./internal/api ./internal/cli -count=1` passed. Full `make verify` passed, including Go tests/vet, dashboard typecheck/tests/build, binary build, secret scan, and offline smoke. Latest SC-001 measurement: 19.635 ms on the reference host.
-- T024 remains open: fallback authorization and full policy/audit behavior are not complete, and live provider stage execution remains unavailable. T014, T016, T031, T034–T036, T045, and T046 also remain open as recorded in [the canonical task ledger](../specs/001-build-spectide/tasks.md).
+- At this checkpoint, T024 remained open for fallback authorization. The later checkpoint below completes T024's routing-policy scope; live provider stage execution remains unavailable under T014. T016, T031, T034–T036, T045, and T046 remain open as recorded in [the canonical task ledger](../specs/001-build-spectide/tasks.md).
 - Updated [the acceptance ledger](acceptance-ledger.md) and the blueprint’s current-status checklist to match this evidence. No official Spec-Kit analyze or converge result is claimed.
+
+### Phase checkpoint — explicit fallback authorization and boundary validation
+
+- Configured routes may now carry a bounded, single-level fallback list with explicit `fallback_authorized: true`. Route validation requires each fallback profile to match its provider, authorize the same canonical project, and satisfy persisted capabilities. Unauthorized, nested, missing-profile, and cross-project fallbacks fail before preview/run creation.
+- The route decision returned by preview and stored in the immutable run configuration retains the authorized fallback intent. The workflow does not execute provider fallbacks yet; live adapter execution remains T014.
+- Added config, routing, and API tests, including a cross-project dry-run rejection with zero runs created. Full `make verify` passed; latest SC-001 measurement is 20.573 ms. T024 is now complete; T014, T016, T031, T034–T036, T045, and T046 remain open.
 
 ### Historical baseline (superseded by the checkpoints above)
 

@@ -1496,7 +1496,8 @@ Implement scope as a deny-first policy. Explicit exceptions must be documented a
 - [x] The Go and dashboard source build, lint/typecheck, unit tests, secret scan, and offline smoke pass through `make verify`.
 - [x] The offline fake-provider demo is labeled `SIMULATED`; provider probes do not claim authentication or live execution.
 - [x] Profile capability snapshots persist with redaction and profile-edit invalidation; route preview and launch deny unverified live profiles before creating a run.
-- [ ] Complete T024 fallback authorization and full routing-policy acceptance.
+- [x] Complete T024 routing/capability validation, explicit fallback authorization, deny-first boundary checks, and dry-run evidence.
+- [ ] Integrate actual authenticated provider launch and fallback execution into persisted stage outcomes (T014).
 - [ ] Integrate official Spec-Kit/provider stages and bounded analyze, test-repair, and convergence loops into persisted run outcomes (T014, T016, T035).
 - [ ] Complete verified restart recovery and cross-layer failure/secret-leak acceptance (T034, T036).
 - [ ] Complete browser page/state and accessibility evidence, screenshots, and the final release report (T031, T046).

@@ -13,7 +13,7 @@
 - Architecture: arm64
 - Build command: `make build` (`go build -o bin/spectide ./cmd/spectide`)
 - Startup/health command: `make smoke` (`scripts/smoke.sh` starts `spectide serve --port 0`, then requests `/healthz`)
-- Measurement: latest corrected `make verify` run measured 19.635 ms from the monotonic timestamp immediately before `Popen` through the first HTTP 200 from `/healthz`; acceptance limit is 2,000 ms. Earlier measurements are retained in the implementation checkpoint history.
+- Measurement: latest corrected `make verify` run measured 20.573 ms from the monotonic timestamp immediately before `Popen` through the first HTTP 200 from `/healthz`; acceptance limit is 2,000 ms. Earlier measurements are retained in the implementation checkpoint history.
 - The same smoke run completed the offline demo and reported `SIMULATED`.
 
 ## Other verification executed
@@ -35,7 +35,7 @@
 | Bounded workflow convergence foundation | PASS, partial requirement | `go test ./internal/workflow -run 'RunConvergence|LoopBudget' -count=1`; appended tasks are implemented and tested under a five-round bound; final-review return and official provider stage wiring remain incomplete |
 | Scoped route preview | PASS | Full `make verify`; API preview rejects workspace scope escapes without run creation |
 | Live route profile boundaries | PASS | Focused routing/workflow/API tests and full `make verify`; profile existence, provider match, and canonical allowed scope are required before preview or run creation; live invocation remains blocked |
-| Persisted profile capability policy | PASS, partial requirement | Focused store/routing/workflow/API/CLI tests and full `make verify`; version-only probe evidence persists with authentication `NOT_PROBED`, stale snapshots invalidate after profile edits, and preview/start fail closed. Fallback authorization and live adapter execution remain open (T024). |
+| Persisted capability and fallback authorization policy | PASS, partial requirement | Focused store/routing/workflow/API/CLI tests and full `make verify`; version-only probe evidence persists with authentication `NOT_PROBED`, stale snapshots invalidate after profile edits, explicit fallback intent stays within project boundaries, and preview/start fail closed. T024 is complete; live adapter/fallback execution remains open (T014). |
 | Durable blocked live-stage outcome | PASS | Focused workflow/CLI/API/Spec-Kit tests and full `make verify`; authorized but unavailable live routes persist a `BLOCKED` run, skipped first stage, `NOT_RUN` event, and blocked gate |
 | Local documentation contract | PASS | Full `make verify`; `ruby -e 'require "yaml"; YAML.load_file("docs/openapi.yaml")'`; CLI examples checked against implemented command flags |
 | SC-006 SSE moderate-load profile | PASS | `make load-test-sse`: 10 clients, 100 events/s × 100 s, 10,000 persisted backlog events; 200,010 total non-heartbeat frames received with contiguous sequences; all-frame p95 270.133 ms |

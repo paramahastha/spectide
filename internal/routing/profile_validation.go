@@ -21,6 +21,9 @@ func ValidateProfileRoutes(cfg config.Config, project string, profiles []model.P
 		if err != nil {
 			return err
 		}
+		if err = validateFallbackProfiles(project, stage, decision.Route, byName); err != nil {
+			return err
+		}
 		if decision.Route.Provider == "fake" {
 			continue
 		}
@@ -28,11 +31,8 @@ func ValidateProfileRoutes(cfg config.Config, project string, profiles []model.P
 		if !ok {
 			return fmt.Errorf("PROFILE_NOT_FOUND: %s for %s", decision.Route.Profile, stage)
 		}
-		if profile.Provider != decision.Route.Provider {
-			return fmt.Errorf("PROFILE_PROVIDER_MISMATCH: %s for %s", decision.Route.Profile, stage)
-		}
-		if _, err = workspace.Canonical(project, profile.AllowedScopes); err != nil {
-			return fmt.Errorf("PROFILE_NOT_ALLOWED: %s for %s: %w", decision.Route.Profile, stage, err)
+		if err = validateProfileRoute(project, stage, decision.Route, profile); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -50,6 +50,15 @@ func ValidateProfileCapabilities(cfg config.Config, profiles []model.Profile) er
 		if err != nil {
 			return err
 		}
+		for _, fallback := range decision.Route.Fallback {
+			fallbackProfile, exists := byName[fallback.Profile]
+			if !exists {
+				return fmt.Errorf("FALLBACK_PROFILE_NOT_FOUND: %s for %s", fallback.Profile, stage)
+			}
+			if err = validateCapability(stage, fallback, fallbackProfile); err != nil {
+				return fmt.Errorf("UNSAFE_FALLBACK: %w", err)
+			}
+		}
 		if decision.Route.Provider == "fake" {
 			continue
 		}
@@ -57,34 +66,67 @@ func ValidateProfileCapabilities(cfg config.Config, profiles []model.Profile) er
 		if !ok {
 			return fmt.Errorf("PROFILE_NOT_FOUND: %s for %s", decision.Route.Profile, stage)
 		}
-		capability := profile.Capability
-		if capability == nil {
-			return fmt.Errorf("PROFILE_CAPABILITY_NOT_PROBED: %s", profile.Name)
+		if err = validateCapability(stage, decision.Route, profile); err != nil {
+			return err
 		}
-		if capability.Provider != decision.Route.Provider || capability.Provider != profile.Provider {
-			return fmt.Errorf("CAPABILITY_PROVIDER_MISMATCH: %s", profile.Name)
+	}
+	return nil
+}
+
+func validateProfileRoute(project, stage string, route config.Route, profile model.Profile) error {
+	if profile.Provider != route.Provider {
+		return fmt.Errorf("PROFILE_PROVIDER_MISMATCH: %s for %s", route.Profile, stage)
+	}
+	if _, err := workspace.Canonical(project, profile.AllowedScopes); err != nil {
+		return fmt.Errorf("PROFILE_NOT_ALLOWED: %s for %s: %w", route.Profile, stage, err)
+	}
+	return nil
+}
+
+func validateFallbackProfiles(project, stage string, route config.Route, profiles map[string]model.Profile) error {
+	for _, fallback := range route.Fallback {
+		fallbackProfile, ok := profiles[fallback.Profile]
+		if !ok {
+			return fmt.Errorf("FALLBACK_PROFILE_NOT_FOUND: %s for %s", fallback.Profile, stage)
 		}
-		if !capability.ExecutableFound || capability.Version == "" {
-			return fmt.Errorf("CAPABILITY_NOT_VERIFIED: %s", profile.Name)
+		if fallbackProfile.Provider != fallback.Provider {
+			return fmt.Errorf("FALLBACK_PROVIDER_MISMATCH: %s for %s", fallback.Profile, stage)
 		}
-		if capability.Authenticated != "AUTHENTICATED" {
-			if capability.Authenticated == "UNAUTHENTICATED" {
-				return fmt.Errorf("PROFILE_UNAUTHENTICATED: %s", profile.Name)
-			}
-			return fmt.Errorf("PROFILE_AUTHENTICATION_NOT_VERIFIED: %s", profile.Name)
+		if _, err := workspace.Canonical(project, fallbackProfile.AllowedScopes); err != nil {
+			return fmt.Errorf("FALLBACK_PROFILE_NOT_ALLOWED: %s for %s: %w", fallback.Profile, stage, err)
 		}
-		if decision.Route.Model != "" && !capability.ModelOverride {
-			return fmt.Errorf("MODEL_OVERRIDE_UNSUPPORTED: %s", profile.Name)
+	}
+	return nil
+}
+
+func validateCapability(stage string, route config.Route, profile model.Profile) error {
+	capability := profile.Capability
+	if capability == nil {
+		return fmt.Errorf("PROFILE_CAPABILITY_NOT_PROBED: %s", profile.Name)
+	}
+	if capability.Provider != route.Provider || capability.Provider != profile.Provider {
+		return fmt.Errorf("CAPABILITY_PROVIDER_MISMATCH: %s", profile.Name)
+	}
+	if !capability.ExecutableFound || capability.Version == "" {
+		return fmt.Errorf("CAPABILITY_NOT_VERIFIED: %s", profile.Name)
+	}
+	if capability.Authenticated != "AUTHENTICATED" {
+		if capability.Authenticated == "UNAUTHENTICATED" {
+			return fmt.Errorf("PROFILE_UNAUTHENTICATED: %s", profile.Name)
 		}
-		if decision.Route.Effort != "" && capability.EffortOverride != "verified" {
-			return fmt.Errorf("EFFORT_OVERRIDE_UNSUPPORTED: %s", profile.Name)
-		}
-		if stage == "analyze" && !capability.ReadOnlyExecution {
-			return fmt.Errorf("READ_ONLY_EXECUTION_UNVERIFIED: %s", profile.Name)
-		}
-		if stage == "implement" && !capability.WorkspaceWrite {
-			return fmt.Errorf("WORKSPACE_WRITE_UNVERIFIED: %s", profile.Name)
-		}
+		return fmt.Errorf("PROFILE_AUTHENTICATION_NOT_VERIFIED: %s", profile.Name)
+	}
+	if route.Model != "" && !capability.ModelOverride {
+		return fmt.Errorf("MODEL_OVERRIDE_UNSUPPORTED: %s", profile.Name)
+	}
+	if route.Effort != "" && capability.EffortOverride != "verified" {
+		return fmt.Errorf("EFFORT_OVERRIDE_UNSUPPORTED: %s", profile.Name)
+	}
+	if stage == "analyze" && !capability.ReadOnlyExecution {
+		return fmt.Errorf("READ_ONLY_EXECUTION_UNVERIFIED: %s", profile.Name)
+	}
+	if stage == "implement" && !capability.WorkspaceWrite {
+		return fmt.Errorf("WORKSPACE_WRITE_UNVERIFIED: %s", profile.Name)
 	}
 	return nil
 }

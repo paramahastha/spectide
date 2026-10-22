@@ -240,6 +240,44 @@ func TestDryRunRejectsLiveProfileWithoutPersistedCapability(t *testing.T) {
 	}
 }
 
+func TestDryRunRejectsFallbackOutsideProjectBoundaryWithoutCreatingRun(t *testing.T) {
+	s := testServer(t)
+	project := t.TempDir()
+	outside := t.TempDir()
+	cfg := config.Default()
+	cfg.DefaultRoute = config.Route{
+		Provider: "codex", Profile: "primary", FallbackAuthorized: true,
+		Fallback: []config.Route{{Provider: "claude", Profile: "backup"}},
+	}
+	if err := config.Save(config.ProjectPath(project), cfg); err != nil {
+		t.Fatal(err)
+	}
+	for _, profile := range []model.Profile{
+		{Name: "primary", Provider: "codex", Executable: "codex", AllowedScopes: []string{project}},
+		{Name: "backup", Provider: "claude", Executable: "claude", AllowedScopes: []string{outside}},
+	} {
+		if _, err := s.Store.SaveProfile(context.Background(), profile); err != nil {
+			t.Fatal(err)
+		}
+	}
+	body, err := json.Marshal(map[string]any{"project": project, "prompt": "inspect", "dry_run": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs", strings.NewReader(string(body)))
+	r.Host = "127.0.0.1"
+	r.Header.Set("X-SpecTide-CSRF", s.CSRF)
+	r.Header.Set("Idempotency-Key", "preview-fallback-scope-123")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "FALLBACK_PROFILE_NOT_ALLOWED") {
+		t.Fatalf("cross-boundary fallback preview status=%d body=%s", w.Code, w.Body.String())
+	}
+	if runs, err := s.Store.Runs(context.Background()); err != nil || len(runs) != 0 {
+		t.Fatalf("rejected fallback preview created runs=%d err=%v", len(runs), err)
+	}
+}
+
 func TestCreateAndListProfile(t *testing.T) {
 	s := testServer(t)
 	r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/profiles", strings.NewReader(`{"name":"fake","provider":"fake","executable":"fake","allowed_scopes":["personal-public"]}`))
