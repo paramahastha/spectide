@@ -99,6 +99,97 @@ func TestRunConvergenceRejectsReplacementProductSpecificationPath(t *testing.T) 
 	}
 }
 
+func TestRunFinalReviewFixesThenRetestsAndReconverges(t *testing.T) {
+	ledger := "# Tasks\n\n## Phase 1: Setup\n- [ ] T001 Existing task\n"
+	convergeCalls, reviewCalls, fixCalls, testCalls := 0, 0, 0, 0
+	hooks := FinalReviewHooks{
+		Convergence: ConvergenceHooks{
+			Snapshot: func(context.Context) (ConvergenceSnapshot, error) {
+				return ConvergenceSnapshot{SpecificationPath: "specs/001-build-spectide/spec.md", TaskLedger: ledger, GateVerdicts: map[string]string{"tests": "PASS"}}, nil
+			},
+			Converge: func(context.Context) (string, error) {
+				convergeCalls++
+				return "✅ Converged — required gates pass.", nil
+			},
+			Implement: func(context.Context, []string) error { return nil },
+			Test: func(context.Context) (map[string]string, error) {
+				testCalls++
+				return map[string]string{"tests": "PASS"}, nil
+			},
+		},
+		Review: func(context.Context) ([]string, error) {
+			reviewCalls++
+			if reviewCalls == 1 {
+				return []string{"add missing error handling"}, nil
+			}
+			return nil, nil
+		},
+		Fix: func(_ context.Context, findings []string) error {
+			fixCalls++
+			if len(findings) != 1 || findings[0] != "add missing error handling" {
+				t.Fatalf("unexpected review findings: %v", findings)
+			}
+			return nil
+		},
+	}
+	converged, err := RunFinalReview(context.Background(), hooks, DefaultLoopLimits())
+	if err != nil || !converged || convergeCalls != 2 || reviewCalls != 2 || fixCalls != 1 || testCalls != 1 {
+		t.Fatalf("converged=%v err=%v converge=%d review=%d fix=%d tests=%d", converged, err, convergeCalls, reviewCalls, fixCalls, testCalls)
+	}
+}
+
+func TestRunFinalReviewRejectsReplacementSpecificationAfterFix(t *testing.T) {
+	path := "specs/001-build-spectide/spec.md"
+	ledger := "# Tasks\n\n## Phase 1: Setup\n- [ ] T001 Existing task\n"
+	hooks := FinalReviewHooks{
+		Convergence: ConvergenceHooks{
+			Snapshot: func(context.Context) (ConvergenceSnapshot, error) {
+				return ConvergenceSnapshot{SpecificationPath: path, TaskLedger: ledger, GateVerdicts: map[string]string{"tests": "PASS"}}, nil
+			},
+			Converge:  func(context.Context) (string, error) { return "✅ Converged — required gates pass.", nil },
+			Implement: func(context.Context, []string) error { return nil },
+			Test:      func(context.Context) (map[string]string, error) { return map[string]string{"tests": "PASS"}, nil },
+		},
+		Review: func(context.Context) ([]string, error) { return []string{"fix issue"}, nil },
+		Fix: func(context.Context, []string) error {
+			path = "specs/002-replacement/spec.md"
+			return nil
+		},
+	}
+	if converged, err := RunFinalReview(context.Background(), hooks, DefaultLoopLimits()); converged || err == nil || !strings.Contains(err.Error(), "PRODUCT_SPECIFICATION_PATH_CHANGED") {
+		t.Fatalf("converged=%v err=%v", converged, err)
+	}
+}
+
+func TestRunFinalReviewStopsWhenSameFindingReturns(t *testing.T) {
+	ledger := "# Tasks\n\n## Phase 1: Setup\n- [ ] T001 Existing task\n"
+	convergeCalls, fixCalls := 0, 0
+	hooks := FinalReviewHooks{
+		Convergence: ConvergenceHooks{
+			Snapshot: func(context.Context) (ConvergenceSnapshot, error) {
+				return ConvergenceSnapshot{SpecificationPath: "specs/001-build-spectide/spec.md", TaskLedger: ledger, GateVerdicts: map[string]string{"tests": "PASS"}}, nil
+			},
+			Converge: func(context.Context) (string, error) {
+				convergeCalls++
+				return "✅ Converged — required gates pass.", nil
+			},
+			Implement: func(context.Context, []string) error { return nil },
+			Test:      func(context.Context) (map[string]string, error) { return map[string]string{"tests": "PASS"}, nil },
+		},
+		Review: func(context.Context) ([]string, error) { return []string{"same unresolved issue"}, nil },
+		Fix: func(context.Context, []string) error {
+			fixCalls++
+			return nil
+		},
+	}
+	if converged, err := RunFinalReview(context.Background(), hooks, DefaultLoopLimits()); converged || err == nil || !strings.Contains(err.Error(), "FINAL_REVIEW_NO_PROGRESS") {
+		t.Fatalf("converged=%v err=%v", converged, err)
+	}
+	if convergeCalls != 2 || fixCalls != 1 {
+		t.Fatalf("converge calls=%d fix calls=%d", convergeCalls, fixCalls)
+	}
+}
+
 func TestRunConvergenceRejectsNoProgressAndTaskRewrite(t *testing.T) {
 	old := "# Tasks\n\n## Phase 1: Setup\n- [ ] T001 Existing task\n"
 	t.Run("no progress", func(t *testing.T) {

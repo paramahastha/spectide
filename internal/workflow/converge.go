@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/spectide/spectide/internal/speckit"
 )
@@ -23,6 +24,12 @@ type ConvergenceHooks struct {
 	Test      func(context.Context) (map[string]string, error)
 }
 
+type FinalReviewHooks struct {
+	Convergence ConvergenceHooks
+	Review      func(context.Context) ([]string, error)
+	Fix         func(context.Context, []string) error
+}
+
 // RunConvergence consumes official convergence reports through callbacks while
 // enforcing append-only tasks, bounded progress, same-ledger implementation,
 // and a required test pass before it asks for another convergence report.
@@ -34,6 +41,73 @@ func RunConvergence(ctx context.Context, hooks ConvergenceHooks, limits LoopLimi
 	if err != nil {
 		return false, err
 	}
+	return runConvergenceWithBudget(ctx, hooks, budget, limits)
+}
+
+// RunFinalReview returns review findings through the same bounded fix, test,
+// and convergence cycle used for appended tasks. All iterations must retain
+// the same product specification path and share one per-run convergence budget.
+func RunFinalReview(ctx context.Context, hooks FinalReviewHooks, limits LoopLimits) (bool, error) {
+	if hooks.Review == nil || hooks.Fix == nil || hooks.Convergence.Snapshot == nil || hooks.Convergence.Converge == nil || hooks.Convergence.Implement == nil || hooks.Convergence.Test == nil {
+		return false, fmt.Errorf("FINAL_REVIEW_HOOKS_REQUIRED")
+	}
+	budget, err := NewLoopBudget(limits)
+	if err != nil {
+		return false, err
+	}
+	featurePath := ""
+	previousReviewFindings := ""
+	for {
+		snapshot, err := hooks.Convergence.Snapshot(ctx)
+		if err != nil {
+			return false, err
+		}
+		if snapshot.SpecificationPath == "" {
+			return false, fmt.Errorf("PRODUCT_SPECIFICATION_PATH_REQUIRED")
+		}
+		if featurePath == "" {
+			featurePath = snapshot.SpecificationPath
+		} else if snapshot.SpecificationPath != featurePath {
+			return false, fmt.Errorf("PRODUCT_SPECIFICATION_PATH_CHANGED")
+		}
+		converged, err := runConvergenceWithBudget(ctx, hooks.Convergence, budget, limits)
+		if err != nil || !converged {
+			return false, err
+		}
+		findings, err := hooks.Review(ctx)
+		if err != nil {
+			return false, err
+		}
+		if len(findings) == 0 {
+			return true, nil
+		}
+		findingsHash := hashLedger(strings.Join(findings, "\n"))
+		if findingsHash == previousReviewFindings {
+			return false, fmt.Errorf("FINAL_REVIEW_NO_PROGRESS")
+		}
+		previousReviewFindings = findingsHash
+		if err = budget.ConvergenceRound(hashLedger("review:"+strings.Join(findings, "\n")), hashLedger("review-fix:"+strings.Join(findings, "\n")), snapshot.GateVerdicts, snapshot.GateVerdicts); err != nil {
+			return false, err
+		}
+		if err = hooks.Fix(ctx, findings); err != nil {
+			return false, err
+		}
+		gates, err := hooks.Convergence.Test(ctx)
+		if err != nil {
+			return false, err
+		}
+		if len(gates) == 0 {
+			return false, fmt.Errorf("REQUIRED_TEST_EVIDENCE_MISSING")
+		}
+		for name, verdict := range gates {
+			if verdict != "PASS" {
+				return false, fmt.Errorf("FINAL_REVIEW_FIX_TEST_FAILED: %s=%s", name, verdict)
+			}
+		}
+	}
+}
+
+func runConvergenceWithBudget(ctx context.Context, hooks ConvergenceHooks, budget *LoopBudget, limits LoopLimits) (bool, error) {
 	for {
 		if budget.Counts().ConvergenceRounds >= limits.ConvergenceRounds {
 			return false, fmt.Errorf("CONVERGENCE_EXHAUSTED")

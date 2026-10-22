@@ -390,7 +390,8 @@
 ### Workflow convergence driver foundation
 
 - Added `RunConvergence` to consume parsed convergence reports through explicit hooks. It snapshots the same product specification path, task ledger, and required gates; rejects path replacement, task rewrites/nonprogress, and report/task mismatches; implements only persisted append-only additions; reruns required tests; and enforces the five-round limit. A converged report is accepted only when the ledger is unchanged and all required gates pass.
-- Focused Spec-Kit/workflow convergence tests passed, including mismatch and replacement-path injection cases. T035 remains open: provider/Spec-Kit execution is not wired into this driver, and final-review remediation return is not implemented. No official convergence result is claimed.
+- Added `RunFinalReview` to return review findings through fix → test → convergence under the shared per-run budget. It preserves the same product specification path and stops when the same review finding recurs without progress.
+- Focused Spec-Kit/workflow convergence and final-review tests passed, including mismatch, replacement-path, append-limit, and repeated-finding cases. T035 remains open until the live stage runner consumes these hooks. No official convergence result is claimed.
 
 ### Phase checkpoint — durable run-owner leases
 
