@@ -1,0 +1,8 @@
+/bin/spectide
+/web/node_modules/
+/web/dist/
+/.taste-skill/
+*.db
+*.db-shm
+*.db-wal
+.DS_Store
