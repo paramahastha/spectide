@@ -32,6 +32,29 @@ func TestRunnerCancellationCleansUpProcessGroup(t *testing.T) {
 		t.Fatalf("child process survived cancellation and created marker: %v", err)
 	}
 }
+
+func TestRunnerEscalatesAfterGroupLeaderExits(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "descendant-writes")
+	pidFile := filepath.Join(dir, "descendant.pid")
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	defer cancel()
+	script := `sh -c 'trap "" TERM; while :; do printf x >> "$1"; sleep 0.01; done' sh "$1" & echo $! > "$2"; exit 0`
+	_, err := Run(ctx, Invocation{Binary: "/bin/sh", Args: []string{"-c", script, "sh", marker, pidFile}})
+	if err == nil || !strings.Contains(err.Error(), "RUN_CANCELLED") {
+		t.Fatalf("expected cancelled run after early group-leader exit, got %v", err)
+	}
+	before, err := os.Stat(marker)
+	if err != nil || before.Size() == 0 {
+		t.Fatalf("descendant did not write before escalation: info=%v err=%v", before, err)
+	}
+	time.Sleep(120 * time.Millisecond)
+	after, err := os.Stat(marker)
+	if err != nil || after.Size() != before.Size() {
+		t.Fatalf("descendant kept writing after Run returned: before=%v after=%v err=%v", before.Size(), after, err)
+	}
+}
+
 func TestRunnerRejectsRelativeDir(t *testing.T) {
 	_, e := Run(context.Background(), Invocation{Binary: "echo", Dir: "."})
 	if e == nil {

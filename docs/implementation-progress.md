@@ -670,3 +670,9 @@
 - Added shared `config.SafeProjectPath` resolution that canonicalizes the project root and verifies the `.spectide` metadata directory and `config.json` target remain within the project before settings are read. The independently authorized global config remains separately selected.
 - Engine start and API preview/config reads use the shared resolver. Engine-start tests cover a config-file symlink and a parent `.spectide` directory symlink escaping to an external config; both are rejected before any run is created. Existing canonical workspace and API config symlink-swap tests remain green.
 - Targeted config/workflow/API tests passed. T081 is complete; T082 is next.
+
+### T082 — Process-group cleanup after early leader exit — 2026-10-23
+
+- Runner cancellation no longer closes the escalation window when `cmd.Run` returns. It retains SIGKILL escalation for the full two-second grace period and reasserts process-group termination after a canceled or `exec.ErrWaitDelay` result, including when the direct child exited before a TERM-resistant descendant holding inherited pipes.
+- Added a regression fixture with an early-exiting shell parent and a TERM-resistant child that continuously writes a marker. The runner waits for bounded cleanup and no later writes occur. The test passed three consecutive runs; existing process-group cleanup and graceful-TERM tests passed. `go vet ./internal/runner` passed.
+- T082 is complete; T083 is next.

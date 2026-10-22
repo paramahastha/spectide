@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/spectide/spectide/internal/security"
@@ -140,29 +142,44 @@ func Run(ctx context.Context, in Invocation) (Result, error) {
 		cmd.Env = append(cmd.Env, value)
 	}
 	cmd.Stdin = bytes.NewReader(in.Stdin)
-	stopEscalation := make(chan struct{})
-	cmd.Cancel = func() error {
+	var escalationOnce sync.Once
+	var escalationStarted atomic.Bool
+	escalationDone := make(chan struct{})
+	requestTermination := func() error {
 		if err := terminateProcessGroup(cmd); err != nil && !errors.Is(err, os.ErrProcessDone) {
 			return err
 		}
-		go func() {
-			timer := time.NewTimer(terminationGrace)
-			defer timer.Stop()
-			select {
-			case <-timer.C:
+		escalationOnce.Do(func() {
+			escalationStarted.Store(true)
+			go func() {
+				defer close(escalationDone)
+				timer := time.NewTimer(terminationGrace)
+				defer timer.Stop()
+				<-timer.C
+				// The process-group leader may already have exited while a child
+				// still owns the inherited pipes. Keep escalation alive until the
+				// grace period expires, independent of cmd.Run's return time.
 				_ = killProcessGroup(cmd)
-			case <-stopEscalation:
-			}
-		}()
+			}()
+		})
 		return nil
 	}
+	cmd.Cancel = requestTermination
 	cmd.WaitDelay = terminationGrace
 	out, errOut := &cappedBuffer{remaining: maxOutputBytes}, &cappedBuffer{remaining: maxOutputBytes}
 	streamOut := &streamingBuffer{buffer: out, callback: in.StreamStdout}
 	cmd.Stdout = streamOut
 	cmd.Stderr = errOut
 	err := cmd.Run()
-	close(stopEscalation)
+	if ctx.Err() != nil || errors.Is(err, exec.ErrWaitDelay) {
+		// CommandContext may stop watching once the group leader exits, even
+		// though descendants still hold its pipes. Reassert termination after
+		// WaitDelay detects that the command group outlived the leader.
+		_ = requestTermination()
+	}
+	if escalationStarted.Load() {
+		<-escalationDone
+	}
 	finished := time.Now()
 	res := Result{Stdout: security.Redact(out.String()), Stderr: security.Redact(errOut.String()), StdoutTruncated: streamOut.truncated, StartedAt: start.UTC(), FinishedAt: finished.UTC(), Duration: finished.Sub(start)}
 	if cmd.Process != nil {
