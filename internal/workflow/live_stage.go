@@ -282,6 +282,38 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 				evidence["converged"] = true
 				evidence["appended_task_count"] = 0
 			}
+		case "clarify":
+			registered, runErr = changedStageArtifacts(installation.ProjectRoot, featureDir, stage, beforeArtifacts)
+			if runErr == nil && len(registered) == 0 {
+				var reason string
+				reason, runErr = requireExplicitNoop(result.Output, "SPECTIDE_NO_CLARIFICATION")
+				if runErr == nil {
+					runErr = validateExistingSpecification(featureDir)
+				}
+				if runErr == nil {
+					evidence["no_op_reason"] = reason
+				}
+			} else if runErr == nil {
+				if _, markerErr := requireExplicitNoop(result.Output, "SPECTIDE_NO_CLARIFICATION"); markerErr == nil {
+					runErr = fmt.Errorf("STAGE_NO_OP_CONTRADICTS_ARTIFACT_CHANGE")
+				}
+			}
+		case "implement":
+			registered, runErr = changedStageArtifacts(installation.ProjectRoot, featureDir, stage, beforeArtifacts)
+			if runErr == nil && len(registered) == 0 {
+				var reason string
+				reason, runErr = requireExplicitNoop(result.Output, "SPECTIDE_NO_WORK")
+				if runErr == nil {
+					runErr = validateExistingImplementation(installation.ProjectRoot)
+				}
+				if runErr == nil {
+					evidence["no_op_reason"] = reason
+				}
+			} else if runErr == nil {
+				if _, markerErr := requireExplicitNoop(result.Output, "SPECTIDE_NO_WORK"); markerErr == nil {
+					runErr = fmt.Errorf("STAGE_NO_OP_CONTRADICTS_ARTIFACT_CHANGE")
+				}
+			}
 		default:
 			var inspectErr error
 			registered, inspectErr = changedStageArtifacts(installation.ProjectRoot, featureDir, stage, beforeArtifacts)
@@ -291,6 +323,9 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 				runErr = fmt.Errorf("STAGE_EXPECTED_ARTIFACT_MISSING_OR_UNCHANGED: %s", stage)
 			}
 		}
+	}
+	if runErr == nil && len(registered) > 0 {
+		runErr = validateChangedOwnerArtifact(stage, featureDir, registered)
 	}
 	if runErr == nil && stage == "converge" {
 		registered, runErr = changedStageArtifacts(installation.ProjectRoot, featureDir, stage, beforeArtifacts)

@@ -80,6 +80,7 @@ func ExecuteStageWithTemplate(ctx context.Context, installation Installation, ad
 		return StageResult{}, fmt.Errorf("SPEC_KIT_STAGE_REQUIRED")
 	}
 	request.ProjectRoot = installation.ProjectRoot
+	arguments = stageOutcomeInstructions(templateStage, arguments)
 	arguments, err := FeatureScopeArguments(request.ProjectRoot, request.FeatureDirectory, arguments)
 	if err != nil {
 		return StageResult{}, err
@@ -132,4 +133,20 @@ func ExecuteStageWithTemplate(ctx context.Context, installation Installation, ad
 		}
 	}
 	return result, nil
+}
+
+func stageOutcomeInstructions(stage, arguments string) string {
+	var instruction string
+	switch stage {
+	case "clarify":
+		instruction = "If no clarification is needed, make no artifact changes and emit exactly one standalone line: SPECTIDE_NO_CLARIFICATION: <specific reason>. Do not claim this outcome if the selected spec needs clarification."
+	case "implement":
+		instruction = "If the selected task is already satisfied, make no workspace changes and emit exactly one standalone line: SPECTIDE_NO_WORK: <specific evidence>. Do not use this marker when implementation changes are needed."
+	default:
+		return arguments
+	}
+	if strings.TrimSpace(arguments) == "" {
+		return instruction
+	}
+	return strings.TrimSpace(arguments) + "\n\n" + instruction
 }

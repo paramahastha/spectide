@@ -92,7 +92,7 @@ func (a *liveFixtureAdapter) Build(request adapters.Request) (runner.Invocation,
 	output := "{\"type\":\"message\"}"
 	if request.Stage == "plan" {
 		path := filepath.Join(request.ProjectRoot, "specs", "001-product", "plan.md")
-		return runner.Invocation{Binary: "/bin/sh", Args: []string{"-c", "printf '%s\\n' 'generated plan evidence' > \"" + path + "\"; printf '%s' 'plan generated'"}, Dir: request.ProjectRoot, Timeout: request.Timeout}, nil
+		return runner.Invocation{Binary: "/bin/sh", Args: []string{"-c", "printf '%s\\n' '# Implementation Plan' '' '## Summary' 'Bounded fixture plan.' > \"" + path + "\"; printf '%s' 'plan generated'"}, Dir: request.ProjectRoot, Timeout: request.Timeout}, nil
 	}
 	if request.Stage == "implement" {
 		path := filepath.Join(request.ProjectRoot, "internal", "fixture.go")

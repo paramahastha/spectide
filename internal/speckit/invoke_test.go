@@ -61,6 +61,17 @@ func TestExecuteStageUsesVerifiedPromptAndReadOnlyAnalyzeInvocation(t *testing.T
 	}
 }
 
+func TestClarifyAndImplementPromptRequireExplicitNoopEvidence(t *testing.T) {
+	clarify := stageOutcomeInstructions("clarify", "review current spec")
+	implement := stageOutcomeInstructions("implement", "complete selected work")
+	if !strings.Contains(clarify, "SPECTIDE_NO_CLARIFICATION:") || !strings.Contains(clarify, "make no artifact changes") {
+		t.Fatalf("clarify prompt lacks explicit no-op contract: %q", clarify)
+	}
+	if !strings.Contains(implement, "SPECTIDE_NO_WORK:") || !strings.Contains(implement, "make no workspace changes") {
+		t.Fatalf("implement prompt lacks explicit no-op contract: %q", implement)
+	}
+}
+
 func TestExecuteStageRequiresVerifiedIntegrationAndMatchingProvider(t *testing.T) {
 	root := t.TempDir()
 	adapter := &fixtureAdapter{}
