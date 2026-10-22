@@ -4,6 +4,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,6 +20,7 @@ type Invocation struct {
 	Args, Env []string
 	Dir       string
 	Stdin     []byte
+	Timeout   time.Duration
 }
 type Result struct {
 	Stdout, Stderr string
@@ -27,6 +29,13 @@ type Result struct {
 }
 
 const maxOutputBytes = 1 << 20
+
+const (
+	defaultStageTimeout = 30 * time.Minute
+	minStageTimeout     = time.Second
+	maxStageTimeout     = 4 * time.Hour
+	terminationGrace    = 2 * time.Second
+)
 
 // cappedBuffer bounds memory use while continuing to drain the child pipe.
 type cappedBuffer struct {
@@ -64,6 +73,16 @@ func Run(ctx context.Context, in Invocation) (Result, error) {
 	if in.Dir != "" && !filepath.IsAbs(in.Dir) {
 		return Result{}, fmt.Errorf("PERMISSION_DENIED: working directory must be absolute")
 	}
+	timeout := in.Timeout
+	if timeout == 0 {
+		timeout = defaultStageTimeout
+	}
+	if timeout < minStageTimeout || timeout > maxStageTimeout {
+		return Result{}, fmt.Errorf("INVALID_STAGE_TIMEOUT: duration must be between %s and %s", minStageTimeout, maxStageTimeout)
+	}
+	parentCtx := ctx
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	start := time.Now()
 	cmd := exec.CommandContext(ctx, in.Binary, in.Args...)
 	configureProcessGroup(cmd)
@@ -83,13 +102,35 @@ func Run(ctx context.Context, in Invocation) (Result, error) {
 		cmd.Env = append(cmd.Env, value)
 	}
 	cmd.Stdin = bytes.NewReader(in.Stdin)
-	cmd.Cancel = func() error { return killProcessGroup(cmd) }
-	cmd.WaitDelay = 2 * time.Second
+	stopEscalation := make(chan struct{})
+	cmd.Cancel = func() error {
+		if err := terminateProcessGroup(cmd); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			return err
+		}
+		go func() {
+			timer := time.NewTimer(terminationGrace)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+				_ = killProcessGroup(cmd)
+			case <-stopEscalation:
+			}
+		}()
+		return nil
+	}
+	cmd.WaitDelay = terminationGrace
 	out, errOut := &cappedBuffer{remaining: maxOutputBytes}, &cappedBuffer{remaining: maxOutputBytes}
 	cmd.Stdout = out
 	cmd.Stderr = errOut
 	err := cmd.Run()
+	close(stopEscalation)
 	res := Result{Stdout: security.Redact(out.String()), Stderr: security.Redact(errOut.String()), Duration: time.Since(start)}
+	if ctx.Err() != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) && parentCtx.Err() == nil {
+			return res, fmt.Errorf("STAGE_TIMEOUT: provider stage exceeded %s", timeout)
+		}
+		return res, fmt.Errorf("RUN_CANCELLED: provider stage was cancelled")
+	}
 	if exit, ok := err.(*exec.ExitError); ok {
 		res.ExitCode = exit.ExitCode()
 		return res, fmt.Errorf("provider exited with %d", res.ExitCode)

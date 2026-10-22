@@ -209,6 +209,35 @@
 
 - Open/partial rows require implementation and their linked evidence before release acceptance.
 
+### Quality-gate clarification checkpoint
+
+- The master spec now makes all FR-001–FR-030 and SC-001–SC-008 release requirements, defines SC-006's client/event/backlog/latency profile, and sets default bounds of 3 analyze rounds, 4 test repairs, and 5 converge rounds with a stated no-progress rule.
+- A second read-only Spec-Kit analyze found missing task ownership for FR-003 and FR-027, an SC-001 threshold mismatch, and two plan placeholders. Added T050/T051 for immutable attempts and backup/retention; aligned SC-001 to 2 seconds, aligned the plan's migration path, and removed generic plan placeholders.
+- `make smoke` now launches the actual loopback server on an ephemeral port and verifies `/healthz` within the two-second startup window before checking the simulated demo. `go test ./internal/api ./internal/cli` passed.
+- The analyze gate is being rerun after these resolutions. Its report and final clean/remaining findings will be recorded in `specs/001-build-spectide/analysis.md`.
+- A subsequent analyze pass reported zero ambiguity, duplication, or critical findings, with 100% requirement coverage. It requested the plan list all packages/scripts, clarified the T053-before-T048 dependency, and noted T001's missing story association. Those edits are now in the current artifacts; another read-only pass will verify them.
+- Latest analyze also specified the implementation work now tracked by T053/T048: 1 MiB per output stream, 30-minute stage timeout default with 1-second–4-hour bounds, and 2-second graceful cancellation. These tasks are now complete and the runner suite passes.
+
+### Spec-Kit analysis checkpoint — 2026-10-22
+
+- Re-ran the repository's read-only Spec-Kit analyze instructions after resolving the task overlap and workflow-simulation clarifications. Result: 38/38 requirements mapped to 56 tasks, zero ambiguities, zero duplications, zero critical findings, and no constitution conflicts.
+- Recorded the full report in `specs/001-build-spectide/analysis.md`; T044a and T054 are complete. The OpenCode command returned HTTP 503, so the equivalent repository instructions ran through installed Codex CLI in read-only mode. This is not represented as an official Spec-Kit invocation.
+- Convergence remains open (T045). Work is not release complete; numerous implementation and acceptance tasks remain. Browser E2E/screenshots remain blocked by the previously recorded local browser access gate, and live provider runs remain NOT_RUN.
+
+### Phase checkpoint — provider runner timeout and graceful cleanup
+
+**Verified in this checkpoint**
+
+- Provider invocations default to a 30-minute timeout and accept configured durations from 1 second through 4 hours; out-of-range values fail with `INVALID_STAGE_TIMEOUT`.
+- Expiration is reported as `STAGE_TIMEOUT`; parent cancellation is reported as `RUN_CANCELLED`.
+- Cancellation sends SIGTERM to the Unix process group, then escalates to SIGKILL after 2 seconds. Other supported platforms use interrupt signaling followed by direct-child kill fallback.
+- Tests cover both 1 MiB output caps, timeout boundaries/default, actual timeout reporting, graceful signal handling before escalation, existing cancellation cleanup, and output redaction.
+- `go test ./internal/runner -count=1` passed. Tasks T053 and T048 are complete.
+
+**Remaining**
+
+- Provider invocations remain unconnected to canonical workflow stages, and cross-platform process-group semantics still need platform CI coverage. Full suite validation will follow the next implementation slice.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified

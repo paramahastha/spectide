@@ -38,6 +38,7 @@ func New(s *store.Store, e *workflow.Engine) *Server {
 }
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", s.health)
 	mux.HandleFunc("/api/v1/healthz", s.health)
 	mux.HandleFunc("/api/v1/readyz", s.health)
 	mux.HandleFunc("/api/v1/version", s.version)
@@ -184,7 +185,7 @@ func (s *Server) secure(next http.Handler) http.Handler {
 			apiError(w, http.StatusForbidden, "INVALID_HOST", "invalid host")
 			return
 		}
-		if r.Method != "GET" && r.Method != "HEAD" && r.URL.Path != "/api/v1/healthz" {
+		if r.Method != "GET" && r.Method != "HEAD" && r.URL.Path != "/api/v1/healthz" && r.URL.Path != "/healthz" {
 			if r.Header.Get("X-SpecTide-CSRF") != s.CSRF {
 				apiError(w, http.StatusForbidden, "CSRF_REQUIRED", "missing or invalid CSRF token")
 				return

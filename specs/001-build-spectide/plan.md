@@ -21,15 +21,15 @@ Build a local-first orchestration application that turns a developer task into a
 
 **Testing**: `go test`, race detector, fixture adapter tests, HTTP/SSE integration tests; dashboard unit and browser tests once React build is added
 
-**Target Platform**: Local macOS/Linux developer machines; Windows build validation where provider capabilities permit
+**Target Platform**: Local macOS/Linux developer machines for v1; Windows build validation is optional and non-blocking
 
 **Project Type**: Local CLI plus embedded web application
 
-**Performance Goals**: Local health response within 2 seconds; p95 simulated event visibility within 1 second; incremental replay for 10,000 stored events
+**Performance Goals**: Successful `/healthz` response within 2 seconds from server start on the documented supported machine; p95 simulated event visibility within 1 second under the SC-006 profile; incremental replay for 10,000 stored events
 
 **Constraints**: Loopback-only; no stored provider credentials; no browser-originated arbitrary shell; one workspace writer; simulation never presented as live verification
 
-**Scale/Scope**: One local user/daemon, 100 recent runs and 10,000 events per run as initial acceptance capacity
+**Scale/Scope**: One local user/daemon; dashboard lists the 100 most recent runs, keeps compact summaries indefinitely, expires event details 90 days after each event timestamp, and retains detailed histories for at most 1,000 runs. At the cap, prune detail from the oldest terminal runs first while preserving summaries, outcomes, routes, verdicts, approvals and sanitized report metadata; reject new runs if all detailed-history slots are active. Supports 10,000 events per run as initial acceptance capacity.
 
 ## Constitution Check
 
@@ -48,7 +48,7 @@ Build a local-first orchestration application that turns a developer task into a
 ### Documentation (this feature)
 
 ```text
-specs/[###-feature]/
+specs/001-build-spectide/
 ├── plan.md              # This file (/speckit.plan command output)
 ├── research.md          # Phase 0 output (/speckit.plan command)
 ├── data-model.md        # Phase 1 output (/speckit.plan command)
@@ -60,14 +60,16 @@ specs/[###-feature]/
 ### Source Code (repository root)
 
 ```text
-cmd/spectide/              # command entrypoint
-internal/{app,cli,model}/  # composition, commands, domain types
-internal/{store,workflow}/ # SQLite truth, evented state machine
+cmd/spectide/                         # command entrypoint
+internal/{app,cli,model,config}/      # composition, commands, domain types, configuration
+internal/{store,workflow,workspace}/  # SQLite truth, state machine, workspace policy
+internal/{events,quality}/            # normalized events and verification evidence
 internal/{adapters,runner,speckit,routing,security}/ # provider and safety boundaries
-internal/api/              # HTTP handlers and SSE
-internal/webassets/        # embedded dashboard build
-web/                       # React/TypeScript source and browser tests
-migrations/                # versioned schema SQL
+internal/api/                         # HTTP handlers and SSE
+internal/webassets/                   # embedded dashboard build
+internal/store/migrations/            # versioned schema SQL
+web/                                  # React/TypeScript source and browser tests
+scripts/                              # offline demo and smoke validation
 docs/, examples/, testdata/
 ```
 
@@ -76,4 +78,3 @@ docs/, examples/, testdata/
 ## Complexity Tracking
 
 No constitutional exceptions requested. Provider adapters remain separate because their executable capabilities and event formats are incompatible; they share one narrow adapter contract.
-| [e.g., Repository pattern] | [specific problem] | [why direct DB access insufficient] |

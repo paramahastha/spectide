@@ -35,3 +35,76 @@ Unmapped task: T001, which establishes the repository and build foundation.
 - Analyze: **PASS WITH FINDINGS**. The report was read-only; OpenCode's initial request failed with HTTP 503, and the installed Codex runtime completed the same command instructions in read-only mode.
 - Blocking finding C1: resolved by moving the analysis gate ahead of implementation in the task dependency order. Implementation resumed after recording this analysis.
 - Remaining findings: not blocking the current implementation gate; track through the owning tasks and the required convergence pass.
+
+## Post-implementation-extension analysis — 2026-10-22
+
+Command: `/speckit.analyze` instructions in `.opencode/commands/speckit.analyze.md`, run read-only using the installed Codex CLI after the OpenCode request returned HTTP 503. The command inspected the current `spec.md`, `plan.md`, and `tasks.md`. No `.specify/extensions.yml` or analyze hooks were configured.
+
+### Exact result summary
+
+> No inconsistencies, duplications, ambiguities, underspecified items, or constitution conflicts were identified across the current spec, plan, and task list.
+
+| ID | Category | Severity | Location(s) | Summary | Recommendation |
+|----|----------|----------|-------------|---------|----------------|
+| — | — | — | — | No findings. | No remediation needed. |
+
+### Coverage Summary Table
+
+| Requirement Key | Has Task? | Task IDs | Notes |
+|-----------------|-----------|----------|-------|
+| FR-001 | Yes | T017, T025, T037 | CLI commands |
+| FR-002 | Yes | T006, T007, T047, T050, T051 | Persistence, migrations, and retention |
+| FR-003 | Yes | T050 | Immutable run configuration and attempt history |
+| FR-004 | Yes | T009, T011, T034 | Workspace locks and workflow ownership/recovery |
+| FR-005 | Yes | T013, T014, T016 | Canonical stages and workflow loops |
+| FR-006 | Yes | T014 | Verified Spec-Kit integrations |
+| FR-007 | Yes | T035 | Preserve the same specification |
+| FR-008 | Yes | T016, T044, T044a, T054 | Read-only analysis and bounded remediation |
+| FR-009 | Yes | T016, T035, T036 | Retry and convergence bounds |
+| FR-010 | Yes | T015, T042 | Quality evidence |
+| FR-011 | Yes | T012, T013, T038, T049 | Simulated workflows |
+| FR-012 | Yes | T018, T020–T023 | Provider adapters and process handling |
+| FR-013 | Yes | T008, T025 | Profile configuration |
+| FR-014 | Yes | T018, T024 | Capability and route validation |
+| FR-015 | Yes | T024 | Routing modes and audit trail |
+| FR-016 | Yes | T009, T024, T029a | Authorization and boundary checks |
+| FR-017 | Yes | T023, T048, T053 | Subprocess limits and cancellation |
+| FR-018 | Yes | T006, T029 | Persistence and event sequencing |
+| FR-019 | Yes | T011, T034 | Pause, resume, and recovery |
+| FR-020 | Yes | T026, T028 | Local API |
+| FR-021 | Yes | T026, T029 | Event streaming and replay |
+| FR-022 | Yes | T026, T029a | Browser request security |
+| FR-023 | Yes | T010, T033, T036 | Redaction and secret-leak checks |
+| FR-024 | Yes | T030, T031 | Dashboard state and tests |
+| FR-025 | Yes | T024, T030 | Route preview and dry-run |
+| FR-026 | Yes | T031 | Accessibility requirements and audit |
+| FR-027 | Yes | T051 | Migrations, backup, and retention |
+| FR-028 | Yes | T003, T039–T041, T043 | Verification commands and documentation |
+| FR-029 | Yes | T018, T019, T029, T031–T036, T043 | Automated test coverage |
+| FR-030 | Yes | T040, T041, T046 | Product and release documentation |
+| SC-001 | Yes | T039 | Startup measurement |
+| SC-002 | Yes | T049 | Twenty-run simulated workflow check |
+| SC-003 | Yes | T015, T042 | Verdict evidence and coverage ledger |
+| SC-004 | Yes | T029 | Event replay |
+| SC-005 | Yes | T024, T029a, T033, T036 | Authorization and security scenarios |
+| SC-006 | Yes | T043a | Load and event-latency measurement |
+| SC-007 | Yes | T038, T039 | Offline demo |
+| SC-008 | Yes | T042 | Requirement-to-evidence links |
+
+Constitution alignment issues: none identified. The plan and tasks align with the constitution's local-first security, evidence, Spec-Kit semantics, recovery, and accessibility requirements. Unmapped tasks: none identified.
+
+### Metrics
+
+- Total Requirements: 38
+- Total Tasks: 56
+- Coverage: 100% (38/38 requirements have associated tasks)
+- Ambiguity Count: 0
+- Duplication Count: 0
+- Critical Issues Count: 0
+
+### Gate status and limits
+
+- Analyze: **PASS — no findings**. This pass validates consistency and task traceability only; it does not establish implementation completion or acceptance.
+- OpenCode was unavailable (HTTP 503); the installed Codex CLI executed the same repository command instructions in read-only mode. No official Spec-Kit command invocation is claimed.
+- T044a is complete. The report was captured after the analyzer exited, as required by T054; T054 is complete.
+- The next appropriate gate is implementation verification followed by the append-only convergence workflow. Convergence has not run and remains open in T045.

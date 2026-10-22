@@ -4,7 +4,7 @@
 
 **Created**: 2026-10-22
 
-**Status**: Ready for planning
+**Status**: In implementation
 
 **Input**: User description: "Implement SpecTide end to end from `SpecTide_End_to_End_Implementation_Plan.md` as one cohesive, local-first v1 product."
 
@@ -16,11 +16,11 @@ A developer can submit one software task to a registered local repository and ha
 
 **Why this priority**: The complete, evidence-backed workflow is the core product value; all other capabilities support it.
 
-**Independent Test**: Using the deterministic simulated provider in a disposable repository, submit a task and verify that the workflow reaches a truthful terminal state with persisted stages, events, quality gates, and a report.
+**Independent Test**: Using the deterministic simulated provider in a disposable repository, submit a task and verify a truthful terminal state (`COMPLETED`, `BLOCKED`, or `FAILED`) with persisted stages, events, quality gates, and a report. Simulated stage results must be visibly `SIMULATED` and must never claim an official Spec-Kit command was invoked; a real workflow that requires a missing or unusable Spec-Kit command must be `BLOCKED`.
 
 **Acceptance Scenarios**:
 
-1. **Given** an initialized allowed repository and valid simulated profile, **When** a developer starts a full workflow, **Then** the system creates one durable run and progresses through the configured specification, analysis, implementation, test, convergence, review, and reporting stages.
+1. **Given** an initialized allowed repository and valid simulated profile, **When** a developer starts a full workflow, **Then** the system creates one durable run and records the configured specification, analysis, implementation, test, convergence, review, and reporting stages as explicitly simulated; no simulated stage may be represented as an official Spec-Kit invocation.
 2. **Given** a stage produces required evidence, **When** that stage completes, **Then** its route, attempt, result, artifacts, and quality evidence are recorded and visible in the run report.
 3. **Given** a required provider command or required evidence is unavailable, **When** the workflow reaches that stage, **Then** the run is marked blocked or failed with an actionable reason rather than reported as successful.
 
@@ -109,8 +109,8 @@ A new contributor can build SpecTide, run the offline simulated demonstration, u
 - **FR-005**: The system MUST implement the canonical stages: constitution when absent, specify once, clarify, plan, checklist, tasks, analyze, implement, tests, converge, final review, and report.
 - **FR-006**: The system MUST invoke verified installed official Spec-Kit stage integrations or report the stage blocked; it MUST NOT fabricate a successful invocation.
 - **FR-007**: The system MUST preserve one product specification throughout remediation, retries, and resumptions rather than create replacement specifications.
-- **FR-008**: The system MUST keep analysis read-only, route blocking analysis findings to the appropriate earlier artifact owner, and rerun analysis within a configured bound.
-- **FR-009**: The system MUST run convergence only after implementation and tests for current tasks, accept only append-only valid task additions, and rerun implementation, tests, and convergence until converged or bounded progress fails.
+- **FR-008**: The system MUST keep analysis read-only, route blocking analysis findings to the appropriate earlier artifact owner, and rerun analysis within a configured bound. Critical and high findings block progress; medium findings block only when they leave a security boundary, required acceptance criterion, or prerequisite unsatisfied. Route scope and acceptance findings to `spec.md`, architecture/data/API findings to `plan.md` or its referenced design contract, and task coverage/order findings to `tasks.md`. A remediation round is limited to editing the owning artifact and then running a fresh read-only analysis.
+- **FR-009**: The system MUST run convergence only after implementation and tests for current tasks, accept only append-only valid task additions, and rerun implementation, tests, and convergence until converged or bounded progress fails. Defaults are at most 3 analyze remediation rounds, 4 test repair attempts, and 5 convergence rounds per run. The initial baseline analysis is not a remediation round; each remediation round consists of one finding-driven artifact change followed by one read-only re-analysis. A convergence round makes progress only when valid new tasks are appended or a previously failing required gate becomes passing; an unchanged task-ledger hash and unchanged required-gate verdicts is no progress and blocks the run.
 - **FR-010**: The system MUST require inspectable evidence for required quality gates and represent pass, fail, blocked, and not-run verdicts distinctly.
 - **FR-011**: The system MUST provide deterministic simulated provider workflows and failure scenarios that run without paid accounts and are visibly marked simulated.
 - **FR-012**: The system MUST provide process adapters for Claude Code, Codex, and OpenCode, including capability probing, sanitized invocation generation, streaming event normalization, typed failures, and fixture-based contract tests.
@@ -118,17 +118,19 @@ A new contributor can build SpecTide, run the offline simulated demonstration, u
 - **FR-014**: The system MUST validate provider, profile, model, effort, fallback, capability, and execution-policy selections before launch and reject unsupported combinations unless an explicitly approved fallback applies.
 - **FR-015**: The system MUST support manual, hybrid, and deterministic automatic routing; each resolved stage route MUST be recorded with its policy inputs and explanation.
 - **FR-016**: The system MUST enforce deny-first project/profile authorization and MUST deny routing or fallback that violates a configured data boundary.
-- **FR-017**: The system MUST execute provider processes using explicit argument vectors, constrained working directories, minimized environments, bounded output handling, timeouts, and safe cancellation; it MUST NOT expose arbitrary browser-controlled shell execution.
+- **FR-017**: The system MUST execute provider processes using explicit argument vectors, constrained working directories, minimized environments, bounded output handling, timeouts, and safe cancellation; it MUST NOT expose arbitrary browser-controlled shell execution. Retain at most 1 MiB each of stdout and stderr. Provider stage processes default to a 30-minute timeout configurable from 1 second through 4 hours. On cancellation, send a graceful termination signal and force-kill the process group after a 2-second grace period.
 - **FR-018**: The system MUST persist state transition and associated event records atomically, allocate monotonic event positions per run, and recover ambiguous running work as interrupted.
-- **FR-019**: The system MUST support safe pause boundaries, resume validation, graceful cancellation followed by bounded termination, and crash recovery without duplicate run creation or conflicting workspace writes.
+- **FR-019**: The system MUST support safe pause boundaries, resume validation, graceful cancellation followed by bounded termination, and crash recovery without duplicate run creation or conflicting workspace writes. Live provider work pauses only between adapter invocations, after the current stage result and evidence are persisted; SpecTide does not suspend a provider process. The deterministic fake may pause during its simulated wait while preserving the remaining wait duration. Before resuming after interruption, verify canonical workspace identity, acquire its exclusive writer lock, match the immutable effective run-configuration hash and checkpoint identifier, verify every checkpointed artifact path and content hash, and compare the current Git HEAD and managed-path hash set with the checkpoint. If any check differs, do not resume or overwrite; preserve evidence, report `WORKSPACE_DRIFT`, and require explicit recovery through a new verified checkpoint or a new run.
 - **FR-020**: The system MUST expose a loopback-only local HTTP interface for health, readiness, version, projects, runs, stages, safe artifact metadata, reports, profiles, capabilities, configuration validation, approvals, and permitted run controls.
 - **FR-021**: The system MUST stream ordered live run events, replay events after a supplied cursor, provide reconnect-safe behavior and heartbeat signaling, and ensure slow viewers cannot block workflow execution.
 - **FR-022**: The system MUST protect browser mutations using host and origin validation, anti-CSRF controls, input limits, path validation, standardized errors, and local-only binding.
 - **FR-023**: The system MUST redact sensitive values before event persistence, streaming, export, and display, and MUST avoid exposing provider hidden reasoning or authentication material.
 - **FR-024**: The dashboard MUST render persisted API state rather than hardcoded workflow status and show current stage, route, attempt history, live activity, approvals, quality evidence, artifact metadata, reports, and permitted controls.
 - **FR-025**: The dashboard MUST allow a user to preview resolved routing and dry-run intent before a real run and clearly distinguish disconnected, blocked, skipped, failed, not-run, and simulated states.
-- **FR-026**: The system MUST provide accessible desktop-first monitoring, keyboard-operable controls, readable semantic status indicators, and reduced-motion-safe presentation.
-- **FR-027**: The system MUST maintain versioned local data migrations, safe schema upgrades, backup-aware recovery, bounded retention, and sanitized report export.
+- **FR-026**: The system MUST provide accessible desktop-first monitoring with keyboard-operable controls, a visible keyboard focus indicator, body-text contrast of at least 4.5:1, no loss of content or control at 200% zoom, and reduced-motion-safe presentation. Every status MUST include a text label or symbol in addition to color. Automated accessibility scans MUST report zero critical or serious violations on the run-list, run-detail, route-preview, profile-readiness, empty, error, and disconnected dashboard surfaces. Record the page/state matrix and scan results in `docs/accessibility-audit.md`.
+
+  The required page/state pairs are: run-list—empty, disconnected, running, paused, blocked, completed, cancelled, and simulated; run-detail—running, paused, blocked, completed, cancelled, failed, skipped, not-run, and simulated; route-preview—ready, blocked, and disconnected; profile-readiness—ready, disconnected, and error; shared empty surface—empty; shared error surface—error; shared disconnected surface—disconnected. Status-state fixtures MUST include distinct text or symbol labels for disconnected, blocked, skipped, failed, not-run, and simulated, even where a state appears on more than one surface.
+- **FR-027**: The system MUST maintain versioned local data migrations, safe schema upgrades, backup-aware recovery, bounded retention, and sanitized report export. By default, expire individual event payloads and activity details 90 days after their persisted timestamps; independently cap detailed history at 1,000 runs by pruning details from the oldest terminal runs first. Compact run summaries are retained indefinitely and do not count toward the detailed-history cap. Never prune active runs; preserve each summary, stage outcomes, routing decisions, quality verdicts, approvals, and sanitized report metadata. If every detailed-history slot belongs to an active run, reject new run creation with an actionable retention-cap error until a slot becomes available.
 - **FR-028**: The system MUST provide documented build, formatting, lint, unit, integration, end-to-end, smoke, and security verification commands that work without live provider credentials where simulations suffice.
 - **FR-029**: The system MUST include automated coverage for workflow transitions, routing and boundaries, persistence and recovery, subprocess safety, adapter stream compatibility, API security, event replay, dashboard interaction, and simulated complete lifecycle scenarios.
 - **FR-030**: The system MUST include local-first installation, configuration, architecture, provider, security, recovery, troubleshooting, API, contribution, license, and release-readiness documentation that makes only verified claims.
@@ -150,14 +152,18 @@ A new contributor can build SpecTide, run the offline simulated demonstration, u
 
 ### Measurable Outcomes
 
-- **SC-001**: A contributor can build and start the local application and obtain a health response within 2 minutes on a documented supported development machine.
+- **SC-001**: On the reference validation class (arm64 macOS 15.1 or later, local SSD; record CPU model and installed RAM in the verification report), a contributor can build and start the local application and receive a successful `/healthz` response within 2 seconds of process launch. Measure with a monotonic clock from process start until the first HTTP 200 response; report the exact OS, CPU, RAM, build command, and elapsed time.
 - **SC-002**: An offline simulated full workflow completes with every required simulated gate evidenced, or reports a specific blocked or failed reason, in 100% of 20 deterministic repeated test runs.
 - **SC-003**: In automated scenarios, 100% of terminal run reports distinguish required checks as pass, fail, blocked, or not run, with no unsupported live-provider result reported as a pass.
 - **SC-004**: In automated multi-viewer and reconnect tests, viewers recover the same canonical run state and receive ordered post-cursor events with no missing persisted transition events.
 - **SC-005**: In automated policy tests, 100% of attempted unauthorized profile/workspace routes, cross-origin mutations, path escapes, and synthetic-secret exposures are rejected or redacted as applicable.
-- **SC-006**: At least 95% of locally generated simulated events appear in a healthy connected dashboard within 1 second under the documented moderate-load test scenario.
+- **SC-006**: At least 95% of locally generated simulated events appear in a healthy connected dashboard within 1 second under this reproducible moderate-load profile: one local server, 10 concurrent SSE clients, 100 events per second for 100 seconds, and a 10,000-event persisted backlog. Measure from the event's persisted UTC timestamp to receipt of its SSE frame at each client; calculate p95 over all delivered frames after excluding connection setup and heartbeat frames. A client missing persisted events fails the scenario regardless of latency.
 - **SC-007**: A developer can complete the documented offline demo, observe its report, and identify that it is simulated without a provider login or manual database intervention.
-- **SC-008**: The published verification suite covers each P0 functional requirement with one or more linked automated tests or documented inspected evidence.
+- **SC-008**: The published verification suite covers every v1 functional requirement, FR-001 through FR-030, with one or more linked automated tests or documented inspected evidence. All listed requirements are release acceptance requirements; no undefined P0 subset is implied.
+
+### Release priority
+
+Every functional requirement FR-001 through FR-030 and every success criterion SC-001 through SC-008 is required for v1 release acceptance. Story priorities describe implementation order, not permission to omit requirements from the final acceptance set.
 
 ## Assumptions
 

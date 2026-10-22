@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -46,8 +47,13 @@ func Root() *cobra.Command {
 			return fmt.Errorf("only loopback host is allowed")
 		}
 		addr := netJoin(host, port)
-		fmt.Fprintf(c.OutOrStdout(), "SpecTide listening at http://%s\n", addr)
-		return http.ListenAndServe(addr, a.API.Handler())
+		listener, e := net.Listen("tcp", addr)
+		if e != nil {
+			return e
+		}
+		defer listener.Close()
+		fmt.Fprintf(c.OutOrStdout(), "SpecTide listening at http://%s\n", listener.Addr().String())
+		return http.Serve(listener, a.API.Handler())
 	}}
 	serve.Flags().String("host", "127.0.0.1", "loopback host")
 	serve.Flags().Int("port", 4747, "local port")
