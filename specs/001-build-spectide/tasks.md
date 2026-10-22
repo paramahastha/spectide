@@ -20,7 +20,7 @@
 - [x] T005 Define canonical run, stage, event, and quality types in `internal/model/model.go`
 - [x] T006 Implement transactional SQLite persistence, WAL configuration, event sequencing, and report queries in `internal/store/store.go`
 - [x] T007 Create versioned migration files and migration tests in `internal/store/migrations/` and `internal/store/`
-- [ ] T047 Create checkpoint, artifact, approval, routing-decision, and workspace-lock persistence repositories with transaction tests in `internal/store/`
+- [x] T047 Create checkpoint, artifact, approval, routing-decision, and workspace-lock persistence repositories with transaction tests in `internal/store/`
 - [ ] T008 [P] Implement configuration precedence, profile registry, and validation in `internal/config/`
 - [ ] T009 [P] Implement workspace canonicalization, allowed roots, and writer locks in `internal/workspace/`
 - [ ] T010 [P] Implement redaction, process policy, and approval models in `internal/security/` and `internal/events/`

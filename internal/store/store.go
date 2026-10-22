@@ -447,6 +447,18 @@ func (s *Store) Report(ctx context.Context, id string) (model.Report, error) {
 	if e != nil {
 		return model.Report{}, e
 	}
+	a, e := s.Artifacts(ctx, id)
+	if e != nil {
+		return model.Report{}, e
+	}
+	cp, e := s.Checkpoints(ctx, id)
+	if e != nil {
+		return model.Report{}, e
+	}
+	ap, e := s.Approvals(ctx, id)
+	if e != nil {
+		return model.Report{}, e
+	}
 	d, e := s.RoutingDecisions(ctx, id)
-	return model.Report{Run: r, Stages: st, Decisions: d, Gates: g}, e
+	return model.Report{Run: r, Stages: st, Decisions: d, Gates: g, Artifacts: a, Checkpoints: cp, Approvals: ap}, e
 }

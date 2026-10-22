@@ -57,10 +57,13 @@ type Event struct {
 }
 
 type Report struct {
-	Run       Run               `json:"run"`
-	Stages    []Stage           `json:"stages"`
-	Decisions []RoutingDecision `json:"routing_decisions"`
-	Gates     []Gate            `json:"gates"`
+	Run         Run               `json:"run"`
+	Stages      []Stage           `json:"stages"`
+	Decisions   []RoutingDecision `json:"routing_decisions"`
+	Gates       []Gate            `json:"gates"`
+	Artifacts   []Artifact        `json:"artifacts"`
+	Checkpoints []Checkpoint      `json:"checkpoints"`
+	Approvals   []Approval        `json:"approvals"`
 }
 
 type RoutingDecision struct {
@@ -77,6 +80,35 @@ type Gate struct {
 	Key      string `json:"key"`
 	Verdict  string `json:"verdict"`
 	Evidence string `json:"evidence"`
+}
+
+type Artifact struct {
+	ID         string    `json:"id"`
+	RunID      string    `json:"run_id"`
+	Stage      string    `json:"stage"`
+	Path       string    `json:"path"`
+	Kind       string    `json:"kind"`
+	SHA256     string    `json:"sha256"`
+	ObservedAt time.Time `json:"observed_at"`
+}
+
+type Checkpoint struct {
+	ID                   string    `json:"id"`
+	RunID                string    `json:"run_id"`
+	Stage                string    `json:"stage"`
+	StateJSON            string    `json:"state_json"`
+	WorkspaceFingerprint string    `json:"workspace_fingerprint"`
+	CreatedAt            time.Time `json:"created_at"`
+}
+
+type Approval struct {
+	ID         string     `json:"id"`
+	RunID      string     `json:"run_id"`
+	Action     string     `json:"action"`
+	Status     string     `json:"status"`
+	Decision   string     `json:"decision"`
+	CreatedAt  time.Time  `json:"created_at"`
+	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
 }
 
 type Profile struct {
