@@ -2,7 +2,6 @@ package claude
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"github.com/spectide/spectide/internal/adapters"
 	"github.com/spectide/spectide/internal/runner"
@@ -33,9 +32,5 @@ func (Adapter) Build(r adapters.Request) (runner.Invocation, error) {
 	return runner.Invocation{Binary: r.Profile.Executable, Args: a, Env: env, Dir: r.ProjectRoot}, nil
 }
 func (Adapter) Normalize(raw []byte) ([]adapters.Event, error) {
-	var v map[string]any
-	if e := json.Unmarshal(raw, &v); e != nil {
-		return nil, e
-	}
-	return []adapters.Event{{Type: "claude.event", Summary: "Claude structured event", Raw: raw}}, nil
+	return adapters.NormalizeJSONL(adapters.Claude, raw)
 }

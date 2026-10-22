@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -26,6 +27,9 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Keep connection-scoped SQLite pragmas and write ordering consistent.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	if _, err = db.Exec(`PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;`); err != nil {
 		db.Close()
 		return nil, err
@@ -37,16 +41,31 @@ func Open(path string) (*Store, error) {
 func (s *Store) Close() error { return s.DB.Close() }
 
 func (s *Store) migrate() error {
-	_, err := s.DB.Exec(`CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, project TEXT NOT NULL, prompt TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT NOT NULL, started_at TEXT, ended_at TEXT);
-CREATE TABLE IF NOT EXISTS stages (id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), stage_key TEXT NOT NULL, position INTEGER NOT NULL, state TEXT NOT NULL, provider TEXT NOT NULL, profile TEXT NOT NULL, model TEXT NOT NULL, effort TEXT NOT NULL, attempt INTEGER NOT NULL DEFAULT 1, UNIQUE(run_id, stage_key, attempt));
-CREATE TABLE IF NOT EXISTS events (run_id TEXT NOT NULL REFERENCES runs(id), seq INTEGER NOT NULL, timestamp TEXT NOT NULL, stage TEXT, type TEXT NOT NULL, severity TEXT NOT NULL, payload_json TEXT NOT NULL, PRIMARY KEY(run_id,seq));
-CREATE TABLE IF NOT EXISTS quality_gates (run_id TEXT NOT NULL REFERENCES runs(id), gate_key TEXT NOT NULL, verdict TEXT NOT NULL, evidence TEXT NOT NULL, PRIMARY KEY(run_id,gate_key));`)
+	tx, err := s.DB.Begin()
 	if err != nil {
 		return err
 	}
-	_, err = s.DB.Exec(`CREATE TABLE IF NOT EXISTS profiles (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, provider TEXT NOT NULL, executable TEXT NOT NULL, config_directory TEXT NOT NULL DEFAULT '', allowed_scopes_json TEXT NOT NULL);`)
-	return err
+	defer tx.Rollback()
+	if _, err = tx.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL)`); err != nil {
+		return err
+	}
+	var version int
+	if err = tx.QueryRow(`SELECT COALESCE(MAX(version),0) FROM schema_migrations`).Scan(&version); err != nil {
+		return err
+	}
+	if version < 1 {
+		if _, err = tx.Exec(schemaV1); err != nil {
+			return fmt.Errorf("apply schema migration 1: %w", err)
+		}
+		if _, err = tx.Exec(`INSERT INTO schema_migrations(version,applied_at) VALUES(1,?)`, now().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
+
+//go:embed migrations/001_initial.sql
+var schemaV1 string
 
 func now() time.Time { return time.Now().UTC().Round(0) }
 func parse(v string) *time.Time {
@@ -216,7 +235,58 @@ func (s *Store) RecoverInterrupted(ctx context.Context) error {
 			return e
 		}
 	}
+	_, err = s.DB.ExecContext(ctx, `DELETE FROM workspace_locks WHERE run_id NOT IN (SELECT id FROM runs WHERE state=?)`, model.Running)
+	if err != nil {
+		return err
+	}
 	return nil
+}
+
+func (s *Store) RegisterProject(ctx context.Context, path, name string, scopes []string) error {
+	if path == "" || name == "" {
+		return fmt.Errorf("PROJECT_PATH_AND_NAME_REQUIRED")
+	}
+	b, err := json.Marshal(scopes)
+	if err != nil {
+		return err
+	}
+	_, err = s.DB.ExecContext(ctx, `INSERT INTO projects(id,canonical_path,display_name,allowed_scopes_json,created_at) VALUES(?,?,?,?,?) ON CONFLICT(canonical_path) DO UPDATE SET display_name=excluded.display_name,allowed_scopes_json=excluded.allowed_scopes_json`, uuid.NewString(), path, name, string(b), now().Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *Store) AcquireWorkspaceLock(ctx context.Context, path, runID string) error {
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO workspace_locks(canonical_path,run_id,acquired_at) VALUES(?,?,?)`, path, runID, now().Format(time.RFC3339Nano))
+	if err != nil {
+		return fmt.Errorf("WORKSPACE_LOCKED: %s", path)
+	}
+	return nil
+}
+
+func (s *Store) ReleaseWorkspaceLock(ctx context.Context, path, runID string) error {
+	_, err := s.DB.ExecContext(ctx, `DELETE FROM workspace_locks WHERE canonical_path=? AND run_id=?`, path, runID)
+	return err
+}
+
+func (s *Store) SaveRoutingDecision(ctx context.Context, runID, stage, provider, profile, modelName, effort, policy, explanation string) error {
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO routing_decisions(run_id,stage,provider,profile,model,effort,policy,explanation,created_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(run_id,stage) DO UPDATE SET provider=excluded.provider,profile=excluded.profile,model=excluded.model,effort=excluded.effort,policy=excluded.policy,explanation=excluded.explanation,created_at=excluded.created_at`, runID, stage, provider, profile, modelName, effort, policy, security.Redact(explanation), now().Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *Store) RoutingDecisions(ctx context.Context, runID string) ([]model.RoutingDecision, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT stage,provider,profile,model,effort,policy,explanation FROM routing_decisions WHERE run_id=? ORDER BY created_at,stage`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.RoutingDecision
+	for rows.Next() {
+		var d model.RoutingDecision
+		if err = rows.Scan(&d.Stage, &d.Provider, &d.Profile, &d.Model, &d.Effort, &d.Policy, &d.Explanation); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) AddStage(ctx context.Context, st model.Stage) error {
@@ -360,5 +430,9 @@ func (s *Store) Report(ctx context.Context, id string) (model.Report, error) {
 		return model.Report{}, e
 	}
 	g, e := s.Gates(ctx, id)
-	return model.Report{Run: r, Stages: st, Gates: g}, e
+	if e != nil {
+		return model.Report{}, e
+	}
+	d, e := s.RoutingDecisions(ctx, id)
+	return model.Report{Run: r, Stages: st, Decisions: d, Gates: g}, e
 }

@@ -57,9 +57,20 @@ type Event struct {
 }
 
 type Report struct {
-	Run    Run     `json:"run"`
-	Stages []Stage `json:"stages"`
-	Gates  []Gate  `json:"gates"`
+	Run       Run               `json:"run"`
+	Stages    []Stage           `json:"stages"`
+	Decisions []RoutingDecision `json:"routing_decisions"`
+	Gates     []Gate            `json:"gates"`
+}
+
+type RoutingDecision struct {
+	Stage       string `json:"stage"`
+	Provider    string `json:"provider"`
+	Profile     string `json:"profile"`
+	Model       string `json:"model"`
+	Effort      string `json:"effort"`
+	Policy      string `json:"policy"`
+	Explanation string `json:"explanation"`
 }
 
 type Gate struct {

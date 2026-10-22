@@ -1,6 +1,7 @@
 package adapters
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"time"
 )
+
+const maxEventLine = 1 << 20
 
 type ProviderName string
 
@@ -61,4 +64,31 @@ func ProbeBinary(p Profile) (Capability, error) {
 	c.ExecutableFound = true
 	c.Version = strings.TrimSpace(path)
 	return c, nil
+}
+
+// NormalizeJSONL accepts newline-delimited provider objects while discarding
+// payload bodies that may contain user code, credentials, or private reasoning.
+func NormalizeJSONL(provider ProviderName, raw []byte) ([]Event, error) {
+	scanner := bufio.NewScanner(strings.NewReader(string(raw)))
+	scanner.Buffer(make([]byte, 4096), maxEventLine)
+	var events []Event
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			return nil, fmt.Errorf("MALFORMED_PROVIDER_EVENT: %w", err)
+		}
+		typ, _ := record["type"].(string)
+		if typ == "" {
+			typ = "unknown"
+		}
+		events = append(events, Event{Type: string(provider) + "." + typ, Summary: "structured provider event"})
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("PROVIDER_EVENT_LIMIT: %w", err)
+	}
+	return events, nil
 }

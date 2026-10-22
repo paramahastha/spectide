@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"fmt"
 	"github.com/spectide/spectide/internal/api"
 	"github.com/spectide/spectide/internal/store"
@@ -30,10 +29,6 @@ func Open(dbPath string) (*App, error) {
 	s, e := store.Open(dbPath)
 	if e != nil {
 		return nil, fmt.Errorf("open state store: %w", e)
-	}
-	if e = s.RecoverInterrupted(context.Background()); e != nil {
-		s.Close()
-		return nil, fmt.Errorf("recover interrupted runs: %w", e)
 	}
 	eng := workflow.New(s)
 	return &App{Store: s, Engine: eng, API: api.New(s, eng)}, nil

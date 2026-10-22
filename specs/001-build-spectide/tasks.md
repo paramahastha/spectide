@@ -15,7 +15,7 @@
 
 - [x] T005 Define canonical run, stage, event, and quality types in `internal/model/model.go`
 - [x] T006 Implement transactional SQLite persistence, WAL configuration, event sequencing, and report queries in `internal/store/store.go`
-- [ ] T007 Create versioned migration files and migration tests in `migrations/` and `internal/store/`
+- [x] T007 Create versioned migration files and migration tests in `internal/store/migrations/` and `internal/store/`
 - [ ] T047 Create checkpoint, artifact, approval, routing-decision, and workspace-lock persistence repositories with transaction tests in `internal/store/`
 - [ ] T008 [P] Implement configuration precedence, profile registry, and validation in `internal/config/`
 - [ ] T009 [P] Implement workspace canonicalization, allowed roots, and writer locks in `internal/workspace/`
@@ -71,8 +71,8 @@
 
 **Independent Test**: Failure-injection scenarios preserve attempts/events, obey bounds, and finish blocked/cancelled or recovered correctly.
 
-- [ ] T032 [P] [US4] Add state-machine transition and workspace lock contention tests in `internal/workflow/` and `internal/workspace/`
-- [ ] T033 [P] [US4] Add malformed stream, timeout, cancellation, and redaction adapter fixture tests in `testdata/fixtures/` and `internal/adapters/`
+- [x] T032 [P] [US4] Add state-machine transition and workspace lock contention tests in `internal/workflow/` and `internal/workspace/`
+- [x] T033 [P] [US4] Add malformed stream, timeout, cancellation, and redaction adapter fixture tests in `internal/adapters/`, `internal/runner/`, and `internal/security/`
 - [ ] T034 [US4] Implement pause/resume/cancel, process reconciliation, safe checkpoint resume, and drift detection in `internal/workflow/`
 - [ ] T035 [US4] Implement append-only convergence task validation and final-review return loop in `internal/speckit/` and `internal/workflow/`
 - [ ] T036 [US4] Add recovery, retry, no-progress, and secret-leak end-to-end scenarios in `internal/workflow/` and `internal/api/`

@@ -7,7 +7,7 @@
 **Verified in this checkpoint**
 
 - Run transitions are validated; terminal states cannot be overwritten.
-- Startup recovery changes abandoned `RUNNING` runs to `BLOCKED` and appends a durable `run.interrupted` event with a reason. Resume remains unavailable until safe checkpoint recovery is implemented.
+- The recovery primitive changes abandoned `RUNNING` runs to `BLOCKED` and appends a durable `run.interrupted` event with a reason. It is not wired to general application startup because each CLI read command opens the DB too; automatic stale-process detection remains incomplete. Resume remains unavailable until safe checkpoint recovery is implemented.
 - User prompts and nested event payloads are redacted before persistence, including values stored under secret-shaped keys.
 - Provider subprocess stdout/stderr are bounded to 1 MiB each and continue draining after the cap to avoid unbounded memory growth or child-process blockage.
 - Browser CSRF token is randomly generated for each API server process; dashboard obtains it from same-origin `/api/v1/version`.
@@ -36,22 +36,38 @@
 
 **Remaining in this phase family**
 
-- Global/project configuration precedence, route-to-profile validation, persistent project registry and workspace locks are incomplete.
+- Global/project configuration precedence and route-to-profile validation remain incomplete. Project records and workspace locks are now persisted, but policy authorization is not wired into live execution.
 - The CLI does not yet execute real Spec-Kit/provider stages. `resume` is deliberately blocked without safe checkpoints.
-- The configuration and CLI checkpoint is ready for commit after this verification.
+- The configuration/CLI checkpoint is committed as `6d8df80`.
+
+### Phase checkpoint — versioned persistence and adapter event contracts
+
+**Verified in this checkpoint**
+
+- Added embedded migration `internal/store/migrations/001_initial.sql` and `schema_migrations` version tracking. It creates projects, routing decisions, artifacts, checkpoints, approvals, and exclusive workspace-lock tables in addition to the existing run state tables.
+- Runs canonicalize their project path, register the project, and acquire a SQLite uniqueness-backed writer lease. A contending run becomes `BLOCKED`; the lease is released after the workflow reaches a terminal result.
+- Every simulated stage has a persisted routing decision in the report. This is evidence for the simulated route only.
+- Claude, Codex, and OpenCode adapters accept bounded JSONL fixture streams, reject malformed/oversized events, and discard raw payloads.
+- `go test ./...` passed, including migration, state transition, one-writer contention, cancellation/output-bound, event parsing, and secret-redaction coverage.
+
+**Remaining in this phase family**
+
+- Artifact/checkpoint/approval repositories and transactional tests are not implemented yet; the schema tables alone are not feature completion.
+- Recovery is available as a persistence primitive but is intentionally not invoked on every `App.Open`; doing so could misclassify a live run when read-only CLI commands open the database. Safe single-daemon ownership and stale-process reconciliation are still required.
+- Provider process invocation is not yet orchestrated by the workflow engine. Provider live smoke checks remain `NOT_RUN`.
 
 ### Earlier checkpoint summary
 
 ### Completed and verified
 
-- One master feature specification, plan, data model, contract, task ledger, and first read-only analysis are present under `specs/001-build-spectide/`.
+- One master feature specification, plan, data model, contract, task ledger, and checklist are present under `specs/001-build-spectide/`. A formal Spec-Kit analyze report has not been produced yet.
 - Go module, Cobra binary, SQLite WAL-backed run/stage/event/gate persistence, deterministic simulated lifecycle, baseline loopback API, SSE replay, embedded dashboard shell, and API security baseline are implemented.
 - `go test ./...`, `make build`, and the foreground offline demo completed successfully in this environment.
 
 ### Current truth
 
 - The offline demo is `SIMULATED`; it is not a live Claude, Codex, or OpenCode integration pass.
-- `spectide doctor` discovered Codex and OpenCode executables but does not authenticate or execute them. Claude was not found on the current path.
+- The earlier doctor run discovered Codex and OpenCode executables but did not authenticate or execute them. `specify check` later reported Claude Code, Codex CLI, and OpenCode available.
 - The first aborted demo run was correctly retained as `CREATED`; no false completion was recorded. Foreground demo behavior was then corrected and produces a completed, evidenced simulated run.
 
 ### Immediate next work
