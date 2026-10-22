@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
 	"github.com/spectide/spectide/internal/store"
 )
@@ -38,6 +39,21 @@ func (e *Engine) Start(ctx context.Context, project, prompt string) (model.Run, 
 		return model.Run{}, fmt.Errorf("PROJECT_REQUIRED")
 	}
 	project = workspace
+	cfg, err := config.Load(config.ProjectPath(workspace))
+	if err != nil {
+		return model.Run{}, err
+	}
+	decisions := make(map[string]config.Decision, len(stages))
+	for _, stage := range stages {
+		decision, e := cfg.Resolve(stage, prompt)
+		if e != nil {
+			return model.Run{}, e
+		}
+		if decision.Route.Provider != "fake" {
+			return model.Run{}, fmt.Errorf("LIVE_STAGE_EXECUTION_UNAVAILABLE: %s resolves to %s/%s; run not started", stage, decision.Route.Provider, decision.Route.Profile)
+		}
+		decisions[stage] = decision
+	}
 	if err = e.store.RegisterProject(ctx, workspace, path.Base(workspace), []string{workspace}); err != nil {
 		return model.Run{}, err
 	}
@@ -55,7 +71,7 @@ func (e *Engine) Start(ctx context.Context, project, prompt string) (model.Run, 
 	e.cancels[r.ID] = cancel
 	e.locks[r.ID] = workspace
 	e.mu.Unlock()
-	go e.execute(child, r)
+	go e.execute(child, r, decisions)
 	return r, nil
 }
 
@@ -105,7 +121,7 @@ func (e *Engine) Wait(ctx context.Context, id string) (model.Run, error) {
 	}
 }
 
-func (e *Engine) execute(ctx context.Context, r model.Run) {
+func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]config.Decision) {
 	_ = e.store.SetRunState(ctx, r.ID, model.Running)
 	for i, key := range stages {
 		select {
@@ -116,14 +132,16 @@ func (e *Engine) execute(ctx context.Context, r model.Run) {
 			return
 		default:
 		}
-		st := model.Stage{ID: uuid.NewString(), RunID: r.ID, Key: key, Position: i, State: model.Pending, Provider: "fake", Profile: "fake-demo", Model: "deterministic", Effort: "none", Attempt: 1}
+		d := decisions[key].Route
+		st := model.Stage{ID: uuid.NewString(), RunID: r.ID, Key: key, Position: i, State: model.Pending, Provider: d.Provider, Profile: d.Profile, Model: d.Model, Effort: d.Effort, Attempt: 1}
 		if err := e.store.AddStage(ctx, st); err != nil {
 			_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
 			e.finish(r.ID)
 			return
 		}
-		_ = e.store.Event(ctx, r.ID, key, "routing.resolved", "info", map[string]any{"provider": "fake", "profile": "fake-demo", "simulated": true})
-		if err := e.store.SaveRoutingDecision(ctx, r.ID, key, "fake", "fake-demo", "deterministic", "none", "automatic", "offline deterministic fake route; no live provider used"); err != nil {
+		decision := decisions[key]
+		_ = e.store.Event(ctx, r.ID, key, "routing.resolved", "info", map[string]any{"provider": d.Provider, "profile": d.Profile, "model": d.Model, "effort": d.Effort, "policy": decision.Explanation, "simulated": true})
+		if err := e.store.SaveRoutingDecision(ctx, r.ID, key, d.Provider, d.Profile, d.Model, d.Effort, decision.Mode, decision.Explanation); err != nil {
 			_ = e.store.SetStage(context.Background(), st.ID, model.StageFail)
 			_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
 			e.finish(r.ID)

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -66,7 +67,20 @@ func Run(ctx context.Context, in Invocation) (Result, error) {
 	start := time.Now()
 	cmd := exec.CommandContext(ctx, in.Binary, in.Args...)
 	cmd.Dir = in.Dir
-	cmd.Env = append([]string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin"}, in.Env...)
+	home, _ := os.UserHomeDir()
+	cmd.Env = []string{"PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin", "HOME=" + home, "USERPROFILE=" + home, "TMPDIR=" + os.TempDir()}
+	for _, value := range in.Env {
+		name, _, ok := strings.Cut(value, "=")
+		if !ok {
+			return Result{}, fmt.Errorf("INVALID_PROCESS_ENV: expected NAME=value")
+		}
+		switch name {
+		case "CLAUDE_CONFIG_DIR", "CODEX_HOME", "OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR":
+		default:
+			return Result{}, fmt.Errorf("PROCESS_ENV_NOT_ALLOWED: %s", name)
+		}
+		cmd.Env = append(cmd.Env, value)
+	}
 	cmd.Stdin = bytes.NewReader(in.Stdin)
 	out, errOut := &cappedBuffer{remaining: maxOutputBytes}, &cappedBuffer{remaining: maxOutputBytes}
 	cmd.Stdout = out

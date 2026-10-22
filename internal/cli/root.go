@@ -220,6 +220,26 @@ func Root() *cobra.Command {
 		return json.NewEncoder(c.OutOrStdout()).Encode(map[string]any{"valid": true, "config": v})
 	}})
 	conf.Commands()[0].Flags().String("file", config.ProjectPath("."), "configuration file path")
+	preview := &cobra.Command{Use: "preview", Short: "Preview deterministic routes without starting a run", RunE: func(c *cobra.Command, _ []string) error {
+		file, _ := c.Flags().GetString("file")
+		prompt, _ := c.Flags().GetString("prompt")
+		cfg, e := config.Load(file)
+		if e != nil {
+			return e
+		}
+		decisions := make([]config.Decision, 0, len(config.StageKeys))
+		for _, stage := range config.StageKeys {
+			d, e := cfg.Resolve(stage, prompt)
+			if e != nil {
+				return e
+			}
+			decisions = append(decisions, d)
+		}
+		return json.NewEncoder(c.OutOrStdout()).Encode(map[string]any{"mode": cfg.RoutingMode, "decisions": decisions})
+	}}
+	preview.Flags().String("file", config.ProjectPath("."), "configuration file path")
+	preview.Flags().String("prompt", "", "task intent for automatic risk routing")
+	conf.AddCommand(preview)
 	root.AddCommand(conf)
 	initCmd := &cobra.Command{Use: "init", Short: "Initialize local SpecTide project settings", RunE: func(c *cobra.Command, _ []string) error {
 		rootPath, _ := c.Flags().GetString("project")

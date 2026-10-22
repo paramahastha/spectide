@@ -393,6 +393,20 @@ func (s *Store) SaveProfile(ctx context.Context, p model.Profile) (model.Profile
 	if p.Name == "" || p.Provider == "" || p.Executable == "" {
 		return p, fmt.Errorf("profile name, provider, and executable are required")
 	}
+	switch p.Provider {
+	case "claude", "codex", "opencode", "fake":
+	default:
+		return p, fmt.Errorf("UNSUPPORTED_PROVIDER: %s", p.Provider)
+	}
+	if strings.ContainsAny(p.Executable, "\x00\n\r") || (strings.ContainsRune(p.Executable, filepath.Separator) && !filepath.IsAbs(p.Executable)) {
+		return p, fmt.Errorf("INVALID_EXECUTABLE: use a command name or absolute executable path")
+	}
+	if p.ConfigDirectory != "" && !filepath.IsAbs(p.ConfigDirectory) {
+		return p, fmt.Errorf("CONFIG_DIRECTORY_MUST_BE_ABSOLUTE")
+	}
+	if len(p.AllowedScopes) == 0 {
+		return p, fmt.Errorf("PROFILE_SCOPE_REQUIRED")
+	}
 	scopes, e := json.Marshal(p.AllowedScopes)
 	if e != nil {
 		return p, e

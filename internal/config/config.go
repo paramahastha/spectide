@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const FileName = "config.json"
@@ -23,6 +24,15 @@ type Config struct {
 	DefaultRoute  Route            `json:"default_route"`
 	StageRoutes   map[string]Route `json:"stage_routes,omitempty"`
 	AllowedScopes []string         `json:"allowed_scopes,omitempty"`
+}
+
+var StageKeys = []string{"constitution", "specify", "clarify", "plan", "checklist", "tasks", "analyze", "implement", "tests", "converge", "final_review", "report"}
+
+type Decision struct {
+	Stage       string `json:"stage"`
+	Route       Route  `json:"route"`
+	Mode        string `json:"mode"`
+	Explanation string `json:"explanation"`
 }
 
 func ProjectPath(root string) string { return filepath.Join(root, ".spectide", FileName) }
@@ -86,9 +96,78 @@ func Validate(c Config) error {
 		if stage == "" || r.Profile == "" || r.Provider == "" {
 			return fmt.Errorf("INVALID_STAGE_ROUTE: %q requires provider and profile", stage)
 		}
+		if !knownStage(stage) {
+			return fmt.Errorf("UNKNOWN_STAGE: %s", stage)
+		}
+		if !knownProvider(r.Provider) {
+			return fmt.Errorf("UNKNOWN_PROVIDER: %s", r.Provider)
+		}
 	}
-	if c.RoutingMode == "manual" && (c.DefaultRoute.Provider == "" || c.DefaultRoute.Profile == "") {
-		return fmt.Errorf("MANUAL_DEFAULT_ROUTE_REQUIRED")
+	if c.DefaultRoute.Provider != "" && !knownProvider(c.DefaultRoute.Provider) {
+		return fmt.Errorf("UNKNOWN_PROVIDER: %s", c.DefaultRoute.Provider)
+	}
+	if c.RoutingMode != "manual" && (c.DefaultRoute.Provider == "" || c.DefaultRoute.Profile == "") {
+		return fmt.Errorf("DEFAULT_ROUTE_REQUIRED")
 	}
 	return nil
+}
+
+func knownProvider(provider string) bool {
+	return provider == "claude" || provider == "codex" || provider == "opencode" || provider == "fake"
+}
+
+func (c Config) Resolve(stage, prompt string) (Decision, error) {
+	explicit, has := c.StageRoutes[stage]
+	if !knownStage(stage) {
+		return Decision{}, fmt.Errorf("UNKNOWN_STAGE: %s", stage)
+	}
+	var route Route
+	var explanation string
+	switch c.RoutingMode {
+	case "manual":
+		if !has {
+			return Decision{}, fmt.Errorf("MANUAL_ROUTE_REQUIRED: %s", stage)
+		}
+		route = explicit
+		explanation = "explicit manual stage route"
+	case "hybrid":
+		if has {
+			route = explicit
+			explanation = "explicit route override"
+		} else {
+			route = c.DefaultRoute
+			explanation = "hybrid default route"
+		}
+	case "automatic":
+		route = c.DefaultRoute
+		if risky(prompt) {
+			explanation = "automatic deterministic policy: high-risk task routed to configured default"
+		} else {
+			explanation = "automatic deterministic default route"
+		}
+	default:
+		return Decision{}, fmt.Errorf("INVALID_ROUTING_MODE: %s", c.RoutingMode)
+	}
+	if route.Provider == "" || route.Profile == "" {
+		return Decision{}, fmt.Errorf("ROUTE_INCOMPLETE: %s", stage)
+	}
+	return Decision{Stage: stage, Route: route, Mode: c.RoutingMode, Explanation: explanation}, nil
+}
+
+func knownStage(stage string) bool {
+	for _, key := range StageKeys {
+		if key == stage {
+			return true
+		}
+	}
+	return false
+}
+func risky(prompt string) bool {
+	p := strings.ToLower(prompt)
+	for _, term := range []string{"payment", "refund", "auth", "concurrency", "migration", "security"} {
+		if strings.Contains(p, term) {
+			return true
+		}
+	}
+	return false
 }

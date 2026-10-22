@@ -3,12 +3,53 @@ package speckit
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestRejectsUninitializedProject(t *testing.T) {
 	if _, e := Discover(t.TempDir()); e == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestStagePromptExpandsTrustedTemplateAndArguments(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, ".opencode", "commands")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	rel := filepath.Join(".opencode", "commands", "speckit.analyze.md")
+	if err := os.WriteFile(filepath.Join(root, rel), []byte("---\ndescription: analyze\n---\nReview read-only. Input: $ARGUMENTS"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	in := Installation{ProjectRoot: root, Commands: map[string]string{"analyze": "/speckit.analyze"}, CommandFiles: map[string]string{"analyze": rel}}
+	prompt, err := StagePrompt(in, "analyze", "task details")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, "Review read-only.") || !strings.Contains(prompt, "Input: task details") || strings.Contains(prompt, "description: analyze") {
+		t.Fatalf("prompt=%q", prompt)
+	}
+}
+
+func TestStagePromptRejectsTemplateSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "template.md")
+	if err := os.WriteFile(outside, []byte("unsafe"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, ".opencode", "commands")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	rel := filepath.Join(".opencode", "commands", "speckit.tasks.md")
+	if err := os.Symlink(outside, filepath.Join(root, rel)); err != nil {
+		t.Skip(err)
+	}
+	in := Installation{ProjectRoot: root, Commands: map[string]string{"tasks": "/speckit.tasks"}, CommandFiles: map[string]string{"tasks": rel}}
+	if _, err := StagePrompt(in, "tasks", ""); err == nil {
+		t.Fatal("template symlink outside project was accepted")
 	}
 }
 func TestRequireStage(t *testing.T) {

@@ -14,15 +14,15 @@ func (Adapter) Probe(ctx context.Context, p adapters.Profile) (adapters.Capabili
 	return adapters.ProbeBinary(p)
 }
 func (Adapter) Build(r adapters.Request) (runner.Invocation, error) {
-	if r.ReadOnly {
-		return runner.Invocation{}, fmt.Errorf("PERMISSION_DENIED: Claude read-only policy requires verified installed capability")
-	}
 	a := []string{"-p", "--output-format", "stream-json", "--verbose"}
+	if r.ReadOnly {
+		a = append(a, "--permission-mode", "plan")
+	}
 	if r.Model != "" {
 		a = append(a, "--model", r.Model)
 	}
 	if r.Effort != "" {
-		a = append(a, "--effort", r.Effort)
+		return runner.Invocation{}, fmt.Errorf("UNSUPPORTED_EFFORT: Claude Code CLI effort flag is not verified")
 	}
 	a = append(a, r.Prompt)
 	env := []string{}

@@ -49,3 +49,49 @@ func TestProviderNormalizerRejectsMalformedAndOversizedLines(t *testing.T) {
 		t.Fatal("oversized event accepted")
 	}
 }
+
+func TestReadOnlyAndEffortPoliciesFailClosed(t *testing.T) {
+	profile := adapters.Profile{Executable: "tool"}
+	claudeInvocation, err := (claude.Adapter{}).Build(adapters.Request{Profile: profile, ProjectRoot: "/tmp/work", Prompt: "inspect", ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundPlan := false
+	for i, arg := range claudeInvocation.Args {
+		if arg == "--permission-mode" && i+1 < len(claudeInvocation.Args) && claudeInvocation.Args[i+1] == "plan" {
+			foundPlan = true
+		}
+	}
+	if !foundPlan {
+		t.Fatal("Claude analyze route lacks plan permission mode")
+	}
+	if _, err = (claude.Adapter{}).Build(adapters.Request{Profile: profile, ProjectRoot: "/tmp/work", Prompt: "inspect", Effort: "high"}); err == nil {
+		t.Fatal("unverified Claude effort option was accepted")
+	}
+	if _, err = (opencode.Adapter{}).Build(adapters.Request{Profile: profile, ProjectRoot: "/tmp/work", Prompt: "inspect", ReadOnly: true}); err == nil {
+		t.Fatal("OpenCode read-only policy was accepted without a verified control")
+	}
+	in, err := (codex.Adapter{}).Build(adapters.Request{Profile: profile, ProjectRoot: "/tmp/work", Prompt: "inspect", ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok := false
+	for i, arg := range in.Args {
+		if arg == "--sandbox" && i+1 < len(in.Args) && in.Args[i+1] == "read-only" {
+			ok = true
+		}
+	}
+	if !ok {
+		t.Fatal("Codex read-only sandbox was not selected")
+	}
+}
+
+func TestProbeUsesVersionCommandWithoutCheckingCredentials(t *testing.T) {
+	c, err := adapters.ProbeBinary(adapters.Profile{Provider: adapters.Codex, Executable: "/bin/echo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.ExecutableFound || c.Version != "--version" || c.Authenticated != "NOT_PROBED" {
+		t.Fatalf("capability=%+v", c)
+	}
+}

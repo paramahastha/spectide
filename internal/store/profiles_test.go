@@ -27,6 +27,29 @@ func TestProfilesNeverStoreSecrets(t *testing.T) {
 	}
 }
 
+func TestProfileRejectsUnknownProviderAndShellPath(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	base := model.Profile{Name: "profile", Executable: "agent", AllowedScopes: []string{"project"}}
+	base.Provider = "shell"
+	if _, err = s.SaveProfile(context.Background(), base); err == nil {
+		t.Fatal("unknown provider accepted")
+	}
+	base.Provider = "codex"
+	base.Executable = "../agent"
+	if _, err = s.SaveProfile(context.Background(), base); err == nil {
+		t.Fatal("relative executable path accepted")
+	}
+	base.Executable = "codex"
+	base.AllowedScopes = nil
+	if _, err = s.SaveProfile(context.Background(), base); err == nil {
+		t.Fatal("unscoped profile accepted")
+	}
+}
+
 func TestRunStateTransitionsAndInterruptedRecovery(t *testing.T) {
 	s, err := Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {

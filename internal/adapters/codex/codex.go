@@ -2,6 +2,7 @@ package codex
 
 import (
 	"context"
+	"fmt"
 	"github.com/spectide/spectide/internal/adapters"
 	"github.com/spectide/spectide/internal/runner"
 )
@@ -23,10 +24,14 @@ func (Adapter) Build(r adapters.Request) (runner.Invocation, error) {
 		a = append(a, "--model", r.Model)
 	}
 	if r.Effort != "" {
-		a = append(a, "--config", "model_reasoning_effort=\""+r.Effort+"\"")
+		a = append(a, "--config", fmt.Sprintf("model_reasoning_effort=%q", r.Effort))
 	}
 	a = append(a, r.Prompt)
-	return runner.Invocation{Binary: r.Profile.Executable, Args: a, Dir: r.ProjectRoot}, nil
+	env := []string{}
+	if r.Profile.ConfigDir != "" {
+		env = append(env, "CODEX_HOME="+r.Profile.ConfigDir)
+	}
+	return runner.Invocation{Binary: r.Profile.Executable, Args: a, Dir: r.ProjectRoot, Env: env}, nil
 }
 func (Adapter) Normalize(raw []byte) ([]adapters.Event, error) {
 	return adapters.NormalizeJSONL(adapters.Codex, raw)

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -38,5 +39,30 @@ func TestMissingConfigGetsDefaults(t *testing.T) {
 	c, err := Load(filepath.Join(t.TempDir(), "missing.json"))
 	if err != nil || c.RoutingMode != "hybrid" {
 		t.Fatalf("%+v %v", c, err)
+	}
+}
+
+func TestManualHybridAndAutomaticRouting(t *testing.T) {
+	c := Default()
+	c.RoutingMode = "manual"
+	c.DefaultRoute = Route{}
+	if _, err := c.Resolve("plan", "task"); err == nil {
+		t.Fatal("manual mode silently used a default")
+	}
+	c.StageRoutes = map[string]Route{"plan": {Provider: "codex", Profile: "work"}}
+	d, err := c.Resolve("plan", "task")
+	if err != nil || d.Route.Profile != "work" || d.Explanation != "explicit manual stage route" {
+		t.Fatalf("decision=%+v err=%v", d, err)
+	}
+	c = Default()
+	c.StageRoutes = map[string]Route{"plan": {Provider: "codex", Profile: "work"}}
+	d, err = c.Resolve("plan", "task")
+	if err != nil || d.Route.Provider != "codex" {
+		t.Fatalf("hybrid decision=%+v err=%v", d, err)
+	}
+	c.RoutingMode = "automatic"
+	d, err = c.Resolve("analyze", "security migration")
+	if err != nil || !strings.Contains(d.Explanation, "high-risk") {
+		t.Fatalf("automatic decision=%+v err=%v", d, err)
 	}
 }

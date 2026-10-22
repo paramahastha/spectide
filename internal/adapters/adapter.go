@@ -56,13 +56,25 @@ type Adapter interface {
 }
 
 func ProbeBinary(p Profile) (Capability, error) {
-	c := Capability{Provider: p.Provider, Authenticated: "unknown", Warnings: []string{"Authentication is never read from credential files."}}
+	c := Capability{Provider: p.Provider, Authenticated: "NOT_PROBED", Warnings: []string{"Authentication is never read from credential files."}}
 	path, e := exec.LookPath(p.Executable)
 	if e != nil {
 		return c, fmt.Errorf("EXECUTABLE_NOT_FOUND: %s", p.Executable)
 	}
 	c.ExecutableFound = true
-	c.Version = strings.TrimSpace(path)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	result, err := runner.Run(ctx, runner.Invocation{Binary: path, Args: []string{"--version"}})
+	if err != nil {
+		return c, fmt.Errorf("PROVIDER_VERSION_PROBE_FAILED: %w", err)
+	}
+	c.Version = strings.TrimSpace(result.Stdout)
+	if c.Version == "" {
+		c.Version = strings.TrimSpace(result.Stderr)
+	}
+	if c.Version == "" {
+		c.Version = "unknown"
+	}
 	return c, nil
 }
 

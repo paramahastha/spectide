@@ -43,10 +43,10 @@
 
 - [ ] T018 [P] [US2] Create adapter interface, typed errors, and invocation policy tests in `internal/adapters/`
 - [ ] T019 [P] [US2] Implement fake adapter scripted failures, cancellation, and rate limits in `internal/adapters/fake/`
-- [ ] T020 [P] [US2] Implement Claude fixture adapter and capability probe in `internal/adapters/claude/`
-- [ ] T021 [P] [US2] Implement Codex fixture adapter and capability probe in `internal/adapters/codex/`
-- [ ] T022 [P] [US2] Implement OpenCode fixture adapter and capability probe in `internal/adapters/opencode/`
-- [ ] T023 [US2] Implement safe subprocess runner with explicit arguments, restricted environment, and cancellation in `internal/runner/`
+- [x] T020 [P] [US2] Implement Claude fixture adapter and capability probe in `internal/adapters/claude/`
+- [x] T021 [P] [US2] Implement Codex fixture adapter and capability probe in `internal/adapters/codex/`
+- [x] T022 [P] [US2] Implement OpenCode fixture adapter and capability probe in `internal/adapters/opencode/`
+- [x] T023 [US2] Implement safe subprocess runner with explicit arguments, restricted environment, and cancellation in `internal/runner/`
 - [ ] T048 [US2] Add runner timeout, bounded-output, and process-group cancellation cleanup tests in `internal/runner/`
 - [ ] T024 [US2] Implement routing modes, capability validation, fallback authorization, and decision audit trail in `internal/routing/`
 - [ ] T025 [US2] Add profile/model commands and offline probe output in `internal/cli/`
