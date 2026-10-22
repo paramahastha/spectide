@@ -80,7 +80,7 @@
 - [ ] T034 [US4] Implement pause/resume/cancel, process reconciliation, safe checkpoint resume, and drift detection in `internal/workflow/`
 - [ ] T035 [US4] Implement append-only convergence task validation and final-review return loop in `internal/speckit/` and `internal/workflow/`
 - [ ] T036 [US4] Add recovery, retry, no-progress, and secret-leak end-to-end scenarios in `internal/workflow/` and `internal/api/`
-- [ ] T049 [US4] Add a 20-run deterministic simulated lifecycle acceptance test proving SC-002 in `internal/workflow/`
+- [x] T049 [US4] Add a 20-run deterministic simulated lifecycle acceptance test proving SC-002 in `internal/workflow/`
 
 ## Phase 7: User Story 5 — Local installation and validation (P2)
 

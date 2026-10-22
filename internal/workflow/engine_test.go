@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
 	"github.com/spectide/spectide/internal/store"
@@ -38,6 +39,42 @@ func TestFakeLifecyclePersistsEvidence(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("workflow did not complete")
+}
+
+func TestTwentyDeterministicRunsCompleteWithRequiredEvidence(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "spectide.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	eng := New(s)
+	root := t.TempDir()
+	for i := 0; i < 20; i++ {
+		project := filepath.Join(root, fmt.Sprintf("project-%02d", i))
+		run, err := eng.Start(context.Background(), project, fmt.Sprintf("deterministic acceptance run %d", i))
+		if err != nil {
+			t.Fatalf("start run %d: %v", i, err)
+		}
+		result, err := eng.Wait(context.Background(), run.ID)
+		if err != nil {
+			t.Fatalf("wait run %d: %v", i, err)
+		}
+		if result.State != model.Completed {
+			t.Fatalf("run %d ended %s", i, result.State)
+		}
+		report, err := s.Report(context.Background(), run.ID)
+		if err != nil {
+			t.Fatalf("report run %d: %v", i, err)
+		}
+		if len(report.Stages) != 12 || len(report.Decisions) != 12 || len(report.Gates) != 5 {
+			t.Fatalf("run %d evidence counts stages=%d decisions=%d gates=%d", i, len(report.Stages), len(report.Decisions), len(report.Gates))
+		}
+		for _, gate := range report.Gates {
+			if gate.Verdict != "PASS" || !strings.Contains(strings.ToLower(gate.Evidence), "simulated") {
+				t.Fatalf("run %d has unevidenced simulated gate: %+v", i, gate)
+			}
+		}
+	}
 }
 
 func TestOnlyOneActiveWriterPerWorkspace(t *testing.T) {

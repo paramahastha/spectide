@@ -174,6 +174,17 @@
 
 - Provider stage orchestration and end-to-end retry/recovery evidence remain open.
 
+### Phase checkpoint — deterministic lifecycle repetition
+
+**Verified in this checkpoint**
+
+- Added a 20-run deterministic acceptance test for SC-002. Every run must complete with all 12 stages, 12 routing decisions, and five passing gates whose evidence is labeled simulated.
+- `go test ./internal/workflow -run TestTwentyDeterministicRunsCompleteWithRequiredEvidence -count=1` passed in 23 seconds. T049 is checked complete.
+
+**Remaining**
+
+- Failure injection, bounded remediation, convergence additions, and restart recovery scenarios remain open under T016 and T034–T036.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified
