@@ -37,7 +37,7 @@ func TestFakeLifecyclePersistsEvidence(t *testing.T) {
 			if err != nil || len(configuration.SHA256) != 64 || !strings.Contains(configuration.ConfigJSON, `"simulated":true`) {
 				t.Fatalf("effective run configuration=%+v err=%v", configuration, err)
 			}
-			if len(rep.Stages) != 12 || len(rep.Decisions) != 12 || len(rep.Gates) != 5 || len(rep.Checkpoints) != 12 {
+			if len(rep.Stages) != 12 || len(rep.Decisions) != 12 || len(rep.Gates) != 5 || len(rep.Checkpoints) != 13 {
 				t.Fatalf("stages=%d decisions=%d gates=%d checkpoints=%d", len(rep.Stages), len(rep.Decisions), len(rep.Gates), len(rep.Checkpoints))
 			}
 			for index, checkpoint := range rep.Checkpoints {
@@ -50,11 +50,16 @@ func TestFakeLifecyclePersistsEvidence(t *testing.T) {
 				if err := json.Unmarshal([]byte(checkpoint.StateJSON), &cursor); err != nil {
 					t.Fatal(err)
 				}
-				wantNext := ""
-				if index+1 < len(stages) {
-					wantNext = stages[index+1]
+				stage, completed, wantNext := "starting", "", stages[0]
+				if index > 0 {
+					stage, completed = stages[index-1], stages[index-1]
+					if index < len(stages) {
+						wantNext = stages[index]
+					} else {
+						wantNext = ""
+					}
 				}
-				if checkpoint.Stage != stages[index] || cursor.CompletedStage != stages[index] || cursor.NextStage != wantNext || cursor.ConfigHash != configuration.SHA256 || !cursor.CursorOnly {
+				if checkpoint.Stage != stage || cursor.CompletedStage != completed || cursor.NextStage != wantNext || cursor.ConfigHash != configuration.SHA256 || !cursor.CursorOnly {
 					t.Fatalf("checkpoint %d does not identify the completed cursor: %+v %+v", index, checkpoint, cursor)
 				}
 			}
@@ -329,7 +334,7 @@ func TestRunCanPauseResumeAndCancelFromAnotherEngine(t *testing.T) {
 	defer s.Close()
 	owner := New(s)
 	control := New(s) // Models a separate CLI process sharing the durable store.
-	run, err := owner.Start(context.Background(), t.TempDir(), "pause and resume")
+	run, err := owner.Start(context.Background(), initCheckpointGitProject(t), "pause and resume")
 	if err != nil {
 		t.Fatal(err)
 	}

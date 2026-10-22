@@ -452,6 +452,13 @@
 - Updated Vite to 7.3.7 and Vitest to 4.1.12 after the new dev-test dependencies exposed advisories; `npm audit --audit-level=low` reports zero vulnerabilities.
 - Full `make verify` passed, including Go suites, dashboard typecheck/tests/build, secret scan, and offline smoke. Latest SC-001: 19.005 ms. Browser E2E, real 200% zoom, rendered focus/reduced-motion checks, and screenshots remain NOT_RUN; no browser executable is installed, and the earlier localhost browser access gate denied the browser inspection. T031 remains unchecked; details are in [the accessibility audit](accessibility-audit.md).
 
+### Phase checkpoint — verified pause boundaries and restart recovery
+
+- Pause requests now take effect at the next stage boundary; in-flight stages finish and checkpoint before the run becomes paused. Both live-owner and expired-owner resume paths verify canonical workspace identity, exclusive lock ownership, immutable run configuration, checkpoint row/state/cursor identity, registered and canonical Spec-Kit artifact content, Git HEAD/index, managed-path hashes, and saved loop-budget counters.
+- Expired-owner takeover is transactional and limited to a paused run whose workspace lock still belongs to it. A mismatch blocks the run with `WORKSPACE_DRIFT`, appends `run.interrupted`, releases abandoned ownership, and preserves checkpoints, artifacts, and workspace content. Recovery never resets, cleans, or overwrites user files. Resume a paused run before starting another run after a process restart because start-time reconciliation blocks expired owners.
+- Added tests for valid restart continuation, tracked managed-file drift, ignored registered-artifact drift, Git HEAD drift, checkpoint identity/configuration mismatch, and unchanged recovery evidence. `go test ./internal/workflow ./internal/store -count=1` and full `make verify` passed. Latest SC-001: 29.799 ms; offline smoke remained `SIMULATED`.
+- T034 is complete in the canonical task ledger. T031 browser checks, T036 cross-layer failure/secret-leak/exhaustion scenarios, T045 official Spec-Kit convergence, and T046 screenshots/release reporting remain open.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified

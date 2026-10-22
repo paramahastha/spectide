@@ -34,7 +34,6 @@ type Engine struct {
 	discover func(string) (speckit.Installation, error)
 	mu       sync.Mutex
 	cancels  map[string]context.CancelFunc
-	pauses   map[string]chan struct{}
 	resumes  map[string]chan struct{}
 	locks    map[string]string
 }
@@ -52,7 +51,7 @@ func NewWithAdapters(s *store.Store, providers ...adapters.Adapter) *Engine {
 			registry[provider.Name()] = provider
 		}
 	}
-	return &Engine{store: s, ownerID: uuid.NewString(), adapters: registry, discover: speckit.Discover, cancels: map[string]context.CancelFunc{}, pauses: map[string]chan struct{}{}, resumes: map[string]chan struct{}{}, locks: map[string]string{}}
+	return &Engine{store: s, ownerID: uuid.NewString(), adapters: registry, discover: speckit.Discover, cancels: map[string]context.CancelFunc{}, resumes: map[string]chan struct{}{}, locks: map[string]string{}}
 }
 
 var stages = []string{"constitution", "specify", "clarify", "plan", "checklist", "tasks", "analyze", "implement", "tests", "converge", "final_review", "report"}
@@ -170,15 +169,24 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 		_ = e.store.SetRunState(context.Background(), r.ID, model.Blocked)
 		return r, false, nil
 	}
+	configuration, err := e.store.RunConfiguration(ctx, r.ID)
+	if err == nil {
+		err = e.saveCursorCheckpoint(ctx, r, featureDir, "starting", stages[0], configuration.SHA256, "LOCAL", LoopLimits{})
+	}
+	if err != nil {
+		_ = e.store.Event(context.Background(), r.ID, "", "checkpoint.failed", "error", map[string]any{"reason": safeStageError(err)})
+		_ = e.store.SetRunState(context.Background(), r.ID, model.Blocked)
+		_ = e.store.ReleaseWorkspaceLock(context.Background(), workspace, r.ID)
+		return r, false, err
+	}
 	child, cancel := context.WithCancel(context.Background())
 	e.mu.Lock()
 	e.cancels[r.ID] = cancel
-	e.pauses[r.ID] = make(chan struct{}, 1)
 	e.resumes[r.ID] = make(chan struct{}, 1)
 	e.locks[r.ID] = workspace
 	e.mu.Unlock()
 	go e.heartbeat(child, r.ID)
-	go e.execute(child, r, decisions, installation, featureDir)
+	go e.execute(child, r, decisions, installation, featureDir, 0, LoopLimits{}, nil)
 	return r, false, nil
 }
 
@@ -266,9 +274,6 @@ func (e *Engine) Cancel(ctx context.Context, id string) error {
 }
 
 func (e *Engine) Pause(id string) error {
-	e.mu.Lock()
-	pause := e.pauses[id]
-	e.mu.Unlock()
 	run, err := e.store.GetRun(context.Background(), id)
 	if err != nil {
 		return err
@@ -276,14 +281,7 @@ func (e *Engine) Pause(id string) error {
 	if run.State != model.Running {
 		return fmt.Errorf("RUN_CONTROL_NOT_ALLOWED: pause for %s", run.State)
 	}
-	if pause == nil {
-		return e.store.RequestRunControl(context.Background(), id, "pause")
-	}
-	select {
-	case pause <- struct{}{}:
-	default:
-	}
-	return nil
+	return e.store.RequestRunControl(context.Background(), id, "pause")
 }
 
 func (e *Engine) Resume(id string) error {
@@ -297,24 +295,155 @@ func (e *Engine) Resume(id string) error {
 	if run.State != model.Paused {
 		return fmt.Errorf("RUN_CONTROL_NOT_ALLOWED: resume for %s", run.State)
 	}
-	if resume == nil {
-		fresh, err := e.store.RunOwnerFresh(context.Background(), id, time.Now().UTC())
-		if err != nil {
+	canonical, canonicalErr := canonicalWorkspace(run.Project)
+	if canonicalErr != nil || canonical != run.Project {
+		return e.blockUnverifiedRestart(run, fmt.Errorf("WORKSPACE_DRIFT: canonical workspace identity changed"))
+	}
+	if err = e.store.VerifyRunWorkspaceLock(context.Background(), canonical, id); err != nil {
+		return e.blockUnverifiedRestart(run, err)
+	}
+	configuration, err := e.store.RunConfiguration(context.Background(), id)
+	if err != nil {
+		return e.blockUnverifiedRestart(run, err)
+	}
+	_, checkpointState, err := e.verifyRestartCheckpoint(context.Background(), run, configuration)
+	if err != nil {
+		return e.blockUnverifiedRestart(run, err)
+	}
+	pausedStage, err := e.latestPausedStage(id)
+	if err != nil || pausedStage == "" || pausedStage != checkpointState.NextStage {
+		return e.blockUnverifiedRestart(run, fmt.Errorf("WORKSPACE_DRIFT: paused stage does not match checkpoint cursor"))
+	}
+	fresh, err := e.store.RunOwnerFresh(context.Background(), id, time.Now().UTC())
+	if err != nil {
+		return e.blockUnverifiedRestart(run, err)
+	}
+	if fresh {
+		if resume == nil {
+			return e.store.RequestRunControl(context.Background(), id, "resume")
+		}
+		select {
+		case resume <- struct{}{}:
+		default:
+		}
+		return nil
+	}
+	if resume != nil {
+		return e.blockUnverifiedRestart(run, fmt.Errorf("WORKSPACE_DRIFT: owner lease expired while local worker remains registered"))
+	}
+	{
+		decisions, parseErr := parseStoredDecisions(configuration.ConfigJSON)
+		if parseErr != nil {
+			return e.blockUnverifiedRestart(run, parseErr)
+		}
+		installation, featureDir, discoverErr := e.resumeSpecKit(run.Project, decisions)
+		if discoverErr != nil {
+			return e.blockUnverifiedRestart(run, discoverErr)
+		}
+		budget, budgetErr := restoreLoopBudget(DefaultLoopLimits(), checkpointState.LoopCounts)
+		if budgetErr != nil {
+			return e.blockUnverifiedRestart(run, budgetErr)
+		}
+		if err = e.store.ClaimExpiredPausedRun(context.Background(), id, canonical, e.ownerID, time.Now().UTC()); err != nil {
 			return err
 		}
-		if !fresh {
-			if err = e.store.RecoverAbandonedRuns(context.Background(), time.Now().UTC()); err != nil {
-				return err
-			}
-			return fmt.Errorf("WORKSPACE_DRIFT: owner lease expired; restart resume requires a verified checkpoint and matching workspace, artifact, and Git fingerprints")
+		if _, _, err = e.verifyRestartCheckpoint(context.Background(), run, configuration); err != nil {
+			return e.blockUnverifiedRestart(run, err)
 		}
-		return e.store.RequestRunControl(context.Background(), id, "resume")
+		if err = e.store.ClearRunControl(context.Background(), id); err != nil {
+			_ = e.store.ReleaseWorkspaceLock(context.Background(), canonical, id)
+			return err
+		}
+		gates, gateErr := e.store.Gates(context.Background(), id)
+		if gateErr != nil {
+			_ = e.store.ReleaseWorkspaceLock(context.Background(), canonical, id)
+			return gateErr
+		}
+		gateVerdicts := make(map[string]string, len(gates))
+		for _, gate := range gates {
+			if gate.Verdict == "PASS" {
+				gateVerdicts[gate.Key] = gate.Verdict
+			}
+		}
+		startAt := indexOfStage(checkpointState.NextStage)
+		if startAt < 0 {
+			_ = e.store.ReleaseWorkspaceLock(context.Background(), canonical, id)
+			return e.blockUnverifiedRestart(run, fmt.Errorf("WORKSPACE_DRIFT: checkpoint stage cursor is invalid"))
+		}
+		child, cancel := context.WithCancel(context.Background())
+		e.mu.Lock()
+		e.cancels[id] = cancel
+		e.resumes[id] = make(chan struct{}, 1)
+		e.locks[id] = canonical
+		e.mu.Unlock()
+		go e.heartbeat(child, id)
+		go e.execute(child, run, decisions, installation, featureDir, startAt, budget.Counts(), gateVerdicts)
+		return nil
 	}
-	select {
-	case resume <- struct{}{}:
-	default:
+}
+
+func (e *Engine) blockUnverifiedRestart(run model.Run, cause error) error {
+	e.mu.Lock()
+	cancel := e.cancels[run.ID]
+	e.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
-	return nil
+	if err := e.store.BlockPausedRunForWorkspaceDrift(context.Background(), run.ID, cause.Error()); err != nil {
+		return fmt.Errorf("WORKSPACE_DRIFT: restart resume denied: %v (failed to persist drift block: %w)", cause, err)
+	}
+	return fmt.Errorf("WORKSPACE_DRIFT: restart resume denied: %w", cause)
+}
+
+func (e *Engine) latestPausedStage(runID string) (string, error) {
+	events, err := e.store.Events(context.Background(), runID, 0)
+	if err != nil {
+		return "", err
+	}
+	stage := ""
+	for _, event := range events {
+		switch event.Type {
+		case "run.resumed":
+			stage = ""
+		case "run.paused":
+			if value, ok := event.Payload["stage"].(string); ok {
+				stage = value
+			}
+		}
+	}
+	return stage, nil
+}
+
+func (e *Engine) resumeSpecKit(project string, decisions map[string]config.Decision) (speckit.Installation, string, error) {
+	for _, stage := range stages {
+		if decisions[stage].Route.Provider == "fake" {
+			continue
+		}
+		if _, available := e.adapters[adapters.ProviderName(decisions[stage].Route.Provider)]; !available {
+			return speckit.Installation{}, "", fmt.Errorf("PROVIDER_ADAPTER_UNAVAILABLE: %s", decisions[stage].Route.Provider)
+		}
+		installation, err := e.discover(project)
+		if err != nil {
+			return speckit.Installation{}, "", err
+		}
+		if !installation.Verified {
+			return speckit.Installation{}, "", fmt.Errorf("SPEC_KIT_INTEGRATION_UNVERIFIED")
+		}
+		featureDir, err := speckit.DiscoverFeatureDirectory(project)
+		if err != nil {
+			return speckit.Installation{}, "", err
+		}
+		for _, routedStage := range stages {
+			if decisions[routedStage].Route.Provider == "fake" || !officialStage(routedStage) {
+				continue
+			}
+			if _, err = speckit.RequireStage(installation, liveSpecKitStage(routedStage)); err != nil {
+				return speckit.Installation{}, "", err
+			}
+		}
+		return installation, featureDir, nil
+	}
+	return speckit.Installation{}, "", nil
 }
 
 func (e *Engine) heartbeat(ctx context.Context, runID string) {
@@ -370,7 +499,7 @@ func (e *Engine) markResumed(ctx context.Context, runID, stage string) bool {
 	return true
 }
 
-func (e *Engine) pausePoint(ctx context.Context, runID, stage string, pause, resume <-chan struct{}) bool {
+func (e *Engine) pausePoint(ctx context.Context, runID, stage string, resume <-chan struct{}) bool {
 	if action, err := e.store.RunControl(ctx, runID); err != nil {
 		return false
 	} else if action == "cancel" {
@@ -380,18 +509,14 @@ func (e *Engine) pausePoint(ctx context.Context, runID, stage string, pause, res
 			return false
 		}
 	}
-	select {
-	case <-ctx.Done():
-		return false
-	case <-pause:
-		return e.pauseUntilResume(ctx, runID, stage, resume)
-	default:
-		return true
-	}
+	return ctx.Err() == nil
 }
 
 func (e *Engine) cancelRun(runID, stage, stageID string) {
 	ctx := context.Background()
+	if run, err := e.store.GetRun(ctx, runID); err == nil && run.State == model.Blocked {
+		return
+	}
 	if stageID != "" {
 		_ = e.store.SetStage(ctx, stageID, model.Skipped)
 	}
@@ -399,8 +524,7 @@ func (e *Engine) cancelRun(runID, stage, stageID string) {
 	_ = e.store.SetRunState(ctx, runID, model.Cancelled)
 }
 
-func (e *Engine) waitStage(ctx context.Context, runID, stage string, duration time.Duration, pause, resume <-chan struct{}) bool {
-	deadline := time.Now().Add(duration)
+func (e *Engine) waitStage(ctx context.Context, runID string, duration time.Duration) bool {
 	timer := time.NewTimer(duration)
 	defer timer.Stop()
 	controlTicker := time.NewTicker(50 * time.Millisecond)
@@ -411,43 +535,10 @@ func (e *Engine) waitStage(ctx context.Context, runID, stage string, duration ti
 			return false
 		case <-timer.C:
 			return true
-		case <-pause:
-			if !e.pauseUntilResume(ctx, runID, stage, resume) {
-				return false
-			}
-			remaining := time.Until(deadline)
-			if remaining < 0 {
-				remaining = 0
-			}
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			timer.Reset(remaining)
-			deadline = time.Now().Add(remaining)
 		case <-controlTicker.C:
 			action, err := e.store.RunControl(ctx, runID)
 			if err != nil || action == "cancel" {
 				return false
-			}
-			if action == "pause" {
-				if !e.pauseUntilResume(ctx, runID, stage, resume) {
-					return false
-				}
-				remaining := time.Until(deadline)
-				if remaining < 0 {
-					remaining = 0
-				}
-				if !timer.Stop() {
-					select {
-					case <-timer.C:
-					default:
-					}
-				}
-				timer.Reset(remaining)
-				deadline = time.Now().Add(remaining)
 			}
 		}
 	}
@@ -475,9 +566,9 @@ func (e *Engine) Wait(ctx context.Context, id string) (model.Run, error) {
 	}
 }
 
-func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]config.Decision, installation speckit.Installation, featureDir string) {
+func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]config.Decision, installation speckit.Installation, featureDir string, startAt int, restoredCounts LoopLimits, restoredGates map[string]string) {
 	e.mu.Lock()
-	pause, resume := e.pauses[r.ID], e.resumes[r.ID]
+	resume := e.resumes[r.ID]
 	e.mu.Unlock()
 	_ = e.store.SetRunState(ctx, r.ID, model.Running)
 	configuration, err := e.store.RunConfiguration(ctx, r.ID)
@@ -486,7 +577,7 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 		e.finish(r.ID)
 		return
 	}
-	loopBudget, err := NewLoopBudget(DefaultLoopLimits())
+	loopBudget, err := restoreLoopBudget(DefaultLoopLimits(), restoredCounts)
 	if err != nil {
 		_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
 		e.finish(r.ID)
@@ -494,13 +585,17 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 	}
 	hasLiveStages := false
 	runGateVerdicts := make(map[string]string)
+	for key, verdict := range restoredGates {
+		runGateVerdicts[key] = verdict
+	}
 	for _, decision := range decisions {
 		if decision.Route.Provider != "fake" {
 			hasLiveStages = true
 			break
 		}
 	}
-	for i, key := range stages {
+	for i := startAt; i < len(stages); i++ {
+		key := stages[i]
 		select {
 		case <-ctx.Done():
 			e.cancelRun(r.ID, key, "")
@@ -508,7 +603,7 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			return
 		default:
 		}
-		if !e.pausePoint(ctx, r.ID, key, pause, resume) {
+		if !e.pausePoint(ctx, r.ID, key, resume) {
 			if ctx.Err() != nil {
 				e.cancelRun(r.ID, key, "")
 			} else if action, _ := e.store.RunControl(context.Background(), r.ID); action == "cancel" {
@@ -551,7 +646,7 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			if i+1 < len(stages) {
 				next = stages[i+1]
 			}
-			if err := e.completeLiveQualityStage(ctx, r.ID, st.ID, key, next, configuration.SHA256, "converged", "bounded append-only convergence completed with passing required gates", loopBudget); err != nil {
+			if err := e.completeLiveQualityStage(ctx, r.ID, st.ID, key, next, configuration.SHA256, "converged", "bounded append-only convergence completed with passing required gates", loopBudget, featureDir); err != nil {
 				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
 				e.finish(r.ID)
 				return
@@ -586,14 +681,7 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			if i+1 < len(stages) {
 				next = stages[i+1]
 			}
-			state, marshalErr := json.Marshal(map[string]any{"completed_stage": key, "next_stage": next, "configuration_sha256": configuration.SHA256, "cursor_only": true, "execution": "LIVE", "loop_counts": loopBudget.Counts()})
-			if marshalErr != nil {
-				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
-				e.finish(r.ID)
-				return
-			}
-			checkpoint := model.Checkpoint{RunID: r.ID, Stage: key, StateJSON: string(state), WorkspaceFingerprint: workspaceIdentityFingerprint(r.Project)}
-			if _, checkpointErr := e.store.SaveCheckpoint(ctx, checkpoint); checkpointErr != nil {
+			if checkpointErr := e.saveCursorCheckpoint(ctx, r, featureDir, key, next, configuration.SHA256, "LIVE", loopBudget.Counts()); checkpointErr != nil {
 				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
 				e.finish(r.ID)
 				return
@@ -623,14 +711,7 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			if i+1 < len(stages) {
 				next = stages[i+1]
 			}
-			state, marshalErr := json.Marshal(map[string]any{"completed_stage": key, "next_stage": next, "configuration_sha256": configuration.SHA256, "cursor_only": true, "execution": "LOCAL", "loop_counts": loopBudget.Counts()})
-			if marshalErr != nil {
-				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
-				e.finish(r.ID)
-				return
-			}
-			checkpoint := model.Checkpoint{RunID: r.ID, Stage: key, StateJSON: string(state), WorkspaceFingerprint: workspaceIdentityFingerprint(r.Project)}
-			if _, checkpointErr := e.store.SaveCheckpoint(ctx, checkpoint); checkpointErr != nil {
+			if checkpointErr := e.saveCursorCheckpoint(ctx, r, featureDir, key, next, configuration.SHA256, "LOCAL", loopBudget.Counts()); checkpointErr != nil {
 				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
 				e.finish(r.ID)
 				return
@@ -654,7 +735,7 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			if i+1 < len(stages) {
 				next = stages[i+1]
 			}
-			if err := e.completeLiveQualityStage(ctx, r.ID, st.ID, key, next, configuration.SHA256, "final_review", "read-only final review and any bounded fix/test/convergence cycle completed", loopBudget); err != nil {
+			if err := e.completeLiveQualityStage(ctx, r.ID, st.ID, key, next, configuration.SHA256, "final_review", "read-only final review and any bounded fix/test/convergence cycle completed", loopBudget, featureDir); err != nil {
 				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
 				e.finish(r.ID)
 				return
@@ -692,21 +773,14 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			if i+1 < len(stages) {
 				next = stages[i+1]
 			}
-			state, marshalErr := json.Marshal(map[string]any{"completed_stage": key, "next_stage": next, "configuration_sha256": configuration.SHA256, "cursor_only": true, "execution": "LIVE"})
-			if marshalErr != nil {
-				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
-				e.finish(r.ID)
-				return
-			}
-			checkpoint := model.Checkpoint{RunID: r.ID, Stage: key, StateJSON: string(state), WorkspaceFingerprint: workspaceIdentityFingerprint(r.Project)}
-			if _, checkpointErr := e.store.SaveCheckpoint(ctx, checkpoint); checkpointErr != nil {
+			if checkpointErr := e.saveCursorCheckpoint(ctx, r, featureDir, key, next, configuration.SHA256, "LIVE", loopBudget.Counts()); checkpointErr != nil {
 				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
 				e.finish(r.ID)
 				return
 			}
 			continue
 		}
-		if !e.waitStage(ctx, r.ID, key, 90*time.Millisecond, pause, resume) {
+		if !e.waitStage(ctx, r.ID, 90*time.Millisecond) {
 			if ctx.Err() != nil {
 				e.cancelRun(r.ID, key, st.ID)
 			} else if action, _ := e.store.RunControl(context.Background(), r.ID); action == "cancel" {
@@ -731,14 +805,7 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 		if i+1 < len(stages) {
 			next = stages[i+1]
 		}
-		state, marshalErr := json.Marshal(map[string]any{"completed_stage": key, "next_stage": next, "configuration_sha256": configuration.SHA256, "cursor_only": true})
-		if marshalErr != nil {
-			_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
-			e.finish(r.ID)
-			return
-		}
-		checkpoint := model.Checkpoint{RunID: r.ID, Stage: key, StateJSON: string(state), WorkspaceFingerprint: workspaceIdentityFingerprint(r.Project)}
-		if _, checkpointErr := e.store.SaveCheckpoint(ctx, checkpoint); checkpointErr != nil {
+		if checkpointErr := e.saveCursorCheckpoint(ctx, r, featureDir, key, next, configuration.SHA256, "SIMULATED", loopBudget.Counts()); checkpointErr != nil {
 			_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
 			e.finish(r.ID)
 			return
@@ -779,7 +846,6 @@ func (e *Engine) finish(id string) {
 		cancel()
 	}
 	delete(e.cancels, id)
-	delete(e.pauses, id)
 	delete(e.resumes, id)
 	_ = e.store.ClearRunControl(context.Background(), id)
 	if path := e.locks[id]; path != "" {

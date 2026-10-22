@@ -2,12 +2,11 @@ package workflow
 
 import (
 	"context"
-	"encoding/json"
 
 	"github.com/spectide/spectide/internal/model"
 )
 
-func (e *Engine) completeLiveQualityStage(ctx context.Context, runID, stageID, stage, next, configHash, gate, evidence string, budget *LoopBudget) error {
+func (e *Engine) completeLiveQualityStage(ctx context.Context, runID, stageID, stage, next, configHash, gate, evidence string, budget *LoopBudget, featureDir string) error {
 	if err := e.store.Gate(ctx, runID, gate, "PASS", evidence); err != nil {
 		return err
 	}
@@ -17,17 +16,11 @@ func (e *Engine) completeLiveQualityStage(ctx context.Context, runID, stageID, s
 	if err := e.store.Event(ctx, runID, stage, "stage.completed", "info", map[string]any{"execution": "LIVE", "gate": gate, "verdict": "PASS", "evidence": evidence}); err != nil {
 		return err
 	}
-	state, err := json.Marshal(map[string]any{"completed_stage": stage, "next_stage": next, "configuration_sha256": configHash, "cursor_only": true, "execution": "LIVE", "loop_counts": budget.Counts()})
-	if err != nil {
-		return err
-	}
 	run, err := e.store.GetRun(ctx, runID)
 	if err != nil {
 		return err
 	}
-	checkpoint := model.Checkpoint{RunID: runID, Stage: stage, StateJSON: string(state), WorkspaceFingerprint: workspaceIdentityFingerprint(run.Project)}
-	_, err = e.store.SaveCheckpoint(ctx, checkpoint)
-	return err
+	return e.saveCursorCheckpoint(ctx, run, featureDir, stage, next, configHash, "LIVE", budget.Counts())
 }
 
 func (e *Engine) failLiveQualityStage(ctx context.Context, runID, stage, stageID, gate string, cause error, runCtx context.Context) {
