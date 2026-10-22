@@ -4,6 +4,10 @@
 
 **Tests**: Required by FR-028 and FR-029. Every story has automated acceptance coverage.
 
+## Phase 0: Specification Analysis Gate
+
+- [x] T044 Run Spec-Kit analyze before implementation, resolve blocking findings in their owning artifacts, and record evidence in `specs/001-build-spectide/analysis.md`
+
 ## Phase 1: Setup
 
 - [x] T001 Create the Go module and base repository structure in `go.mod`, `cmd/`, `internal/`, `docs/`, `examples/`, and `testdata/`
@@ -95,13 +99,12 @@
 - [ ] T042 [P] Link FR-001 through FR-030 to automated evidence in `docs/acceptance-ledger.md`
 - [ ] T043 [P] Run format, static analysis, unit, integration, fake E2E, security, dashboard, and smoke checks through `Makefile` and CI
 - [ ] T043a [P] Measure local SSE visibility p95 and slow-client behavior with the 10,000-event fixture in `internal/api/`
-- [ ] T044 Run Spec-Kit analyze, remediate all blocking findings, and record evidence in `specs/001-build-spectide/analysis.md`
 - [ ] T045 Run implementation verification and official converge; implement appended work and repeat until converged or a documented blocker in `docs/implementation-progress.md`
 - [ ] T046 Capture actual dashboard screenshots and publish final validation/release-readiness report in `docs/screenshots/` and `docs/final-verification.md`
 
 ## Dependencies & Execution Order
 
-`T001–T004 → T005–T011 → US1/US2/US3 → US4 → US5 → T042–T046`. US2 adapter work and the first embedded dashboard can proceed in parallel after foundational types; shared workflow contracts must not be parallel-written. The minimum demonstrable slice is US1 with T012–T017, then it must be analyzed before extension.
+`spec.md + plan.md + tasks.md → T044 → T001–T004 → T005–T011 → US1/US2/US3 → US4 → US5 → T042–T043a → T045–T046`. T044 is the read-only analysis gate and runs after task generation but before implementation; blocking findings must be resolved in their owning work before implementation proceeds. US2 adapter work and the first embedded dashboard can proceed in parallel after foundational types; shared workflow contracts must not be parallel-written. The minimum demonstrable slice is US1 with T012–T017, then it must be analyzed before extension.
 
 ## Implementation Strategy
 
