@@ -188,3 +188,23 @@ func ValidateAppendOnly(previous, current string) error {
 	}
 	return nil
 }
+
+// AppendedConvergenceTasks returns the unchecked tasks in the newly appended
+// ledger section, preserving order for comparison with a convergence report.
+func AppendedConvergenceTasks(previous, current string) ([]string, error) {
+	if err := ValidateAppendOnly(previous, current); err != nil {
+		return nil, err
+	}
+	appended := strings.TrimPrefix(current, previous)
+	var tasks []string
+	scanner := bufio.NewScanner(strings.NewReader(appended))
+	for scanner.Scan() {
+		if match := convergenceTask.FindStringSubmatch(strings.TrimSpace(scanner.Text())); match != nil {
+			tasks = append(tasks, match[1]+" "+match[2])
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return tasks, nil
+}

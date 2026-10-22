@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"reflect"
 
 	"github.com/spectide/spectide/internal/speckit"
 )
@@ -67,9 +68,17 @@ func RunConvergence(ctx context.Context, hooks ConvergenceHooks, limits LoopLimi
 			return true, nil
 		}
 		ledgerChanged := before.TaskLedger != after.TaskLedger
+		if len(result.Appended) > 0 && !ledgerChanged {
+			return false, fmt.Errorf("CONVERGENCE_TASKS_NOT_PERSISTED")
+		}
+		var persistedTasks []string
 		if ledgerChanged {
-			if err = speckit.ValidateAppendOnly(before.TaskLedger, after.TaskLedger); err != nil {
+			persistedTasks, err = speckit.AppendedConvergenceTasks(before.TaskLedger, after.TaskLedger)
+			if err != nil {
 				return false, err
+			}
+			if !reflect.DeepEqual(result.Appended, persistedTasks) {
+				return false, fmt.Errorf("CONVERGENCE_REPORT_TASKS_MISMATCH")
 			}
 		}
 		if !ledgerChanged && !requiredGateImproved(before.GateVerdicts, after.GateVerdicts) {
@@ -80,11 +89,8 @@ func RunConvergence(ctx context.Context, hooks ConvergenceHooks, limits LoopLimi
 		if err = budget.ConvergenceRound(beforeHash, afterHash, before.GateVerdicts, after.GateVerdicts); err != nil {
 			return false, err
 		}
-		if len(result.Appended) > 0 {
-			if !ledgerChanged {
-				return false, fmt.Errorf("CONVERGENCE_TASKS_NOT_PERSISTED")
-			}
-			if err = hooks.Implement(ctx, result.Appended); err != nil {
+		if len(persistedTasks) > 0 {
+			if err = hooks.Implement(ctx, persistedTasks); err != nil {
 				return false, err
 			}
 		}

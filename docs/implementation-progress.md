@@ -389,8 +389,8 @@
 
 ### Workflow convergence driver foundation
 
-- Added `RunConvergence` to consume parsed convergence reports through explicit hooks. It snapshots the same task ledger and required gates, rejects rewrites/nonprogress, implements only reported appended tasks, reruns required tests, and enforces the five-round limit. A converged report is accepted only when the ledger is unchanged and all required gates pass.
-- Focused `go test ./internal/workflow -run 'RunConvergence|LoopBudget' -count=1` passed. T035 remains open: provider/Spec-Kit execution is not wired into this driver, and final-review remediation return is not implemented. No official convergence result is claimed.
+- Added `RunConvergence` to consume parsed convergence reports through explicit hooks. It snapshots the same task ledger and required gates, rejects rewrites/nonprogress, requires the reported task list to exactly match the persisted append-only section, implements only those persisted additions, reruns required tests, and enforces the five-round limit. A converged report is accepted only when the ledger is unchanged and all required gates pass.
+- Focused Spec-Kit/workflow convergence tests passed, including a mismatch-injection case. T035 remains open: provider/Spec-Kit execution is not wired into this driver, and final-review remediation return is not implemented. No official convergence result is claimed.
 
 ### Phase checkpoint — durable run-owner leases
 

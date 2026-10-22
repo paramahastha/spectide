@@ -57,6 +57,27 @@ func TestRunConvergenceRejectsConvergedReportWithFailingRequiredGate(t *testing.
 	}
 }
 
+func TestRunConvergenceRejectsReportedTasksThatDifferFromLedger(t *testing.T) {
+	ledger := "# Tasks\n\n## Phase 1: Setup\n- [ ] T001 Existing task\n"
+	hooks := ConvergenceHooks{
+		Snapshot: func(context.Context) (ConvergenceSnapshot, error) {
+			return ConvergenceSnapshot{TaskLedger: ledger, GateVerdicts: map[string]string{"tests": "FAIL"}}, nil
+		},
+		Converge: func(context.Context) (string, error) {
+			ledger += "\n## Phase 2: Convergence\n- [ ] T002 Persisted task\n"
+			return "## Convergence Findings\nOutcome: tasks_appended\n- [ ] T003 Different reported task\n", nil
+		},
+		Implement: func(context.Context, []string) error { t.Fatal("implemented mismatched report tasks"); return nil },
+		Test: func(context.Context) (map[string]string, error) {
+			t.Fatal("tested after report mismatch")
+			return nil, nil
+		},
+	}
+	if converged, err := RunConvergence(context.Background(), hooks, DefaultLoopLimits()); converged || err == nil || !strings.Contains(err.Error(), "CONVERGENCE_REPORT_TASKS_MISMATCH") {
+		t.Fatalf("converged=%v err=%v", converged, err)
+	}
+}
+
 func TestRunConvergenceRejectsNoProgressAndTaskRewrite(t *testing.T) {
 	old := "# Tasks\n\n## Phase 1: Setup\n- [ ] T001 Existing task\n"
 	t.Run("no progress", func(t *testing.T) {
