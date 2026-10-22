@@ -1,8 +1,11 @@
 BIN := bin/spectide
 
-.PHONY: fmt lint test web-test web-build build demo smoke
+.PHONY: fmt format-check lint test web-test web-build build demo smoke security verify
 fmt:
 	gofmt -w cmd internal
+
+format-check:
+	@test -z "$$(gofmt -l cmd internal)"
 
 lint:
 	go vet ./...
@@ -26,3 +29,8 @@ demo: build
 
 smoke: build
 	./scripts/smoke.sh
+
+security:
+	./scripts/check-secrets.sh
+
+verify: format-check lint test web-test web-build build security smoke

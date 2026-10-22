@@ -12,7 +12,7 @@
 
 - [x] T001 [US5] Create the Go module and base repository structure in `go.mod`, `cmd/`, `internal/`, `docs/`, `examples/`, and `testdata/`
 - [x] T002 [P] Create the React/TypeScript dashboard project in `web/package.json`, `web/vite.config.ts`, and `web/src/`
-- [ ] T003 [P] Create formatting, lint, build, test, demo, and smoke targets in `Makefile` and `scripts/`
+- [x] T003 [P] Create formatting, lint, build, test, demo, and smoke targets in `Makefile` and `scripts/`
 - [x] T004 [P] Add the initial public repository metadata (`README.md`, `LICENSE`) and minimal CI workflow scaffold in `.github/workflows/`; T041 owns substantive contribution/security policy and final CI hardening
 
 ## Phase 2: Foundational
@@ -95,14 +95,14 @@
 - [ ] T038 [P] [US5] Create fake-provider demo workspace and deterministic fixtures in `examples/fake-provider-demo/` and `testdata/`
 - [x] T039 [US5] Add offline smoke validation and assert `/healthz` responds within the SC-001 2-second startup threshold; capture exact OS, CPU model, installed RAM, build command, and monotonic process-start-to-first-HTTP-200 elapsed time for the verification report in `scripts/smoke.sh`, `scripts/demo.sh`, and `Makefile`
 - [ ] T040 [US5] Write verified user, architecture, configuration, provider, security, recovery, troubleshooting, and OpenAPI documentation in `docs/`
-- [ ] T041 [US5] Complete the contribution/security policy, changelog, CI verification steps, and no-secret checks in root policy files and `.github/workflows/`, extending T004’s initial scaffold
+- [x] T041 [US5] Complete the contribution/security policy, changelog, CI verification steps, and no-secret checks in root policy files and `.github/workflows/`, extending T004’s initial scaffold
 
 ## Phase 8: Cross-cutting verification and convergence
 
 - [x] T042 [P] Link FR-001 through FR-030 to automated tests or documented inspected evidence in `docs/acceptance-ledger.md`
 - [x] T044a Rerun read-only Spec-Kit analyze at the post-implementation extension quality gate before proceeding to convergence
 - [x] T054 After each read-only analyze command exits, append its exact report, timestamp, and any follow-up resolution references to `specs/001-build-spectide/analysis.md`; this documentation task is outside the read-only analyze stage
-- [ ] T043 [P] Run format, static analysis, unit, integration, fake E2E, security, dashboard, and smoke checks through `Makefile` and CI
+- [x] T043 [P] Run format, static analysis, unit, integration, fake E2E, security, dashboard, and smoke checks through `Makefile` and CI
 - [ ] T043a [P] Measure SC-006 using one local server, 10 concurrent SSE clients, 100 events/second for 100 seconds, and a 10,000-event persisted backlog; timestamp each event at persistence and each frame at client receipt, calculate p95 over delivered non-heartbeat frames after excluding connection setup, and fail if any client misses a persisted event or p95 exceeds 1 second in `internal/api/`
 - [ ] T045 Run implementation verification and official converge; implement appended work and repeat until converged or a documented blocker in `docs/implementation-progress.md`
 - [ ] T046 Capture actual dashboard screenshots and publish final validation/release-readiness report listing executed commands, evidence locations, PASS/FAIL/BLOCKED/NOT_RUN checks, limitations, and security/provider constraints; write the screenshot evidence index to `docs/screenshots/README.md` and link `docs/accessibility-audit.md` from that index and `docs/final-verification.md`

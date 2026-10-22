@@ -13,7 +13,7 @@
 - Architecture: arm64
 - Build command: `make build` (`go build -o bin/spectide ./cmd/spectide`)
 - Startup/health command: `make smoke` (`scripts/smoke.sh` starts `spectide serve --port 0`, then requests `/healthz`)
-- Measurement: 0.295 ms from the monotonic timestamp immediately before process launch through the first HTTP 200 from `/healthz`; acceptance limit is 2,000 ms.
+- Measurement: latest `make verify` run measured 0.152 ms from the monotonic timestamp immediately before process launch through the first HTTP 200 from `/healthz` (an earlier `make smoke` run measured 0.295 ms); acceptance limit is 2,000 ms.
 - The same smoke run completed the offline demo and reported `SIMULATED`.
 
 ## Other verification executed
@@ -26,6 +26,7 @@
 | Dashboard typecheck | PASS | `make lint` |
 | Dashboard production build | PASS | `make web-build` |
 | Offline demo and startup smoke | PASS | `make smoke` |
+| Unified verification and secret scan | PASS | `make verify` (format, vet, Go tests, dashboard checks/build, binary build, secret scan, and smoke) |
 | Runner timeout/output/cancellation | PASS | `go test ./internal/runner -count=1` |
 | Deterministic repeated lifecycle | PASS | `TestTwentyDeterministicRunsCompleteWithRequiredEvidence` (20 runs) |
 | Spec-Kit analyze consistency gate | PASS, read-only equivalent | `specs/001-build-spectide/analysis.md`; installed Codex CLI executed the repository instructions after OpenCode returned HTTP 503; no official Spec-Kit invocation is claimed |

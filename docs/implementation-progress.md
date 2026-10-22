@@ -293,6 +293,13 @@
 - Tests cover all run-state mappings, generic errors, success, and a project configured for an unavailable live route.
 - `go test ./internal/cli ./cmd/spectide -count=1` passed. T017 is complete.
 
+### Phase checkpoint — unified CI and verification target
+
+- Added `make format-check`, `make security`, and `make verify`. The unified target runs formatting, Go vet/tests, dashboard typecheck/tests/build, Go binary build, tracked-file private-key/provider-token pattern scan, and the offline smoke path.
+- Updated GitHub Actions to use Go from `go.mod`, Node 22, read-only repository permissions, and `make verify`. Updated contributor and changelog documentation.
+- `make verify` passed end to end, including loopback startup and simulated demo. Latest SC-001 measurement was 0.152 ms on macOS 15.1 / Apple M4 / 16 GiB / arm64. T003, T041, and T043 are complete.
+- Browser E2E/accessibility scans and SC-006 SSE load measurement remain separate, unrun acceptance work (T031, T043a).
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified
