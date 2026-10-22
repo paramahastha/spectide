@@ -12,7 +12,7 @@ This ledger maps every functional requirement in the single master specification
 | FR-006 verified official Spec-Kit invocation | Partial | [hash-verified discovery and invocation builder](../internal/speckit/discovery.go), [workflow blocked-stage evidence](../internal/workflow/engine.go), and [Spec-Kit parser/invocation tests](../internal/speckit/invoke_test.go); unavailable live stages persist as `BLOCKED` with `NOT_RUN`, but workflow-level authenticated adapter orchestration remains open (T014) |
 | FR-007 one product spec through retries | Partial | [master feature spec](../specs/001-build-spectide/spec.md), [task ledger](../specs/001-build-spectide/tasks.md); retry/convergence workflow remains open (T035) |
 | FR-008 bounded read-only analysis remediation | Partial | [analyze parser](../internal/speckit/parse.go), [analysis report](../specs/001-build-spectide/analysis.md); bounded workflow loop remains open (T016) |
-| FR-009 append-only bounded convergence loop | Partial | [append-only validator](../internal/speckit/parse.go); implementation/test/converge return loop remains open (T035) |
+| FR-009 append-only bounded convergence loop | Partial | [append-only validator](../internal/speckit/parse.go) and [bounded workflow convergence driver](../internal/workflow/converge.go) validate progress, implement reported appended tasks, require passing tests and final gates, and stop after five rounds; live Spec-Kit wiring and final-review return remain open (T014, T035) |
 | FR-010 evidence-backed quality verdicts | Partial | [quality registry tests](../internal/quality/registry_test.go); run-level required evidence remains simulated |
 | FR-011 deterministic simulated workflow | Pass | [20-run SC-002 acceptance test](../internal/workflow/engine_test.go); [explicit offline demo route](../examples/fake-provider-demo/.spectide/config.json); [checked-in deterministic scenarios](../testdata/fake-provider/scenarios.json); [isolated smoke script](../scripts/smoke.sh) |
 | FR-012 three provider adapters | Partial | [adapter contract tests](../internal/adapters/adapters_test.go) and [scripted fake tests](../internal/adapters/fake/fake_test.go); stable typed errors and fail-closed invocation policy are tested, with scripted failure/cancellation/rate-limit behavior; canonical workflow integration remains open (T014) |
@@ -39,7 +39,7 @@ This ledger maps every functional requirement in the single master specification
 
 | Criterion | Current evidence/status |
 |---|---|
-| SC-001 | Pass on recorded host: macOS 15.1, Apple M4, 16 GiB, arm64; latest same-process monotonic `make verify` measured 20.640 ms process-start-to-first-HTTP-200 at `/healthz`. See [verification evidence](final-verification.md). |
+| SC-001 | Pass on recorded host: macOS 15.1, Apple M4, 16 GiB, arm64; latest same-process monotonic `make verify` measured 19.021 ms process-start-to-first-HTTP-200 at `/healthz`. See [verification evidence](final-verification.md). |
 | SC-002 | Pass: 20 deterministic runs passed in `TestTwentyDeterministicRunsCompleteWithRequiredEvidence`. |
 | SC-003 | Partial: quality verdict types exist; terminal simulated reports pass; live blocked/not-run behavior needs end-to-end acceptance. |
 | SC-004 | Partial: persisted replay and cursor tests pass; two independent browser clients are not yet covered. |

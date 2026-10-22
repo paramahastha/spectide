@@ -13,7 +13,7 @@
 - Architecture: arm64
 - Build command: `make build` (`go build -o bin/spectide ./cmd/spectide`)
 - Startup/health command: `make smoke` (`scripts/smoke.sh` starts `spectide serve --port 0`, then requests `/healthz`)
-- Measurement: latest corrected `make verify` run measured 20.640 ms from the monotonic timestamp immediately before `Popen` through the first HTTP 200 from `/healthz` (prior same-process run: 18.958 ms); acceptance limit is 2,000 ms. An earlier attempt measured timestamps in separate Python processes, which use different monotonic origins in this host environment; those earlier values (0.152 ms and 0.295 ms) and the negative result are invalid and superseded.
+- Measurement: latest corrected `make verify` run measured 19.021 ms from the monotonic timestamp immediately before `Popen` through the first HTTP 200 from `/healthz` (prior same-process run: 20.640 ms); acceptance limit is 2,000 ms. An earlier attempt measured timestamps in separate Python processes, which use different monotonic origins in this host environment; those earlier values (0.152 ms and 0.295 ms) and the negative result are invalid and superseded.
 - The same smoke run completed the offline demo and reported `SIMULATED`.
 
 ## Other verification executed
@@ -32,6 +32,7 @@
 | Workspace path/scope enforcement | PASS | Focused `go test ./internal/workflow ./internal/api ./internal/workspace`; missing paths and disallowed roots rejected before run creation, canonical symlink path accepted within scope |
 | Process policy and event/checkpoint sanitization | PASS | Focused `go test ./internal/security ./internal/events ./internal/runner ./internal/store`; runner validates process policy before launch and payload sanitization covers nested map/slice credential variants |
 | Persisted stage cursors | PASS | Focused `go test ./internal/workflow ./internal/store`; completed simulated runs retain one config-bound cursor checkpoint per canonical stage; checkpoints do not authorize restart resume |
+| Bounded workflow convergence foundation | PASS, partial requirement | `go test ./internal/workflow -run 'RunConvergence|LoopBudget' -count=1`; appended tasks are implemented and tested under a five-round bound; final-review return and official provider stage wiring remain incomplete |
 | Scoped route preview | PASS | Full `make verify`; API preview rejects workspace scope escapes without run creation |
 | Live route profile boundaries | PASS | Focused routing/workflow/API tests and full `make verify`; profile existence, provider match, and canonical allowed scope are required before preview or run creation; live invocation remains blocked |
 | Durable blocked live-stage outcome | PASS | Focused workflow/CLI/API/Spec-Kit tests and full `make verify`; authorized but unavailable live routes persist a `BLOCKED` run, skipped first stage, `NOT_RUN` event, and blocked gate |

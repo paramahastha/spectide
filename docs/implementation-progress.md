@@ -387,6 +387,11 @@
 - Added a per-run budget controller with the required 3 analyze-remediation, 4 test-repair, and 5 convergence defaults. It rejects unchanged analyze artifacts, rejects convergence rounds with unchanged task-ledger hashes and gate verdicts, and returns explicit exhaustion codes.
 - Focused `go test ./internal/workflow -run LoopBudget -count=1` and full `make verify` passed. The budget policy is not yet driven by official stage outcomes, so T016 remains open for workflow-level remediation and retry orchestration. Latest SC-001 measurement is 20.640 ms on the reference host.
 
+### Workflow convergence driver foundation
+
+- Added `RunConvergence` to consume parsed convergence reports through explicit hooks. It snapshots the same task ledger and required gates, rejects rewrites/nonprogress, implements only reported appended tasks, reruns required tests, and enforces the five-round limit. A converged report is accepted only when the ledger is unchanged and all required gates pass.
+- Focused `go test ./internal/workflow -run 'RunConvergence|LoopBudget' -count=1` passed. T035 remains open: provider/Spec-Kit execution is not wired into this driver, and final-review remediation return is not implemented. No official convergence result is claimed.
+
 ### Phase checkpoint — durable run-owner leases
 
 - Added migration 6 and per-run heartbeat leases. The workflow writes its owner lease atomically with the workspace lock, refreshes it while the worker is alive, and removes it at finish.
