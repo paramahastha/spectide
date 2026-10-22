@@ -191,6 +191,52 @@ func TestWorkspaceFingerprintIncludesGitState(t *testing.T) {
 	}
 }
 
+func TestWorkspaceFingerprintExcludesOnlyExistingTaskLedger(t *testing.T) {
+	root := t.TempDir()
+	tasksPath := filepath.Join(root, "specs", "001-product", "tasks.md")
+	if err := os.MkdirAll(filepath.Dir(tasksPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tasksPath, []byte("# Tasks\n- [ ] T001 original\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"config", "user.email", "test@example.invalid"}, {"config", "user.name", "SpecTide Test"}, {"add", "-A"}, {"commit", "-qm", "initial"}} {
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	before, err := workspaceFingerprintExcept(root, []string{"specs/001-product/tasks.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(tasksPath, []byte("# Tasks\n- [ ] T001 original\n- [ ] T002 appended\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	afterLedgerAppend, err := workspaceFingerprintExcept(root, []string{"specs/001-product/tasks.md"})
+	if err != nil || before != afterLedgerAppend {
+		t.Fatalf("existing task ledger edit changed the non-ledger fingerprint: before=%s after=%s err=%v", before, afterLedgerAppend, err)
+	}
+	if err = os.WriteFile(filepath.Join(root, "internal.go"), []byte("package internal\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	afterSourceWrite, err := workspaceFingerprintExcept(root, []string{"specs/001-product/tasks.md"})
+	if err != nil || afterSourceWrite == afterLedgerAppend {
+		t.Fatalf("non-ledger source addition was not detected: prior=%s after=%s err=%v", afterLedgerAppend, afterSourceWrite, err)
+	}
+	replacementPath := filepath.Join(root, "specs", "002-replacement", "spec.md")
+	if err = os.MkdirAll(filepath.Dir(replacementPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(replacementPath, []byte("replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	afterReplacement, err := workspaceFingerprintExcept(root, []string{"specs/001-product/tasks.md"})
+	if err != nil || afterReplacement == afterSourceWrite {
+		t.Fatalf("replacement specification was not detected: prior=%s after=%s err=%v", afterSourceWrite, afterReplacement, err)
+	}
+}
+
 func TestAnalysisOwnerMapsFindingsToTheirOwningArtifact(t *testing.T) {
 	for _, test := range []struct {
 		finding speckit.Finding

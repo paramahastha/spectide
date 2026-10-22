@@ -132,10 +132,21 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 		}
 	}
 	var oldTasks []byte
+	var convergenceTaskPath string
+	var convergenceBefore string
 	if stage == "converge" {
 		oldTasks, err = os.ReadFile(filepath.Join(featureDir, "tasks.md"))
 		if err != nil {
 			return nil, fmt.Errorf("CONVERGENCE_TASKS_UNAVAILABLE: %w", err)
+		}
+		convergenceTaskPath, err = filepath.Rel(installation.ProjectRoot, filepath.Join(featureDir, "tasks.md"))
+		if err != nil || convergenceTaskPath == ".." || strings.HasPrefix(convergenceTaskPath, ".."+string(filepath.Separator)) {
+			return nil, fmt.Errorf("CONVERGENCE_TASKS_PATH_INVALID")
+		}
+		convergenceTaskPath = filepath.ToSlash(convergenceTaskPath)
+		convergenceBefore, err = workspaceFingerprintExcept(installation.ProjectRoot, []string{convergenceTaskPath})
+		if err != nil {
+			return nil, err
 		}
 	}
 	beforeArtifacts, err := captureStageArtifacts(installation.ProjectRoot, featureDir, stage)
@@ -191,6 +202,28 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 		} else if before != after {
 			runErr = fmt.Errorf("ANALYZE_MUTATED_ARTIFACTS")
 			status = "FAILED"
+		}
+	}
+	if stage == "converge" {
+		// Convergence may append to the existing task ledger only. Compare the
+		// rest of the workspace after every invocation, including failures.
+		after, snapshotErr := workspaceFingerprintExcept(installation.ProjectRoot, []string{convergenceTaskPath})
+		if snapshotErr != nil {
+			runErr = fmt.Errorf("CONVERGENCE_MUTATION_CHECK_FAILED: %w", snapshotErr)
+			status = "FAILED"
+		} else if convergenceBefore != after {
+			runErr = fmt.Errorf("CONVERGENCE_CHANGED_NON_LEDGER_ARTIFACTS")
+			status = "FAILED"
+		}
+		currentTasks, readErr := os.ReadFile(filepath.Join(featureDir, "tasks.md"))
+		if readErr != nil {
+			runErr = fmt.Errorf("CONVERGENCE_TASKS_UNAVAILABLE: %w", readErr)
+			status = "FAILED"
+		} else if string(oldTasks) != string(currentTasks) {
+			if appendErr := speckit.ValidateAppendOnly(string(oldTasks), string(currentTasks)); appendErr != nil {
+				runErr = appendErr
+				status = "FAILED"
+			}
 		}
 	}
 	stdoutHash, stderrHash := hashString(result.Process.Stdout), hashString(result.Process.Stderr)
@@ -491,6 +524,14 @@ func equalStrings(a, b []string) bool {
 }
 
 func workspaceFingerprint(root string) (string, error) {
+	return workspaceFingerprintExcept(root, nil)
+}
+
+func workspaceFingerprintExcept(root string, excludedPaths []string) (string, error) {
+	excluded := make(map[string]struct{}, len(excludedPaths))
+	for _, path := range excludedPaths {
+		excluded[filepath.ToSlash(filepath.Clean(path))] = struct{}{}
+	}
 	files, err := workspaceFiles(root)
 	if err != nil {
 		return "", err
@@ -502,6 +543,9 @@ func workspaceFingerprint(root string) (string, error) {
 	sort.Strings(paths)
 	h := sha256.New()
 	for _, path := range paths {
+		if _, skip := excluded[path]; skip {
+			continue
+		}
 		_, _ = fmt.Fprintf(h, "%s:%s\n", path, files[path].SHA256)
 	}
 	// Include directory and symlink entries so empty-directory additions,
@@ -524,8 +568,12 @@ func workspaceFingerprint(root string) (string, error) {
 		if path == canonicalRoot {
 			return nil
 		}
+		rel = filepath.ToSlash(rel)
+		if _, skip := excluded[rel]; skip {
+			return nil
+		}
 		if entry.IsDir() {
-			_, _ = fmt.Fprintf(h, "dir:%s\n", filepath.ToSlash(rel))
+			_, _ = fmt.Fprintf(h, "dir:%s\n", rel)
 			return nil
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
@@ -533,14 +581,14 @@ func workspaceFingerprint(root string) (string, error) {
 			if linkErr != nil {
 				return linkErr
 			}
-			_, _ = fmt.Fprintf(h, "symlink:%s:%s\n", filepath.ToSlash(rel), target)
+			_, _ = fmt.Fprintf(h, "symlink:%s:%s\n", rel, target)
 		}
 		return nil
 	})
 	if err != nil {
 		return "", err
 	}
-	gitState, err := workspaceGitState(canonicalRoot)
+	gitState, err := workspaceGitState(canonicalRoot, excluded)
 	if err != nil {
 		return "", err
 	}
@@ -548,13 +596,13 @@ func workspaceFingerprint(root string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-func workspaceGitState(root string) (string, error) {
+func workspaceGitState(root string, excluded map[string]struct{}) (string, error) {
 	if _, err := os.Lstat(filepath.Join(root, ".git")); os.IsNotExist(err) {
 		return "NO_GIT_METADATA", nil
 	} else if err != nil {
 		return "", err
 	}
-	cmd := exec.Command("git", "-C", root, "status", "--porcelain=v2", "--untracked-files=all", "--ignore-submodules=none")
+	cmd := exec.Command("git", "-C", root, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("WORKSPACE_GIT_STATE_UNAVAILABLE: %w", err)
@@ -563,7 +611,40 @@ func workspaceGitState(root string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("WORKSPACE_GIT_HEAD_UNAVAILABLE: %w", err)
 	}
-	return hashString(string(head) + "\n" + string(output)), nil
+	var status strings.Builder
+	records := strings.Split(string(output), "\x00")
+	for i := 0; i < len(records); i++ {
+		record := records[i]
+		if len(record) < 4 {
+			continue
+		}
+		path := filepath.ToSlash(record[3:])
+		_, skipPath := excluded[path]
+		if (record[0] == 'R' || record[0] == 'C' || record[1] == 'R' || record[1] == 'C') && i+1 < len(records) {
+			source := filepath.ToSlash(records[i+1])
+			_, skipSource := excluded[source]
+			if skipPath && skipSource {
+				i++
+				continue
+			}
+			if skipPath || skipSource {
+				i++
+				status.WriteString("RENAME_WITH_NON_LEDGER_PATH\n")
+				continue
+			}
+			status.WriteString(record)
+			status.WriteByte(0)
+			status.WriteString(records[i+1])
+			status.WriteByte(0)
+			i++
+			continue
+		}
+		if !skipPath {
+			status.WriteString(record)
+			status.WriteByte(0)
+		}
+	}
+	return hashString(string(head) + "\n" + status.String()), nil
 }
 
 func hashString(value string) string {
