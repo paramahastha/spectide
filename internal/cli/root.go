@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/spectide/spectide/internal/adapters"
 	"github.com/spectide/spectide/internal/app"
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
@@ -293,8 +294,30 @@ func Root() *cobra.Command {
 	add.Flags().String("executable", "", "local executable name or path")
 	add.Flags().String("scope", "personal-public", "comma-separated allowed project scopes")
 	profiles.AddCommand(add)
+	profiles.AddCommand(&cobra.Command{Use: "probe NAME", Args: cobra.ExactArgs(1), Short: "Check an executable version without reading credentials", RunE: func(c *cobra.Command, args []string) error {
+		a, e := open()
+		if e != nil {
+			return e
+		}
+		defer a.Close()
+		registered, e := a.Store.Profiles(c.Context())
+		if e != nil {
+			return e
+		}
+		for _, profile := range registered {
+			if profile.Name != args[0] {
+				continue
+			}
+			capability, probeErr := adapters.ProbeBinary(adapters.Profile{Provider: adapters.ProviderName(profile.Provider), Executable: profile.Executable})
+			if probeErr != nil {
+				return probeErr
+			}
+			return json.NewEncoder(c.OutOrStdout()).Encode(capability)
+		}
+		return fmt.Errorf("PROFILE_NOT_FOUND: %s", args[0])
+	}})
 	root.AddCommand(profiles)
-	root.AddCommand(&cobra.Command{Use: "models", Short: "Report local model discovery readiness", RunE: func(c *cobra.Command, _ []string) error {
+	models := &cobra.Command{Use: "models", Short: "Report local model discovery readiness", RunE: func(c *cobra.Command, _ []string) error {
 		a, e := open()
 		if e != nil {
 			return e
@@ -305,7 +328,30 @@ func Root() *cobra.Command {
 			return e
 		}
 		return json.NewEncoder(c.OutOrStdout()).Encode(map[string]any{"profiles": ps, "catalog": "NOT_PROBED", "reason": "Model IDs must be validated by each provider CLI in its authorized profile."})
+	}}
+	models.AddCommand(&cobra.Command{Use: "probe PROFILE", Args: cobra.ExactArgs(1), Short: "Probe executable readiness without reading model or credential stores", RunE: func(c *cobra.Command, args []string) error {
+		a, e := open()
+		if e != nil {
+			return e
+		}
+		defer a.Close()
+		registered, e := a.Store.Profiles(c.Context())
+		if e != nil {
+			return e
+		}
+		for _, profile := range registered {
+			if profile.Name != args[0] {
+				continue
+			}
+			capability, probeErr := adapters.ProbeBinary(adapters.Profile{Provider: adapters.ProviderName(profile.Provider), Executable: profile.Executable})
+			if probeErr != nil {
+				return probeErr
+			}
+			return json.NewEncoder(c.OutOrStdout()).Encode(map[string]any{"profile": profile.Name, "executable_version": capability.Version, "authentication": "NOT_PROBED", "model_catalog": "NOT_PROBED"})
+		}
+		return fmt.Errorf("PROFILE_NOT_FOUND: %s", args[0])
 	}})
+	root.AddCommand(models)
 	conf := &cobra.Command{Use: "config", Short: "Inspect or validate project configuration", RunE: func(c *cobra.Command, _ []string) error {
 		path, _ := c.Flags().GetString("file")
 		v, e := config.Load(path)

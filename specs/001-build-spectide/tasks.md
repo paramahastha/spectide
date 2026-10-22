@@ -56,7 +56,7 @@
 - [x] T053 [US2] Implement provider stage timeout defaults, configurable duration bounds, and graceful termination before forced process-group cleanup in `internal/runner/`
 - [x] T048 [US2] Add runner tests for the 1 MiB output caps, configurable 1-second–4-hour stage timeout (30-minute default), and 2-second graceful process-group cancellation cleanup in `internal/runner/`
 - [ ] T024 [US2] Implement routing modes, capability validation, fallback authorization, decision audit trail, and dry-run intent resolution; test that previews create no run and that unauthorized direct/fallback routes are denied before any repository content crosses the project/profile boundary in `internal/routing/`
-- [ ] T025 [US2] Add profile/model commands and offline probe output in `internal/cli/`
+- [x] T025 [US2] Add profile/model commands and offline probe output in `internal/cli/`
 
 ## Phase 5: User Story 3 — Live local observation and control (P1)
 

@@ -280,7 +280,12 @@
 
 - Added `spectide projects list`, `spectide projects register PATH` (canonicalizes symlinks and requires an existing directory), and `spectide approvals list/create/resolve` over the existing durable repositories.
 - CLI tests verify canonical registration/listing and an approval's pending-to-approved lifecycle with a second resolution rejected.
-- `go test ./internal/cli -count=1` passed. T037 is complete; T017 and T025 still own run exit semantics and model/probe details.
+- `go test ./internal/cli -count=1` passed. At this checkpoint, T037 is complete; run exit semantics and offline model/probe details are still tracked separately.
+
+### Phase checkpoint — offline profile and model probes
+
+- Added `spectide profiles probe NAME` and `spectide models probe PROFILE`. Both use only the profile's executable version command through the bounded runner and never inspect credential files; output explicitly reports authentication and model catalog as `NOT_PROBED`.
+- CLI tests use `/bin/echo` as a harmless version probe and assert the output makes no authentication/model readiness claim. `go test ./internal/cli -count=1` passed. T025 is complete; T017 remains open for run exit-code behavior.
 
 ### Historical baseline (superseded by the checkpoints above)
 

@@ -81,3 +81,26 @@ func TestApprovalCommandsCreateListAndResolve(t *testing.T) {
 		t.Fatal("resolved approval was mutable")
 	}
 }
+
+func TestProfileAndModelProbeDoNotClaimAuthentication(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "spectide.db")
+	s, err := store.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.SaveProfile(context.Background(), model.Profile{Name: "offline-echo", Provider: "codex", Executable: "/bin/echo", AllowedScopes: []string{"/tmp"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := executeCLI(t, db, "profiles", "probe", "offline-echo")
+	if err != nil || !strings.Contains(output, `"authenticated":"NOT_PROBED"`) || !strings.Contains(output, `"version":"--version"`) {
+		t.Fatalf("profile probe=%q err=%v", output, err)
+	}
+	output, err = executeCLI(t, db, "models", "probe", "offline-echo")
+	if err != nil || !strings.Contains(output, `"authentication":"NOT_PROBED"`) || !strings.Contains(output, `"model_catalog":"NOT_PROBED"`) {
+		t.Fatalf("model probe=%q err=%v", output, err)
+	}
+}
