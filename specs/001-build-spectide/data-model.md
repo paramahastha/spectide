@@ -13,7 +13,7 @@
 | Profile | id, provider, executable reference, config reference, authorization scope | Credentials are never persisted. |
 | QualityGate | run, key, verdict, evidence | Required gate must be `PASS` for real completion; `NOT_RUN` remains visible. |
 | Approval | run, action, reason, status, timestamps | Pending sensitive work fails closed. |
-| Artifact/Checkpoint/Lock | run/workspace, safe metadata, integrity data | Paths remain workspace confined; lock admits one active writer. |
+| Artifact/Checkpoint/Lock | run/workspace, safe metadata, integrity data | Generated artifacts are regular workspace-confined files registered with SHA-256 and linked from their provider attempt; checkpoint paths remain confined; lock admits one active writer. |
 
 ## State transitions
 

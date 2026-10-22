@@ -25,6 +25,14 @@ func (liveFixtureAdapter) Probe(context.Context, adapters.Profile) (adapters.Cap
 }
 func (liveFixtureAdapter) Build(request adapters.Request) (runner.Invocation, error) {
 	output := "{\"type\":\"message\"}"
+	if request.Stage == "plan" {
+		path := filepath.Join(request.ProjectRoot, "specs", "001-product", "plan.md")
+		return runner.Invocation{Binary: "/bin/sh", Args: []string{"-c", "printf '%s\\n' 'generated plan evidence' > \"" + path + "\"; printf '%s' 'plan generated'"}, Dir: request.ProjectRoot}, nil
+	}
+	if request.Stage == "implement" {
+		path := filepath.Join(request.ProjectRoot, "internal", "fixture.go")
+		return runner.Invocation{Binary: "/bin/sh", Args: []string{"-c", "printf '\\n%s\\n' '// implementation evidence' >> \"" + path + "\"; printf '%s' 'implementation generated'"}, Dir: request.ProjectRoot}, nil
+	}
 	if request.Stage == "analyze" {
 		output = "## Specification Analysis Report\n- Coverage: 100%\n"
 	} else if request.Stage == "converge" {
@@ -259,8 +267,16 @@ func TestRunLiveStageUsesVerifiedCommandAndPersistsSanitizedEvidence(t *testing.
 	if evidence["provider"] != "codex" || evidence["event_count"] != 1 || evidence["execution"] != nil {
 		t.Fatalf("unexpected stage evidence: %#v", evidence)
 	}
-	if _, err = engine.runLiveStage(ctx, run, "plan", config.Route{Provider: "codex", Profile: "fixture"}, installation, feature); err != nil {
-		t.Fatal(err)
+	artifactIDs, ok := evidence["artifact_ids"].([]string)
+	if !ok || len(artifactIDs) != 1 {
+		t.Fatalf("changed plan artifact was not linked to stage evidence: %#v", evidence)
+	}
+	report, err := state.Report(ctx, run.ID)
+	if err != nil || len(report.Artifacts) != 1 || report.Artifacts[0].ID != artifactIDs[0] || report.Artifacts[0].SHA256 == "" {
+		t.Fatalf("registered artifact was not exposed in report: artifacts=%+v err=%v", report.Artifacts, err)
+	}
+	if _, err = engine.runLiveStage(ctx, run, "plan", config.Route{Provider: "codex", Profile: "fixture"}, installation, feature); err == nil || !strings.Contains(err.Error(), "STAGE_EXPECTED_ARTIFACT_MISSING_OR_UNCHANGED") {
+		t.Fatalf("unchanged plan output was accepted as stage success: %v", err)
 	}
 	events, err := state.Events(ctx, run.ID, 0)
 	if err != nil || len(events) != 7 {
@@ -271,13 +287,57 @@ func TestRunLiveStageUsesVerifiedCommandAndPersistsSanitizedEvidence(t *testing.
 		t.Fatalf("unexpected persisted provider event: %+v", providerEvent)
 	}
 	attempts, err := state.ExecutionAttempts(ctx, run.ID)
-	if err != nil || len(attempts) != 2 || attempts[0].Result != "SUCCEEDED" || attempts[0].Iteration != 1 || attempts[0].ProcessID < 1 || attempts[0].StdoutSHA256 == "" || attempts[1].Iteration != 2 {
+	if err != nil || len(attempts) != 2 || attempts[0].Result != "SUCCEEDED" || attempts[0].Iteration != 1 || attempts[0].ProcessID < 1 || attempts[0].StdoutSHA256 == "" || attempts[1].Iteration != 2 || attempts[1].Result != "FAILED" {
 		t.Fatalf("provider invocation history=%+v err=%v", attempts, err)
+	}
+	if len(attempts[0].ArtifactIDs) != 1 || attempts[0].ArtifactIDs[0] != artifactIDs[0] {
+		t.Fatalf("attempt does not link its registered artifact: %+v", attempts[0])
 	}
 	if _, err = state.SaveProfile(ctx, model.Profile{Name: "fixture", Provider: "codex", Executable: "codex", AllowedScopes: []string{project}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = engine.runLiveStage(ctx, run, "plan", config.Route{Provider: "codex", Profile: "fixture"}, installation, feature); err == nil || !strings.Contains(err.Error(), "PROFILE_CAPABILITY_NOT_PROBED") {
 		t.Fatalf("profile edit did not invalidate run-time capability evidence: %v", err)
+	}
+}
+
+func TestLiveStageRequiresChangedArtifactAndRejectsSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	feature := filepath.Join(root, "specs", "001-product")
+	if err := os.MkdirAll(feature, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	planPath := filepath.Join(feature, "plan.md")
+	if err := os.WriteFile(planPath, []byte("old plan\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := captureStageArtifacts(root, feature, "plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = changedStageArtifacts(root, feature, "plan", before); err != nil {
+		t.Fatal(err)
+	} else if files, _ := changedStageArtifacts(root, feature, "plan", before); len(files) != 0 {
+		t.Fatalf("unchanged expected artifact counted as progress: %+v", files)
+	}
+	if err = os.Remove(planPath); err != nil {
+		t.Fatal(err)
+	}
+	missingBefore, err := captureStageArtifacts(root, feature, "plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files, err := changedStageArtifacts(root, feature, "plan", missingBefore); err != nil || len(files) != 0 {
+		t.Fatalf("missing expected output was accepted as artifact evidence: files=%+v err=%v", files, err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.md")
+	if err = os.WriteFile(outside, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Symlink(outside, planPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = captureStageArtifacts(root, feature, "plan"); err == nil || !strings.Contains(err.Error(), "STAGE_ARTIFACT_PATH_ESCAPE") {
+		t.Fatalf("expected artifact symlink escape rejection, got %v", err)
 	}
 }

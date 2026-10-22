@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -109,6 +110,10 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 			return nil, fmt.Errorf("CONVERGENCE_TASKS_UNAVAILABLE: %w", err)
 		}
 	}
+	beforeArtifacts, err := captureStageArtifacts(installation.ProjectRoot, featureDir, stage)
+	if err != nil {
+		return nil, err
+	}
 	request := adapters.Request{
 		ProjectRoot: installation.ProjectRoot,
 		Prompt:      prompt,
@@ -147,6 +152,88 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 			break
 		}
 	}
+	evidence := map[string]any{"provider": route.Provider, "profile": route.Profile, "event_count": len(result.Events), "duration_ms": result.Process.Duration.Milliseconds()}
+	var registered []model.Artifact
+	if runErr == nil {
+		switch stage {
+		case "analyze":
+			after, hashErr := fingerprintArtifacts(featureDir)
+			if hashErr != nil {
+				runErr = hashErr
+			} else if before != after {
+				runErr = fmt.Errorf("ANALYZE_MUTATED_ARTIFACTS")
+			} else {
+				analysis, parseErr := speckit.ParseAnalysisOutput(result.Process.Stdout)
+				if parseErr != nil {
+					runErr = parseErr
+				} else {
+					evidence["analysis_findings"] = len(analysis.Findings)
+					evidence["analysis_critical"] = analysis.Critical
+					evidence["analysis_high"] = analysis.High
+					evidence["analysis_medium"] = analysis.Medium
+				}
+			}
+		case "converge":
+			currentTasks, readErr := os.ReadFile(filepath.Join(featureDir, "tasks.md"))
+			if readErr != nil {
+				runErr = fmt.Errorf("CONVERGENCE_TASKS_UNAVAILABLE: %w", readErr)
+			} else if convergence, parseErr := speckit.ParseConvergenceOutput(result.Process.Stdout); parseErr != nil {
+				runErr = parseErr
+			} else if convergence.Converged && string(oldTasks) != string(currentTasks) {
+				runErr = fmt.Errorf("CONVERGENCE_CHANGED_TASKS_WITHOUT_APPEND_REPORT")
+			} else if !convergence.Converged {
+				if validateErr := speckit.ValidateAppendOnly(string(oldTasks), string(currentTasks)); validateErr != nil {
+					runErr = validateErr
+				} else if appended, appendErr := speckit.AppendedConvergenceTasks(string(oldTasks), string(currentTasks)); appendErr != nil {
+					runErr = appendErr
+				} else if !equalStrings(convergence.Appended, appended) {
+					runErr = fmt.Errorf("CONVERGENCE_REPORT_TASKS_MISMATCH")
+				} else {
+					evidence["converged"] = false
+					evidence["appended_task_count"] = len(appended)
+				}
+			} else {
+				evidence["converged"] = true
+				evidence["appended_task_count"] = 0
+			}
+		default:
+			var inspectErr error
+			registered, inspectErr = changedStageArtifacts(installation.ProjectRoot, featureDir, stage, beforeArtifacts)
+			if inspectErr != nil {
+				runErr = inspectErr
+			} else if len(registered) == 0 {
+				runErr = fmt.Errorf("STAGE_EXPECTED_ARTIFACT_MISSING_OR_UNCHANGED: %s", stage)
+			}
+		}
+	}
+	if runErr == nil && stage == "converge" {
+		registered, runErr = changedStageArtifacts(installation.ProjectRoot, featureDir, stage, beforeArtifacts)
+	}
+	if runErr == nil {
+		for i := range registered {
+			registered[i].RunID = run.ID
+			registered[i].Stage = stage
+			registered[i], runErr = e.store.SaveArtifact(ctx, registered[i])
+			if runErr != nil {
+				break
+			}
+		}
+	}
+	if runErr == nil {
+		ids := make([]string, 0, len(registered))
+		for _, artifact := range registered {
+			ids = append(ids, artifact.ID)
+		}
+		if len(ids) > 0 {
+			evidence["artifact_ids"] = ids
+		}
+	}
+	if runErr != nil {
+		status = "FAILED"
+		if ctx.Err() != nil {
+			status = "CANCELLED"
+		}
+	}
 	attempt.ProcessID = result.Process.ProcessID
 	attempt.DurationMillis = result.Process.Duration.Milliseconds()
 	attempt.ExitCode = result.Process.ExitCode
@@ -156,12 +243,15 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 	}
 	attempt.FinishedAt = &finishedAt
 	attempt.Result = status
+	for _, artifact := range registered {
+		attempt.ArtifactIDs = append(attempt.ArtifactIDs, artifact.ID)
+	}
 	attempt.StdoutSHA256 = stdoutHash
 	attempt.StderrSHA256 = stderrHash
 	if runErr != nil {
 		attempt.Error = safeStageError(runErr)
 	}
-	evidenceJSON, _ := json.Marshal(map[string]any{"event_types": eventTypes, "event_count": len(result.Events), "stdout_sha256": stdoutHash, "stderr_sha256": stderrHash})
+	evidenceJSON, _ := json.Marshal(map[string]any{"event_types": eventTypes, "event_count": len(result.Events), "stdout_sha256": stdoutHash, "stderr_sha256": stderrHash, "artifact_ids": attempt.ArtifactIDs})
 	attempt.EvidenceJSON = string(evidenceJSON)
 	if err = e.store.CompleteExecutionAttempt(context.Background(), attempt); err != nil {
 		return nil, err
@@ -169,45 +259,162 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 	if runErr != nil {
 		return nil, runErr
 	}
-	evidence := map[string]any{"provider": route.Provider, "profile": route.Profile, "event_count": len(result.Events), "duration_ms": result.Process.Duration.Milliseconds()}
-	switch stage {
-	case "analyze":
-		after, hashErr := fingerprintArtifacts(featureDir)
-		if hashErr != nil {
-			return nil, hashErr
-		}
-		if before != after {
-			return nil, fmt.Errorf("ANALYZE_MUTATED_ARTIFACTS")
-		}
-		analysis, parseErr := speckit.ParseAnalysisOutput(result.Process.Stdout)
-		if parseErr != nil {
-			return nil, parseErr
-		}
-		evidence["analysis_findings"] = len(analysis.Findings)
-		evidence["analysis_critical"] = analysis.Critical
-		evidence["analysis_high"] = analysis.High
-		evidence["analysis_medium"] = analysis.Medium
-	case "converge":
-		currentTasks, readErr := os.ReadFile(filepath.Join(featureDir, "tasks.md"))
-		if readErr != nil {
-			return nil, fmt.Errorf("CONVERGENCE_TASKS_UNAVAILABLE: %w", readErr)
-		}
-		convergence, parseErr := speckit.ParseConvergenceOutput(result.Process.Stdout)
-		if parseErr != nil {
-			return nil, parseErr
-		}
-		if convergence.Converged {
-			if string(oldTasks) != string(currentTasks) {
-				return nil, fmt.Errorf("CONVERGENCE_CHANGED_TASKS_WITHOUT_APPEND_REPORT")
-			}
-		} else if err := speckit.ValidateAppendOnly(string(oldTasks), string(currentTasks)); err != nil {
-			return nil, err
-		}
-		evidence["converged"] = convergence.Converged
-		evidence["appended_task_count"] = len(convergence.Appended)
-	}
 	evidence["_stage_output"] = result.Process.Stdout
 	return evidence, nil
+}
+
+type stageFile struct {
+	Path   string
+	SHA256 string
+	Kind   string
+}
+
+func captureStageArtifacts(projectRoot, featureDir, stage string) (map[string]stageFile, error) {
+	paths := map[string]string{}
+	switch stage {
+	case "constitution":
+		paths[".specify/memory/constitution.md"] = filepath.Join(projectRoot, ".specify", "memory", "constitution.md")
+	case "specify", "clarify":
+		paths[filepath.Join("specs", filepath.Base(featureDir), "spec.md")] = filepath.Join(featureDir, "spec.md")
+	case "plan":
+		paths[filepath.Join("specs", filepath.Base(featureDir), "plan.md")] = filepath.Join(featureDir, "plan.md")
+	case "checklist":
+		paths[filepath.Join("specs", filepath.Base(featureDir), "checklists", "requirements.md")] = filepath.Join(featureDir, "checklists", "requirements.md")
+	case "tasks", "converge":
+		paths[filepath.Join("specs", filepath.Base(featureDir), "tasks.md")] = filepath.Join(featureDir, "tasks.md")
+	case "implement":
+		return workspaceFiles(projectRoot)
+	default:
+		return map[string]stageFile{}, nil
+	}
+	files := make(map[string]stageFile, len(paths))
+	for relative, absolute := range paths {
+		file, err := inspectStageFile(projectRoot, relative, absolute)
+		if err != nil {
+			return nil, err
+		}
+		if file.SHA256 != "" {
+			files[relative] = file
+		}
+	}
+	return files, nil
+}
+
+func inspectStageFile(projectRoot, relative, absolute string) (stageFile, error) {
+	info, err := os.Lstat(absolute)
+	if os.IsNotExist(err) {
+		return stageFile{Path: relative, Kind: "markdown"}, nil
+	}
+	if err != nil {
+		return stageFile{}, err
+	}
+	resolved, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return stageFile{}, err
+	}
+	root, err := filepath.EvalSymlinks(projectRoot)
+	if err != nil {
+		return stageFile{}, err
+	}
+	rel, err := filepath.Rel(root, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return stageFile{}, fmt.Errorf("STAGE_ARTIFACT_PATH_ESCAPE: %s", relative)
+	}
+	if !info.Mode().IsRegular() {
+		return stageFile{}, fmt.Errorf("STAGE_ARTIFACT_NOT_REGULAR: %s", relative)
+	}
+	content, err := os.ReadFile(resolved)
+	if err != nil {
+		return stageFile{}, err
+	}
+	return stageFile{Path: filepath.ToSlash(relative), SHA256: hashString(string(content)), Kind: artifactKind(relative)}, nil
+}
+
+func workspaceFiles(root string) (map[string]stageFile, error) {
+	files := map[string]stageFile{}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() && (entry.Name() == ".git" || entry.Name() == "node_modules" || entry.Name() == ".spectide") {
+			return filepath.SkipDir
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			resolved, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				return err
+			}
+			canonicalRoot, err := filepath.EvalSymlinks(root)
+			if err != nil {
+				return err
+			}
+			targetRel, err := filepath.Rel(canonicalRoot, resolved)
+			if err != nil || targetRel == ".." || strings.HasPrefix(targetRel, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("STAGE_ARTIFACT_PATH_ESCAPE: %s", rel)
+			}
+			return nil
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+		if len(files) >= 20000 {
+			return fmt.Errorf("STAGE_ARTIFACT_SCAN_LIMIT")
+		}
+		file, err := inspectStageFile(root, rel, path)
+		if err != nil {
+			return err
+		}
+		files[filepath.ToSlash(rel)] = file
+		return nil
+	})
+	return files, err
+}
+
+func changedStageArtifacts(projectRoot, featureDir, stage string, before map[string]stageFile) ([]model.Artifact, error) {
+	after, err := captureStageArtifacts(projectRoot, featureDir, stage)
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]string, 0, len(after))
+	for path := range after {
+		if after[path].SHA256 != "" && after[path].SHA256 != before[path].SHA256 {
+			paths = append(paths, path)
+		}
+	}
+	sort.Strings(paths)
+	artifacts := make([]model.Artifact, 0, len(paths))
+	for _, path := range paths {
+		file := after[path]
+		artifacts = append(artifacts, model.Artifact{Path: path, Kind: file.Kind, SHA256: file.SHA256})
+	}
+	return artifacts, nil
+}
+
+func artifactKind(path string) string {
+	ext := strings.TrimPrefix(filepath.Ext(path), ".")
+	if ext == "" {
+		return "file"
+	}
+	return ext
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func hashString(value string) string {

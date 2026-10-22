@@ -19,6 +19,6 @@ The API binds to loopback and rejects other Host/Origin values. Mutation request
 
 Errors use a JSON object with an `error` member containing `code` and `message`. Responses and event payloads redact common credential forms. The API does not expose arbitrary shell commands or provider credentials.
 
-Run report snapshots include append-only `execution_attempts` for provider invocations and `quality_executions` with per-check results. Attempt reports retain route, phase/iteration, process ID, timing, exit/result metadata, safe error text, sanitized evidence, and stream hashes; they omit raw provider output.
+Run report snapshots include append-only `execution_attempts` for provider invocations, `quality_executions` with per-check results, and safe artifact metadata. Attempts retain route, phase/iteration, process ID, timing, exit/result metadata, safe error text, sanitized evidence, stream hashes, and IDs linking registered artifact hashes in the report; raw provider output is omitted.
 
 The machine-readable contract is [openapi.yaml](openapi.yaml). The feature-level HTTP/SSE contract is also in [the master specification](../specs/001-build-spectide/contracts/http-api.md).

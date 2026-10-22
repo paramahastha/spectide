@@ -497,6 +497,13 @@
 - The live quality loop records each check pass with check key, sanitized command, subprocess PID, exit code, duration, verdict, and redacted summary. Test repairs, convergence tests, and final-review tests get separate phase histories. Reports expose both provider attempts and quality histories. Retention/restore schema support was updated to version 9.
 - Tests cover attempt iteration, completion-event rollback, immutable/delete guards, quality result redaction and history, event-sequence links, and report exposure for a fixture-backed live workflow. Focused store/workflow/runner/API tests and full `make verify` passed, including static analysis, all Go suites, dashboard typecheck/tests/build, binary build, secret scan, and offline smoke. Latest SC-001: 21.473 ms; smoke remained `SIMULATED`. T058 is complete; T059 is next. T031, T045, and T046 remain open.
 
+### T059 — Semantic stage outcomes and artifact evidence — 2026-10-22
+
+- Live analyze and convergence output is parsed and validated before the provider attempt can be finalized as successful. Convergence task claims must exactly match the valid append in `tasks.md`; read-only analysis must leave canonical Spec-Kit artifacts unchanged.
+- Generation stages require a changed owning artifact (constitution, spec/clarifications, plan, checklist, tasks); implementation/remediation requires a changed workspace file. Artifact inspection rejects path escapes and non-regular expected outputs. Verified changed files are registered through `SaveArtifact` with SHA-256 metadata and linked into the attempt and report.
+- No-op provider stages and missing generated files fail even if the subprocess exits zero. Tests exercise semantic failure, no-op rejection, symlink escape rejection, report metadata, and artifact-to-attempt links.
+- Focused workflow/store acceptance tests and full `make verify` passed. Go vet/tests, dashboard typecheck/tests/build, binary build, secret scan, and smoke all passed. Latest SC-001: 17.638 ms; offline smoke remains `SIMULATED`. T059 is complete; T060 is next. T031, T045, and T046 remain open.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified
