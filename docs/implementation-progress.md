@@ -264,6 +264,12 @@
 
 - Retry orchestration that creates subsequent attempts and verified restart recovery remain open (T016, T034, T036).
 
+### Phase checkpoint — reference-host smoke measurement
+
+- Updated smoke validation to capture macOS/Linux identity, CPU model, installed memory, architecture, build command, and monotonic process-start-to-first-`/healthz` response time.
+- On the reference host, `make smoke` passed on macOS 15.1 / Apple M4 / 16 GiB / arm64. The first HTTP 200 arrived 0.295 ms after process launch, within the 2-second SC-001 limit; the offline demo also completed with `SIMULATED` evidence.
+- Added the measured result and honest outstanding PASS/FAIL/BLOCKED/NOT_RUN limits to `docs/final-verification.md`; this is a progress report, not a release approval. T039 is complete; T046 remains open.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified

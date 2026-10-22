@@ -20,7 +20,27 @@ cleanup() {
 }
 trap cleanup EXIT
 "${binary}" doctor
-SECONDS=0
+os_name="$(uname -s)"
+case "${os_name}" in
+  Darwin)
+    os_version="macOS $(sw_vers -productVersion)"
+    cpu_model="$(sysctl -n machdep.cpu.brand_string)"
+    memory_bytes="$(sysctl -n hw.memsize)"
+    ;;
+  Linux)
+    os_version="$(uname -sr)"
+    cpu_model="$(awk -F: '/model name/ {sub(/^[[:space:]]+/, "", $2); print $2; exit}' /proc/cpuinfo)"
+    memory_bytes="$(awk '/MemTotal/ {print $2 * 1024; exit}' /proc/meminfo)"
+    ;;
+  *)
+    echo "unsupported verification host: ${os_name}" >&2
+    exit 1
+    ;;
+esac
+architecture="$(uname -m)"
+memory_gib="$(python3 -c 'import sys; print(f"{int(sys.argv[1]) / (1024 ** 3):.1f}")' "${memory_bytes}")"
+echo "Verification host: ${os_version}; CPU: ${cpu_model}; RAM: ${memory_gib} GiB; architecture: ${architecture}"
+started_ns="$(python3 -c 'import time; print(time.monotonic_ns())')"
 "${binary}" --db "${state_db}" serve --port 0 >"${server_log}" 2>&1 &
 server_pid="$!"
 health_ok=0
@@ -37,7 +57,13 @@ if [[ "${health_ok}" -ne 1 ]]; then
   cat "${server_log}" >&2
   exit 1
 fi
-if [[ "${SECONDS}" -gt 2 ]]; then
+finished_ns="$(python3 -c 'import time; print(time.monotonic_ns())')"
+elapsed_ms="$(python3 -c 'import sys; print(f"{(int(sys.argv[2]) - int(sys.argv[1])) / 1_000_000:.3f}")' "${started_ns}" "${finished_ns}")"
+printf 'Build command: make build (go build -o bin/spectide ./cmd/spectide)\n'
+printf 'Process start to first HTTP 200 /healthz: %s ms (monotonic clock)\n' "${elapsed_ms}"
+if python3 -c 'import sys; raise SystemExit(int(int(sys.argv[2]) - int(sys.argv[1]) > 2_000_000_000))' "${started_ns}" "${finished_ns}"; then
+  :
+else
   echo "health endpoint startup exceeded the 2s threshold" >&2
   exit 1
 fi

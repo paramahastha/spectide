@@ -93,7 +93,7 @@
 
 - [ ] T037 [P] [US5] Implement Cobra root command and the `doctor`, `init`, `serve`, `dashboard`, `demo`, configuration, project, profile/model, approval, and run pause/resume/cancel control commands in `cmd/spectide/` and `internal/cli/`; T017 owns run/status/list/logs/report and exit-code commands
 - [ ] T038 [P] [US5] Create fake-provider demo workspace and deterministic fixtures in `examples/fake-provider-demo/` and `testdata/`
-- [ ] T039 [US5] Add offline smoke validation and assert `/healthz` responds within the SC-001 2-second startup threshold; capture exact OS, CPU model, installed RAM, build command, and monotonic process-start-to-first-HTTP-200 elapsed time for the verification report in `scripts/smoke.sh`, `scripts/demo.sh`, and `Makefile`
+- [x] T039 [US5] Add offline smoke validation and assert `/healthz` responds within the SC-001 2-second startup threshold; capture exact OS, CPU model, installed RAM, build command, and monotonic process-start-to-first-HTTP-200 elapsed time for the verification report in `scripts/smoke.sh`, `scripts/demo.sh`, and `Makefile`
 - [ ] T040 [US5] Write verified user, architecture, configuration, provider, security, recovery, troubleshooting, and OpenAPI documentation in `docs/`
 - [ ] T041 [US5] Complete the contribution/security policy, changelog, CI verification steps, and no-secret checks in root policy files and `.github/workflows/`, extending T004’s initial scaffold
 

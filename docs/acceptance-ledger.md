@@ -39,7 +39,7 @@ This ledger maps every functional requirement in the single master specification
 
 | Criterion | Current evidence/status |
 |---|---|
-| SC-001 | Partial: `make smoke` launches `spectide serve --port 0` and verifies `/healthz` within 2 seconds; final evidence must record CPU/RAM and exact host details (T046). |
+| SC-001 | Pass on recorded host: macOS 15.1, Apple M4, 16 GiB, arm64; `make smoke` measured 0.295 ms monotonic process-start-to-first-HTTP-200 at `/healthz`. See [verification evidence](final-verification.md). |
 | SC-002 | Pass: 20 deterministic runs passed in `TestTwentyDeterministicRunsCompleteWithRequiredEvidence`. |
 | SC-003 | Partial: quality verdict types exist; terminal simulated reports pass; live blocked/not-run behavior needs end-to-end acceptance. |
 | SC-004 | Partial: persisted replay and cursor tests pass; two independent browser clients are not yet covered. |
