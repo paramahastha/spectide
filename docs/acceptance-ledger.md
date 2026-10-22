@@ -39,11 +39,11 @@ This ledger maps every functional requirement in the single master specification
 
 | Criterion | Current evidence/status |
 |---|---|
-| SC-001 | Pass on recorded host: macOS 15.1, Apple M4, 16 GiB, arm64; latest same-process monotonic `make verify` measured 19.188 ms process-start-to-first-HTTP-200 at `/healthz`. See [verification evidence](final-verification.md). |
+| SC-001 | Pass on recorded host: macOS 15.1, Apple M4, 16 GiB, arm64; latest same-process monotonic `make verify` measured 20.717 ms process-start-to-first-HTTP-200 at `/healthz`. See [verification evidence](final-verification.md). |
 | SC-002 | Pass: 20 deterministic runs passed in `TestTwentyDeterministicRunsCompleteWithRequiredEvidence`. |
 | SC-003 | Partial: quality verdict types exist; terminal simulated reports pass; live blocked/not-run behavior needs end-to-end acceptance. |
 | SC-004 | Partial: persisted replay and cursor tests pass; two independent browser clients are not yet covered. |
 | SC-005 | Partial: API/routing/security unit coverage passes; one unified unauthorized-route attempt suite remains open. |
-| SC-006 | Open: the profile is specified in `spec.md`; 10 clients, 100 events/s for 100 seconds, 10,000-event backlog, timestamp-to-frame p95, and no-missing-event assertion remain to be measured (T043a). |
+| SC-006 | Pass: `make load-test-sse` used one local server, 10 concurrent clients, 100 events/s for 100 seconds, and a 10,000-event persisted backlog. All 200,010 replay/live frames were received with contiguous sequence IDs; all-frame persisted-timestamp-to-receipt p95 was 270.133 ms. Evidence: [load test](../internal/api/sse_load_test.go). |
 | SC-007 | Pass: `make smoke` completed with explicit `SIMULATED` output and isolated temporary state. |
 | SC-008 | Open: the spec now defines every FR-001 through FR-030 as required for v1; complete linked evidence remains outstanding. |

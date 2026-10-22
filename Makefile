@@ -1,6 +1,6 @@
 BIN := bin/spectide
 
-.PHONY: fmt format-check lint test web-test web-build build demo smoke security verify
+.PHONY: fmt format-check lint test web-test web-build build demo smoke security verify load-test-sse
 fmt:
 	gofmt -w cmd internal
 
@@ -34,3 +34,6 @@ security:
 	./scripts/check-secrets.sh
 
 verify: format-check lint test web-test web-build build security smoke
+
+load-test-sse:
+	SPECTIDE_RUN_SSE_LOAD=1 go test ./internal/api -run TestSSEModerateLoadAcceptance -count=1 -timeout 3m -v

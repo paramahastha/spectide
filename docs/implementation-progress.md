@@ -365,6 +365,12 @@
 - Added verified local usage, configuration precedence, provider readiness, safe recovery, troubleshooting, and API documentation with an OpenAPI 3.1 contract. Corrected existing quickstart references to match implemented CLI flags and clearly stated that restart resume and CLI backup/restore are unavailable.
 - Linked the guides from the root README. `docs/openapi.yaml` parses as YAML, CLI examples were checked against the implemented command flags, and full `make verify` passed. T040 is complete. Latest SC-001 measurement is 19.188 ms on the reference host.
 
+### Phase checkpoint — SC-006 SSE moderate-load acceptance
+
+- Added the opt-in `make load-test-sse` profile with one local server, ten concurrent SSE clients, a persisted 10,000-event backlog, and 10,000 live events at 100/s across 100 seconds. The test checks contiguous event sequences for each client and measures persisted-timestamp-to-frame-receipt latency for every non-heartbeat backlog and live frame.
+- Result: all ten clients received 20,001 frames each (200,010 total); all-frame p95 was 270.133 ms, below 1 second. The initial sequential fixture exceeded the threshold at 1.018 s; a single-transaction backlog fixture measures the event timestamps at the batch's persistence point and avoids setup time being counted as delivery lag.
+- `make load-test-sse` and full `make verify` passed. T043a and SC-006 are complete. Latest SC-001 measurement is 20.717 ms on the reference host.
+
 ### Phase checkpoint — durable run-owner leases
 
 - Added migration 6 and per-run heartbeat leases. The workflow writes its owner lease atomically with the workspace lock, refreshes it while the worker is alive, and removes it at finish.

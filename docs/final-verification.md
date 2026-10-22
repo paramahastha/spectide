@@ -13,7 +13,7 @@
 - Architecture: arm64
 - Build command: `make build` (`go build -o bin/spectide ./cmd/spectide`)
 - Startup/health command: `make smoke` (`scripts/smoke.sh` starts `spectide serve --port 0`, then requests `/healthz`)
-- Measurement: latest corrected `make verify` run measured 19.188 ms from the monotonic timestamp immediately before `Popen` through the first HTTP 200 from `/healthz` (prior same-process run: 20.874 ms); acceptance limit is 2,000 ms. An earlier attempt measured timestamps in separate Python processes, which use different monotonic origins in this host environment; those earlier values (0.152 ms and 0.295 ms) and the negative result are invalid and superseded.
+- Measurement: latest corrected `make verify` run measured 20.717 ms from the monotonic timestamp immediately before `Popen` through the first HTTP 200 from `/healthz` (prior same-process run: 19.188 ms); acceptance limit is 2,000 ms. An earlier attempt measured timestamps in separate Python processes, which use different monotonic origins in this host environment; those earlier values (0.152 ms and 0.295 ms) and the negative result are invalid and superseded.
 - The same smoke run completed the offline demo and reported `SIMULATED`.
 
 ## Other verification executed
@@ -36,6 +36,7 @@
 | Live route profile boundaries | PASS | Focused routing/workflow/API tests and full `make verify`; profile existence, provider match, and canonical allowed scope are required before preview or run creation; live invocation remains blocked |
 | Durable blocked live-stage outcome | PASS | Focused workflow/CLI/API/Spec-Kit tests and full `make verify`; authorized but unavailable live routes persist a `BLOCKED` run, skipped first stage, `NOT_RUN` event, and blocked gate |
 | Local documentation contract | PASS | Full `make verify`; `ruby -e 'require "yaml"; YAML.load_file("docs/openapi.yaml")'`; CLI examples checked against implemented command flags |
+| SC-006 SSE moderate-load profile | PASS | `make load-test-sse`: 10 clients, 100 events/s × 100 s, 10,000 persisted backlog events; 200,010 total non-heartbeat frames received with contiguous sequences; all-frame p95 270.133 ms |
 | Spec-Kit analyze consistency gate | PASS, read-only equivalent | `specs/001-build-spectide/analysis.md`; installed Codex CLI executed the repository instructions after OpenCode returned HTTP 503; no official Spec-Kit invocation is claimed |
 
 ## Not run or incomplete
@@ -43,5 +44,4 @@
 - Official Spec-Kit stage execution and convergence: NOT_RUN. The current workflow engine is simulated; T014/T045 remain open.
 - Live provider workflow: NOT_RUN. `doctor` found the provider CLIs but reported each as not authenticated; the application also blocks live stage execution before run creation.
 - Browser end-to-end and accessibility scans/screenshots: NOT_RUN. The local browser inspection was denied by the browser access gate; T031/T046 remain open.
-- SC-006 moderate-load SSE p95 profile: NOT_RUN (T043a).
 - Full release acceptance: INCOMPLETE. See [the acceptance ledger](acceptance-ledger.md) and [the implementation task ledger](../specs/001-build-spectide/tasks.md).

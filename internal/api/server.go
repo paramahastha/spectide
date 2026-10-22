@@ -81,6 +81,8 @@ func (s *Server) profiles(w http.ResponseWriter, r *http.Request) {
 
 var idempotencyPattern = regexp.MustCompile(`^[A-Za-z0-9:_-]{8,128}$`)
 
+const sseReplayPageSize = 512
+
 func apiError(w http.ResponseWriter, status int, code, message string) {
 	jsonOut(w, status, map[string]any{"error": map[string]string{"code": code, "message": message}})
 }
@@ -478,7 +480,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, id string) {
 		if err != nil {
 			return
 		}
-		events, e := s.Store.EventsPage(r.Context(), id, after, through, 256)
+		events, e := s.Store.EventsPage(r.Context(), id, after, through, sseReplayPageSize)
 		if e != nil {
 			return
 		}
