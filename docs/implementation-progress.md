@@ -320,6 +320,12 @@
 - API tests verify all configured routes are returned without creating a run and that a config-file symlink escape is rejected. `go test ./internal/api -count=1` passed.
 - T024 remains open for profile/provider/model/capability validation and direct/fallback authorization through actual launch policy.
 
+### Phase checkpoint — global and project configuration precedence
+
+- Added non-secret global configuration under the OS user config directory, with project `.spectide/config.json` values overriding global values and stage routes merged by stage.
+- Workflow start, API dry-run and project configuration reads, and CLI config display/validation/preview now use the same effective configuration. API project config reads retain canonical-root and symlink-boundary checks.
+- Tests cover default/global/project precedence and missing-layer defaults. The full `make verify` target passed after wiring the effective config into workflow start, CLI, and API. T008 is complete; corrected SC-001 measurement was 19.318 ms on the reference host.
+
 ### Phase checkpoint — durable run-owner leases
 
 - Added migration 6 and per-run heartbeat leases. The workflow writes its owner lease atomically with the workspace lock, refreshes it while the worker is alive, and removes it at finish.

@@ -357,7 +357,7 @@ func Root() *cobra.Command {
 	root.AddCommand(models)
 	conf := &cobra.Command{Use: "config", Short: "Inspect or validate project configuration", RunE: func(c *cobra.Command, _ []string) error {
 		path, _ := c.Flags().GetString("file")
-		v, e := config.Load(path)
+		v, e := config.LoadEffective(config.GlobalPath(), path)
 		if e != nil {
 			return e
 		}
@@ -366,7 +366,7 @@ func Root() *cobra.Command {
 	conf.Flags().String("file", config.ProjectPath("."), "configuration file path")
 	conf.AddCommand(&cobra.Command{Use: "validate", RunE: func(c *cobra.Command, _ []string) error {
 		path, _ := c.Flags().GetString("file")
-		v, e := config.Load(path)
+		v, e := config.LoadEffective(config.GlobalPath(), path)
 		if e != nil {
 			return e
 		}
@@ -376,7 +376,7 @@ func Root() *cobra.Command {
 	preview := &cobra.Command{Use: "preview", Short: "Preview deterministic routes without starting a run", RunE: func(c *cobra.Command, _ []string) error {
 		file, _ := c.Flags().GetString("file")
 		prompt, _ := c.Flags().GetString("prompt")
-		cfg, e := config.Load(file)
+		cfg, e := config.LoadEffective(config.GlobalPath(), file)
 		if e != nil {
 			return e
 		}
@@ -404,7 +404,7 @@ func Root() *cobra.Command {
 			return fmt.Errorf("project path must be an existing directory")
 		}
 		path := config.ProjectPath(abs)
-		v, e := config.Load(path)
+		v, e := config.LoadEffective(config.GlobalPath(), path)
 		if e != nil {
 			return e
 		}

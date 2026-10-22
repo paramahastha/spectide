@@ -37,6 +37,14 @@ type Decision struct {
 
 func ProjectPath(root string) string { return filepath.Join(root, ".spectide", FileName) }
 
+func GlobalPath() string {
+	base, err := os.UserConfigDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(base, "spectide", FileName)
+}
+
 func Default() Config {
 	return Config{Version: 1, RoutingMode: "hybrid", DefaultRoute: Route{Provider: "fake", Profile: "fake-demo", Model: "deterministic", Effort: "none"}}
 }
@@ -58,6 +66,91 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	return c, nil
+}
+
+// LoadEffective applies the default, user-global, then project configuration
+// layers. Project values override global values; stage routes merge by stage.
+func LoadEffective(globalPath, projectPath string) (Config, error) {
+	effective := Default()
+	for _, path := range []string{globalPath, projectPath} {
+		if path == "" {
+			continue
+		}
+		override, exists, err := loadOptional(path)
+		if err != nil {
+			return Config{}, err
+		}
+		if exists {
+			effective = merge(effective, override)
+		}
+	}
+	if err := Validate(effective); err != nil {
+		return Config{}, err
+	}
+	return effective, nil
+}
+
+func loadOptional(path string) (Config, bool, error) {
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return Config{}, false, nil
+	}
+	if err != nil {
+		return Config{}, false, err
+	}
+	var c Config
+	if err = json.Unmarshal(b, &c); err != nil {
+		return Config{}, false, fmt.Errorf("invalid config %s: %w", path, err)
+	}
+	if err = Validate(c); err != nil {
+		return Config{}, false, err
+	}
+	return c, true, nil
+}
+
+func merge(base, override Config) Config {
+	if override.Version != 0 {
+		base.Version = override.Version
+	}
+	if override.Project != "" {
+		base.Project = override.Project
+	}
+	if override.RoutingMode != "" {
+		base.RoutingMode = override.RoutingMode
+	}
+	if override.DefaultRoute != (Route{}) {
+		base.DefaultRoute = mergeRoute(base.DefaultRoute, override.DefaultRoute)
+	} else if override.RoutingMode == "manual" {
+		base.DefaultRoute = Route{}
+	}
+	if override.StageRoutes != nil {
+		if base.StageRoutes == nil {
+			base.StageRoutes = make(map[string]Route)
+		}
+		for stage, route := range override.StageRoutes {
+			base.StageRoutes[stage] = mergeRoute(base.StageRoutes[stage], route)
+		}
+	}
+	if override.AllowedScopes != nil {
+		base.AllowedScopes = append([]string(nil), override.AllowedScopes...)
+	}
+	return base
+}
+
+func mergeRoute(base, override Route) Route {
+	if override.Provider != "" {
+		base.Provider = override.Provider
+	}
+	if override.Profile != "" {
+		base.Profile = override.Profile
+	}
+	if override.Model != "" {
+		base.Model = override.Model
+	}
+	if override.Effort != "" {
+		base.Effort = override.Effort
+	}
+	return base
 }
 
 func Save(path string, c Config) error {

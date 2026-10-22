@@ -168,7 +168,12 @@ func (s *Server) project(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusForbidden, "PROJECT_PATH_CHANGED", "registered project path no longer resolves to its canonical location")
 		return
 	}
-	value, err := config.Load(config.ProjectPath(project.CanonicalPath))
+	configPath, err := safeProjectConfigPath(project.CanonicalPath)
+	if err != nil {
+		apiError(w, http.StatusForbidden, "PROJECT_CONFIG_PATH_INVALID", err.Error())
+		return
+	}
+	value, err := config.LoadEffective(config.GlobalPath(), configPath)
 	if err != nil {
 		apiError(w, 422, "PROJECT_CONFIG_INVALID", err.Error())
 		return
@@ -248,7 +253,7 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 				apiError(w, http.StatusUnprocessableEntity, "ROUTE_PREVIEW_BLOCKED", err.Error())
 				return
 			}
-			cfg, err := config.Load(configPath)
+			cfg, err := config.LoadEffective(config.GlobalPath(), configPath)
 			if err != nil {
 				apiError(w, http.StatusUnprocessableEntity, "ROUTE_PREVIEW_BLOCKED", err.Error())
 				return

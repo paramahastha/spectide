@@ -66,3 +66,43 @@ func TestManualHybridAndAutomaticRouting(t *testing.T) {
 		t.Fatalf("automatic decision=%+v err=%v", d, err)
 	}
 }
+
+func TestLoadEffectiveAppliesGlobalThenProjectOverrides(t *testing.T) {
+	dir := t.TempDir()
+	globalPath := filepath.Join(dir, "global", "config.json")
+	projectPath := filepath.Join(dir, "project", "config.json")
+	global := Default()
+	global.DefaultRoute = Route{Provider: "codex", Profile: "global", Model: "gpt-default"}
+	global.StageRoutes = map[string]Route{"plan": {Provider: "codex", Profile: "global", Model: "gpt-plan"}, "tests": {Provider: "codex", Profile: "global"}}
+	global.AllowedScopes = []string{"/global-scope"}
+	if err := Save(globalPath, global); err != nil {
+		t.Fatal(err)
+	}
+	project := Default()
+	project.DefaultRoute = Route{Provider: "fake", Profile: "project", Model: "local-default"}
+	project.StageRoutes = map[string]Route{"plan": {Provider: "fake", Profile: "project", Model: "local-plan"}}
+	project.AllowedScopes = []string{"/project-scope"}
+	if err := Save(projectPath, project); err != nil {
+		t.Fatal(err)
+	}
+	effective, err := LoadEffective(globalPath, projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if effective.DefaultRoute.Profile != "project" || effective.StageRoutes["plan"].Model != "local-plan" {
+		t.Fatalf("project route did not override global: %+v", effective)
+	}
+	if effective.StageRoutes["tests"].Profile != "global" {
+		t.Fatalf("unoverridden global stage route was lost: %+v", effective.StageRoutes)
+	}
+	if len(effective.AllowedScopes) != 1 || effective.AllowedScopes[0] != "/project-scope" {
+		t.Fatalf("project scopes did not override global scopes: %+v", effective.AllowedScopes)
+	}
+}
+
+func TestLoadEffectiveUsesDefaultsWhenLayersAreAbsent(t *testing.T) {
+	cfg, err := LoadEffective(filepath.Join(t.TempDir(), "missing-global.json"), filepath.Join(t.TempDir(), "missing-project.json"))
+	if err != nil || cfg.RoutingMode != "hybrid" || cfg.DefaultRoute.Provider != "fake" {
+		t.Fatalf("effective config=%+v err=%v", cfg, err)
+	}
+}

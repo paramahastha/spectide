@@ -23,7 +23,7 @@
 - [x] T050 Persist immutable effective run configuration and append-only stage-attempt history, with mutation/retry tests for FR-003, in `internal/store/` and `internal/workflow/`
 - [x] T051 Implement backup/restore with schema compatibility checks; expire individual event details 90 days after their timestamps; prune details from the oldest terminal runs first at the 1,000-detailed-history cap; preserve summaries, outcomes, routes, verdicts, approvals, and sanitized report metadata; reject creation if all detailed-history slots are active; add recovery tests for FR-027 in `internal/store/`
 - [x] T047 Create checkpoint, artifact, approval, routing-decision, and workspace-lock persistence repositories with transaction tests in `internal/store/`
-- [ ] T008 [P] Implement configuration precedence, profile registry, and validation in `internal/config/`
+- [x] T008 [P] Implement configuration precedence, profile registry, and validation in `internal/config/`
 - [ ] T009 [P] Implement workspace canonicalization, allowed roots, and writer locks in `internal/workspace/`
 - [ ] T010 [P] Implement redaction, process policy, and approval models in `internal/security/` and `internal/events/`
 - [ ] T011 Implement strict workflow transition validation and recovery checkpoints in `internal/workflow/` (depends on T047 persistence repositories)
