@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
 	"github.com/spectide/spectide/internal/store"
 )
@@ -21,6 +23,43 @@ func executeCLI(t *testing.T, db string, args ...string) (string, error) {
 	root.SetArgs(append([]string{"--db", db}, args...))
 	err := root.Execute()
 	return output.String(), err
+}
+
+func TestRunStateExitCodesAreStable(t *testing.T) {
+	cases := []struct {
+		state model.RunState
+		code  int
+	}{
+		{state: model.Blocked, code: ExitBlocked},
+		{state: model.Failed, code: ExitFailed},
+		{state: model.Cancelled, code: ExitCancelled},
+		{state: model.Completed, code: ExitCommand},
+	}
+	for _, tc := range cases {
+		if got := ExitCode(runStateError(tc.state)); got != tc.code {
+			t.Errorf("state %s exit code=%d, want %d", tc.state, got, tc.code)
+		}
+	}
+	if got := ExitCode(errors.New("invalid command")); got != ExitCommand {
+		t.Fatalf("generic command error exit code=%d, want %d", got, ExitCommand)
+	}
+	if got := ExitCode(nil); got != ExitSuccess {
+		t.Fatalf("success exit code=%d, want %d", got, ExitSuccess)
+	}
+}
+
+func TestUnavailableLiveRouteExitsAsBlocked(t *testing.T) {
+	project := t.TempDir()
+	cfg := config.Default()
+	cfg.DefaultRoute.Provider = "codex"
+	cfg.DefaultRoute.Profile = "local-codex"
+	if err := config.Save(config.ProjectPath(project), cfg); err != nil {
+		t.Fatal(err)
+	}
+	_, err := executeCLI(t, filepath.Join(t.TempDir(), "spectide.db"), "run", "--project", project, "inspect this project")
+	if got := ExitCode(err); got != ExitBlocked {
+		t.Fatalf("live route error=%v exit code=%d, want %d", err, got, ExitBlocked)
+	}
 }
 
 func TestProjectRegisterCanonicalizesAndLists(t *testing.T) {

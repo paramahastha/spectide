@@ -4,7 +4,7 @@ This ledger maps every functional requirement in the single master specification
 
 | Requirement | Status | Evidence |
 |---|---|---|
-| FR-001 CLI commands | Partial | [CLI command tree](../internal/cli/root.go); project registration, profile/model offline probes, and approval list/create/resolve commands are implemented and tested; run exit-code behavior remains open (T017) |
+| FR-001 CLI commands | Partial | [CLI command tree](../internal/cli/root.go); project registration, profile/model offline probes, approval lifecycle, and stable completed/blocked/failed/cancelled run exit codes are implemented; model catalogs remain explicitly `NOT_PROBED` until provider-specific authorized discovery is available |
 | FR-002 durable local evidence | Partial | [store repositories](../internal/store); [evidence tests](../internal/store/evidence_test.go); immutable configuration and append-only stage attempts are covered, while retention and recovery remain open (T011, T034, T051) |
 | FR-003 immutable configuration and attempts | Partial | [versioned persistence and tests](../internal/store/migrations/004_run_configuration.sql); effective routes are hashed into run reports and immutable stage attempts are append-only, but retry orchestration and end-to-end historical attempt reporting remain open |
 | FR-004 single owner and workspace writer | Partial | [workspace lock tests](../internal/workflow/engine_test.go); process ownership reconciliation remains open (T034) |

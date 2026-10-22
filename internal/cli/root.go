@@ -68,6 +68,9 @@ func Root() *cobra.Command {
 		project, _ := c.Flags().GetString("project")
 		r, e := a.Engine.Start(context.Background(), project, args[0])
 		if e != nil {
+			if strings.HasPrefix(e.Error(), "LIVE_STAGE_EXECUTION_UNAVAILABLE:") || strings.HasPrefix(e.Error(), "WORKSPACE_LOCKED:") {
+				return &CommandError{Code: ExitBlocked, Err: e}
+			}
 			return e
 		}
 		fmt.Fprintf(c.OutOrStdout(), "SIMULATED run started: %s\n", r.ID)
@@ -76,7 +79,7 @@ func Root() *cobra.Command {
 			return e
 		}
 		if result.State != model.Completed {
-			return fmt.Errorf("run ended %s", result.State)
+			return runStateError(result.State)
 		}
 		fmt.Fprintln(c.OutOrStdout(), "SIMULATED run completed with fixture evidence")
 		return nil
@@ -100,7 +103,7 @@ func Root() *cobra.Command {
 			return e
 		}
 		if result.State != model.Completed {
-			return fmt.Errorf("run ended %s", result.State)
+			return runStateError(result.State)
 		}
 		fmt.Fprintln(c.OutOrStdout(), "SIMULATED run completed with fixture evidence")
 		return nil
@@ -463,6 +466,20 @@ func splitCSV(value string) []string {
 	}
 	return out
 }
+
+func runStateError(state model.RunState) error {
+	switch state {
+	case model.Blocked:
+		return commandError(ExitBlocked, "run ended BLOCKED")
+	case model.Failed:
+		return commandError(ExitFailed, "run ended FAILED")
+	case model.Cancelled:
+		return commandError(ExitCancelled, "run ended CANCELLED")
+	default:
+		return commandError(ExitCommand, fmt.Sprintf("run ended %s", state))
+	}
+}
+
 func netJoin(host string, port int) string {
 	if strings.Contains(host, ":") {
 		return "[" + host + "]:" + strconv.Itoa(port)

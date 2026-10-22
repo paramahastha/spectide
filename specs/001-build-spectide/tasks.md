@@ -39,7 +39,7 @@
 - [ ] T014 [US1] Implement Spec-Kit discovery, canonical-stage invocation only through verified installed commands, blocked outcomes for missing or unusable integrations, artifact inspection, and analyze/converge parsing in `internal/speckit/`
 - [x] T015 [US1] Implement required test registry and evidence collection in `internal/quality/`
 - [ ] T016 [US1] Implement the FR-009 defaults of at most 3 analyze remediation rounds (excluding the initial baseline; only critical/high findings and medium findings that leave security, acceptance, or prerequisites unsatisfied block; a round is one owning-artifact change followed by one read-only re-analysis), 4 test repair attempts, and 5 convergence rounds per run; add tests for each configured default, each exhaustion boundary, and the no-progress stop condition in `internal/workflow/`
-- [ ] T017 [US1] Implement CLI run, status, list, logs, report, and exit-code behavior in `internal/cli/`
+- [x] T017 [US1] Implement CLI run, status, list, logs, report, and exit-code behavior in `internal/cli/`
 
 ## Phase 4: User Story 2 — Authorized profile routing (P1)
 

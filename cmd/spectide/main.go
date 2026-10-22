@@ -9,6 +9,6 @@ import (
 func main() {
 	if err := cli.Root().Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(2)
+		os.Exit(cli.ExitCode(err))
 	}
 }

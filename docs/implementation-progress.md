@@ -285,7 +285,13 @@
 ### Phase checkpoint — offline profile and model probes
 
 - Added `spectide profiles probe NAME` and `spectide models probe PROFILE`. Both use only the profile's executable version command through the bounded runner and never inspect credential files; output explicitly reports authentication and model catalog as `NOT_PROBED`.
-- CLI tests use `/bin/echo` as a harmless version probe and assert the output makes no authentication/model readiness claim. `go test ./internal/cli -count=1` passed. T025 is complete; T017 remains open for run exit-code behavior.
+- CLI tests use `/bin/echo` as a harmless version probe and assert the output makes no authentication/model readiness claim. `go test ./internal/cli -count=1` passed. At this checkpoint T025 is complete; T017's exit-code work followed in the next checkpoint.
+
+### Phase checkpoint — stable run exit codes
+
+- Added explicit process statuses: success 0, command/usage error 2, blocked run 3, failed run 4, and cancelled run 5. The binary entrypoint now uses the CLI mapping; unavailable live routes are surfaced as BLOCKED rather than generic command failure.
+- Tests cover all run-state mappings, generic errors, success, and a project configured for an unavailable live route.
+- `go test ./internal/cli ./cmd/spectide -count=1` passed. T017 is complete.
 
 ### Historical baseline (superseded by the checkpoints above)
 
