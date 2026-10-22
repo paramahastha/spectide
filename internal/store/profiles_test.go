@@ -95,10 +95,10 @@ func TestVersionedSchemaContainsRecoveryEntities(t *testing.T) {
 	if err = s.DB.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 5 {
+	if version != 6 {
 		t.Fatalf("schema version=%d", version)
 	}
-	for _, table := range []string{"projects", "routing_decisions", "artifacts", "checkpoints", "approvals", "workspace_locks", "idempotency_keys", "run_controls", "run_configurations"} {
+	for _, table := range []string{"projects", "routing_decisions", "artifacts", "checkpoints", "approvals", "workspace_locks", "idempotency_keys", "run_controls", "run_configurations", "run_owners"} {
 		var found string
 		err = s.DB.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&found)
 		if err != nil {

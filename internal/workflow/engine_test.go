@@ -239,3 +239,46 @@ func TestRunCanPauseResumeAndCancelFromAnotherEngine(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestResumeAfterOwnerLeaseExpiryBlocksWithWorkspaceDrift(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	project := t.TempDir()
+	run, err := s.CreateRun(ctx, project, "interrupted paused run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.AcquireWorkspaceLockOwned(ctx, project, run.ID, "dead-owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SetRunState(ctx, run.ID, model.Running); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SetRunState(ctx, run.ID, model.Paused); err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().UTC().Add(-store.RunOwnerLease - time.Second).Format(time.RFC3339Nano)
+	if _, err = s.DB.ExecContext(ctx, `UPDATE run_owners SET heartbeat_at=? WHERE run_id=?`, stale, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	controller := New(s)
+	if err = controller.Resume(run.ID); err == nil || !strings.Contains(err.Error(), "WORKSPACE_DRIFT") {
+		t.Fatalf("stale owner resume error=%v", err)
+	}
+	got, err := s.GetRun(ctx, run.ID)
+	if err != nil || got.State != model.Blocked {
+		t.Fatalf("recovered run=%+v err=%v", got, err)
+	}
+	events, err := s.Events(ctx, run.ID, 0)
+	if err != nil || events[len(events)-1].Type != "run.interrupted" || !strings.Contains(events[len(events)-1].Payload["reason"].(string), "WORKSPACE_DRIFT") {
+		t.Fatalf("recovery events=%+v err=%v", events, err)
+	}
+	var locks int
+	if err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM workspace_locks WHERE run_id=?`, run.ID).Scan(&locks); err != nil || locks != 0 {
+		t.Fatalf("stale workspace lock count=%d err=%v", locks, err)
+	}
+}

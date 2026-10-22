@@ -105,6 +105,15 @@ func (s *Store) migrate() error {
 		if _, err = tx.Exec(`INSERT INTO schema_migrations(version,applied_at) VALUES(5,?)`, now().Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
+		version = 5
+	}
+	if version < 6 {
+		if _, err = tx.Exec(schemaV6); err != nil {
+			return fmt.Errorf("apply schema migration 6: %w", err)
+		}
+		if _, err = tx.Exec(`INSERT INTO schema_migrations(version,applied_at) VALUES(6,?)`, now().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -123,6 +132,9 @@ var schemaV4 string
 
 //go:embed migrations/005_retention.sql
 var schemaV5 string
+
+//go:embed migrations/006_run_owners.sql
+var schemaV6 string
 
 func now() time.Time { return time.Now().UTC().Round(0) }
 func parse(v string) *time.Time {
@@ -320,49 +332,10 @@ func validTransition(from, to model.RunState) bool {
 	}
 }
 
-// RecoverInterrupted closes runs whose owner disappeared before the next process
-// started. They stay blocked until a future implementation can verify a safe resume.
+// RecoverInterrupted is retained for callers that explicitly request recovery;
+// it honors owner leases and never interrupts a heartbeat-fresh worker.
 func (s *Store) RecoverInterrupted(ctx context.Context) error {
-	rows, err := s.DB.QueryContext(ctx, `SELECT id FROM runs WHERE state=?`, model.Running)
-	if err != nil {
-		return err
-	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err = rows.Scan(&id); err != nil {
-			rows.Close()
-			return err
-		}
-		ids = append(ids, id)
-	}
-	if err = rows.Err(); err != nil {
-		rows.Close()
-		return err
-	}
-	rows.Close()
-	for _, id := range ids {
-		tx, e := s.DB.BeginTx(ctx, nil)
-		if e != nil {
-			return e
-		}
-		_, e = tx.ExecContext(ctx, `UPDATE runs SET state=?,ended_at=? WHERE id=? AND state=?`, model.Blocked, now().Format(time.RFC3339Nano), id, model.Running)
-		if e == nil {
-			e = appendEvent(ctx, tx, id, "", "run.interrupted", "warning", map[string]any{"reason": "owner process exited; safe resume is not verified"})
-		}
-		if e != nil {
-			tx.Rollback()
-			return e
-		}
-		if e = tx.Commit(); e != nil {
-			return e
-		}
-	}
-	_, err = s.DB.ExecContext(ctx, `DELETE FROM workspace_locks WHERE run_id NOT IN (SELECT id FROM runs WHERE state=?)`, model.Running)
-	if err != nil {
-		return err
-	}
-	return nil
+	return s.RecoverAbandonedRuns(ctx, now())
 }
 
 func (s *Store) RegisterProject(ctx context.Context, path, name string, scopes []string) error {
@@ -410,16 +383,40 @@ func (s *Store) Project(ctx context.Context, id string) (model.Project, error) {
 }
 
 func (s *Store) AcquireWorkspaceLock(ctx context.Context, path, runID string) error {
-	_, err := s.DB.ExecContext(ctx, `INSERT INTO workspace_locks(canonical_path,run_id,acquired_at) VALUES(?,?,?)`, path, runID, now().Format(time.RFC3339Nano))
+	return s.AcquireWorkspaceLockOwned(ctx, path, runID, "")
+}
+
+func (s *Store) AcquireWorkspaceLockOwned(ctx context.Context, path, runID, ownerID string) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `INSERT INTO workspace_locks(canonical_path,run_id,acquired_at) VALUES(?,?,?)`, path, runID, now().Format(time.RFC3339Nano))
 	if err != nil {
 		return fmt.Errorf("WORKSPACE_LOCKED: %s", path)
 	}
-	return nil
+	if ownerID != "" {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO run_owners(run_id,owner_id,heartbeat_at) VALUES(?,?,?)`, runID, ownerID, now().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) ReleaseWorkspaceLock(ctx context.Context, path, runID string) error {
-	_, err := s.DB.ExecContext(ctx, `DELETE FROM workspace_locks WHERE canonical_path=? AND run_id=?`, path, runID)
-	return err
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `DELETE FROM workspace_locks WHERE canonical_path=? AND run_id=?`, path, runID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM run_owners WHERE run_id=?`, runID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) SaveRoutingDecision(ctx context.Context, runID, stage, provider, profile, modelName, effort, policy, explanation string) error {

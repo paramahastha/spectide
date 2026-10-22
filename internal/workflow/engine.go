@@ -20,6 +20,7 @@ import (
 // deterministic acceptance path; real providers must be added only after a successful probe.
 type Engine struct {
 	store   *store.Store
+	ownerID string
 	mu      sync.Mutex
 	cancels map[string]context.CancelFunc
 	pauses  map[string]chan struct{}
@@ -28,7 +29,7 @@ type Engine struct {
 }
 
 func New(s *store.Store) *Engine {
-	return &Engine{store: s, cancels: map[string]context.CancelFunc{}, pauses: map[string]chan struct{}{}, resumes: map[string]chan struct{}{}, locks: map[string]string{}}
+	return &Engine{store: s, ownerID: uuid.NewString(), cancels: map[string]context.CancelFunc{}, pauses: map[string]chan struct{}{}, resumes: map[string]chan struct{}{}, locks: map[string]string{}}
 }
 
 var stages = []string{"constitution", "specify", "clarify", "plan", "checklist", "tasks", "analyze", "implement", "tests", "converge", "final_review", "report"}
@@ -65,6 +66,9 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 	if err = e.store.RegisterProject(ctx, workspace, path.Base(workspace), []string{workspace}); err != nil {
 		return model.Run{}, false, err
 	}
+	if err = e.store.RecoverAbandonedRuns(ctx, time.Now().UTC()); err != nil {
+		return model.Run{}, false, err
+	}
 	effective := make([]struct {
 		Stage     string          `json:"stage"`
 		Decision  config.Decision `json:"decision"`
@@ -88,7 +92,7 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 	if reused {
 		return r, true, nil
 	}
-	if err = e.store.AcquireWorkspaceLock(ctx, workspace, r.ID); err != nil {
+	if err = e.store.AcquireWorkspaceLockOwned(ctx, workspace, r.ID, e.ownerID); err != nil {
 		_ = e.store.Event(context.Background(), r.ID, "", "workspace.lock_denied", "warning", map[string]any{"reason": "another run owns this workspace"})
 		_ = e.store.SetRunState(context.Background(), r.ID, model.Blocked)
 		return r, false, nil
@@ -100,6 +104,7 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 	e.resumes[r.ID] = make(chan struct{}, 1)
 	e.locks[r.ID] = workspace
 	e.mu.Unlock()
+	go e.heartbeat(child, r.ID)
 	go e.execute(child, r, decisions)
 	return r, false, nil
 }
@@ -161,6 +166,16 @@ func (e *Engine) Resume(id string) error {
 		return fmt.Errorf("RUN_CONTROL_NOT_ALLOWED: resume for %s", run.State)
 	}
 	if resume == nil {
+		fresh, err := e.store.RunOwnerFresh(context.Background(), id, time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		if !fresh {
+			if err = e.store.RecoverAbandonedRuns(context.Background(), time.Now().UTC()); err != nil {
+				return err
+			}
+			return fmt.Errorf("WORKSPACE_DRIFT: owner lease expired; restart resume requires a verified checkpoint and matching workspace, artifact, and Git fingerprints")
+		}
 		return e.store.RequestRunControl(context.Background(), id, "resume")
 	}
 	select {
@@ -168,6 +183,21 @@ func (e *Engine) Resume(id string) error {
 	default:
 	}
 	return nil
+}
+
+func (e *Engine) heartbeat(ctx context.Context, runID string) {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := e.store.HeartbeatRunOwner(ctx, runID, e.ownerID, time.Now().UTC()); err != nil {
+				return
+			}
+		}
+	}
 }
 
 func (e *Engine) pauseUntilResume(ctx context.Context, runID, stage string, resume <-chan struct{}) bool {
@@ -382,6 +412,9 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 func (e *Engine) finish(id string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if cancel := e.cancels[id]; cancel != nil {
+		cancel()
+	}
 	delete(e.cancels, id)
 	delete(e.pauses, id)
 	delete(e.resumes, id)

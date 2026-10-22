@@ -320,6 +320,13 @@
 - API tests verify all configured routes are returned without creating a run and that a config-file symlink escape is rejected. `go test ./internal/api -count=1` passed.
 - T024 remains open for profile/provider/model/capability validation and direct/fallback authorization through actual launch policy.
 
+### Phase checkpoint — durable run-owner leases
+
+- Added migration 6 and per-run heartbeat leases. The workflow writes its owner lease atomically with the workspace lock, refreshes it while the worker is alive, and removes it at finish.
+- Explicit recovery now blocks only running/paused runs with missing or expired owner leases; fresh workers are left alone. It appends a durable `run.interrupted` event with `WORKSPACE_DRIFT`, preserves run evidence, and releases the abandoned writer lock.
+- Cross-process pause/resume still works with a fresh owner. Resume after owner expiry returns `WORKSPACE_DRIFT` and does not restart work. Automatic restart resume remains unavailable until checkpoint identity, immutable config, artifact hashes, Git HEAD, and managed-path fingerprints are verified.
+- Tests cover migration 6 and stale paused-run recovery/lock release; `go test ./internal/store ./internal/workflow -count=1` passed. T034 remains open for safe checkpoint validation and resume.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified
