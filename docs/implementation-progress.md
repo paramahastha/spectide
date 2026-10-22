@@ -431,6 +431,12 @@
 - A fixture-backed engine test executes a verified plan command through an adapter and confirms the run remains `BLOCKED` with blocked quality gates instead of claiming simulated PASS results. `go test ./internal/workflow ./internal/speckit ./internal/store -count=1` and full `make verify` passed. Latest SC-001 measurement is 22.051 ms.
 - T014 is complete in the canonical task ledger. No real provider run was possible: installed provider CLIs report unauthenticated, and official Spec-Kit convergence remains unrun. T016/T035 quality-loop wiring, T031, T034, T036, T045, and T046 remain open.
 
+### Phase checkpoint — persisted live test-repair outcomes
+
+- Live runs now execute the default registered local quality checks at the canonical `tests` stage, persist each check verdict and the aggregate `required_tests` gate, and checkpoint the completed stage. The four-attempt test-repair driver invokes the authorized `implement` route with only failed check keys and verdicts; unavailable repair routes and no-progress/exhaustion outcomes fail closed.
+- The fixture-backed live engine test uses a minimal valid Go workspace to verify all local checks pass and persist `required_tests=PASS`, while analyze, convergence, final-review, and simulated-E2E gates remain `BLOCKED`. Existing focused tests cover the 4-repair limit and no-progress stop. T016 remains open: live analyze remediation and convergence/final-review loop outcomes still need engine integration, and the full end-to-end exhaustion matrix is T036.
+- Targeted validation: `go test ./internal/workflow -run 'TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion|TestRunTestRepairGate|TestDefaultLoopLimits|TestLoopBudget' -count=1` passed. Full `make verify` passed: Go vet/tests, dashboard typecheck/tests/build, binary build, secret scan, and offline smoke. SC-001 measured 20.021 ms on the recorded macOS 15.1 / Apple M4 / 16 GiB / arm64 host. The offline demo remained explicitly `SIMULATED`.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified

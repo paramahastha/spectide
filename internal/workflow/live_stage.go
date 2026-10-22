@@ -19,7 +19,7 @@ import (
 	workspaceguard "github.com/spectide/spectide/internal/workspace"
 )
 
-func (e *Engine) runLiveStageWithControl(ctx context.Context, run model.Run, stage string, route config.Route, installation speckit.Installation, featureDir string) (map[string]any, bool, error) {
+func (e *Engine) runLiveStageWithControl(ctx context.Context, run model.Run, stage string, route config.Route, prompt string, installation speckit.Installation, featureDir string) (map[string]any, bool, error) {
 	child, cancel := context.WithCancel(ctx)
 	defer cancel()
 	stop := make(chan struct{})
@@ -43,7 +43,7 @@ func (e *Engine) runLiveStageWithControl(ctx context.Context, run model.Run, sta
 			}
 		}
 	}()
-	evidence, err := e.runLiveStage(child, run, stage, route, installation, featureDir)
+	evidence, err := e.runLiveStagePrompt(child, run, stage, route, prompt, installation, featureDir)
 	close(stop)
 	<-done
 	if err != nil {
@@ -58,6 +58,10 @@ func (e *Engine) runLiveStageWithControl(ctx context.Context, run model.Run, sta
 }
 
 func (e *Engine) runLiveStage(ctx context.Context, run model.Run, stage string, route config.Route, installation speckit.Installation, featureDir string) (map[string]any, error) {
+	return e.runLiveStagePrompt(ctx, run, stage, route, run.Prompt, installation, featureDir)
+}
+
+func (e *Engine) runLiveStagePrompt(ctx context.Context, run model.Run, stage string, route config.Route, prompt string, installation speckit.Installation, featureDir string) (map[string]any, error) {
 	adapter := e.adapters[adapters.ProviderName(route.Provider)]
 	if adapter == nil {
 		return nil, fmt.Errorf("PROVIDER_ADAPTER_UNAVAILABLE: %s", route.Provider)
@@ -98,7 +102,7 @@ func (e *Engine) runLiveStage(ctx context.Context, run model.Run, stage string, 
 	}
 	request := adapters.Request{
 		ProjectRoot: installation.ProjectRoot,
-		Prompt:      run.Prompt,
+		Prompt:      prompt,
 		Model:       route.Model,
 		Effort:      route.Effort,
 		Profile: adapters.Profile{
@@ -107,7 +111,7 @@ func (e *Engine) runLiveStage(ctx context.Context, run model.Run, stage string, 
 			AllowedProjects: append([]string(nil), profile.AllowedScopes...),
 		},
 	}
-	result, err := speckit.ExecuteStage(ctx, installation, adapter, request, stage, run.Prompt)
+	result, err := speckit.ExecuteStage(ctx, installation, adapter, request, stage, prompt)
 	if err != nil {
 		return nil, err
 	}
@@ -153,6 +157,7 @@ func (e *Engine) runLiveStage(ctx context.Context, run model.Run, stage string, 
 		evidence["converged"] = convergence.Converged
 		evidence["appended_task_count"] = len(convergence.Appended)
 	}
+	evidence["_stage_output"] = result.Process.Stdout
 	return evidence, nil
 }
 

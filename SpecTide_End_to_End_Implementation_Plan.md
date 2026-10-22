@@ -1506,6 +1506,8 @@ Implement scope as a deny-first policy. Explicit exceptions must be documented a
 
 The detailed phase checklists below remain the full blueprint. Their original bootstrap steps are not re-executed; use the canonical ledger for current task completion and resume at the next unchecked dependency.
 
+**T016 checkpoint (22 October 2026):** The live `tests` stage now runs and persists registered local quality verdicts, invokes the authorized implement route with failed-check-only repair prompts, and records `required_tests` plus a stage checkpoint. Focused workflow/loop tests pass. T016 remains unchecked until bounded live analyze remediation and convergence/final-review outcomes are also integrated; see [implementation progress](docs/implementation-progress.md).
+
 ### Phase 0 — Constitution, requirements, and repository setup
 
 **Objective:** Establish stable product boundaries and verified execution baseline.

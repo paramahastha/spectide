@@ -44,6 +44,23 @@ func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *t
 			t.Fatal(err)
 		}
 	}
+	if err = os.WriteFile(filepath.Join(project, "go.mod"), []byte("module fixture\n\ngo 1.27.2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mainDir := filepath.Join(project, "cmd", "spectide")
+	if err = os.MkdirAll(mainDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(mainDir, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	internalDir := filepath.Join(project, "internal")
+	if err = os.MkdirAll(internalDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(internalDir, "fixture.go"), []byte("package internal\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	rel := ".opencode/commands/speckit.plan.md"
 	commandPath := filepath.Join(project, filepath.FromSlash(rel))
 	if err = os.MkdirAll(filepath.Dir(commandPath), 0o700); err != nil {
@@ -96,13 +113,28 @@ func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *t
 	if !foundLivePlan {
 		t.Fatal("verified live plan stage produced no persisted provider event")
 	}
-	if len(report.Gates) != 5 {
-		t.Fatalf("run gates=%+v", report.Gates)
+	if len(report.Gates) < 9 {
+		t.Fatalf("live workflow did not persist local quality evidence: %+v", report.Gates)
 	}
+	var requiredTests string
+	var blockedFinalReview bool
 	for _, gate := range report.Gates {
-		if gate.Verdict != "BLOCKED" {
-			t.Fatalf("live workflow claimed simulated quality verdict: %+v", gate)
+		switch gate.Key {
+		case "required_tests":
+			requiredTests = gate.Verdict
+		case "final_review":
+			blockedFinalReview = gate.Verdict == "BLOCKED"
+		case "analyze_clean", "converged", "simulated_e2e":
+			if gate.Verdict != "BLOCKED" {
+				t.Fatalf("live workflow claimed simulated quality verdict: %+v", gate)
+			}
 		}
+	}
+	if requiredTests != "PASS" {
+		t.Fatalf("registered local checks did not pass: %+v", report.Gates)
+	}
+	if !blockedFinalReview {
+		t.Fatalf("incomplete live final review was not blocked: %+v", report.Gates)
 	}
 }
 
