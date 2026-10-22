@@ -26,6 +26,65 @@ func evidenceStore(t *testing.T) (*Store, model.Run) {
 	return s, run
 }
 
+func TestRunConfigurationAndStageAttemptsAreImmutable(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	config := []byte(`[{"stage":"analyze","provider":"fake","profile":"offline","simulated":true}]`)
+	run, reused, err := s.CreateRunWithConfiguration(ctx, "run-key-configuration", "/workspace", "inspect", config)
+	if err != nil || reused {
+		t.Fatalf("run=%+v reused=%v err=%v", run, reused, err)
+	}
+	stored, err := s.RunConfiguration(ctx, run.ID)
+	if err != nil || stored.ConfigJSON != string(config) || len(stored.SHA256) != 64 {
+		t.Fatalf("configuration=%+v err=%v", stored, err)
+	}
+	if _, err = s.DB.Exec(`UPDATE run_configurations SET config_json='{}' WHERE run_id=?`, run.ID); err == nil {
+		t.Fatal("database allowed effective run configuration mutation")
+	}
+	if _, reused, err = s.CreateRunWithConfiguration(ctx, "run-key-configuration", "/workspace", "inspect", config); err != nil || !reused {
+		t.Fatalf("same configuration was not idempotent: reused=%v err=%v", reused, err)
+	}
+	changedConfig := []byte(`[{"stage":"analyze","provider":"codex","profile":"live","simulated":false}]`)
+	if _, _, err = s.CreateRunWithConfiguration(ctx, "run-key-configuration", "/workspace", "inspect", changedConfig); err == nil || !strings.Contains(err.Error(), "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST") {
+		t.Fatalf("changed effective configuration reused the key: %v", err)
+	}
+
+	first := model.Stage{ID: "attempt-1", RunID: run.ID, Key: "analyze", Position: 1, State: model.Pending, Provider: "fake", Profile: "offline", Attempt: 1}
+	if err = s.AddStage(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	second := model.Stage{ID: "attempt-2", RunID: run.ID, Key: "analyze", Position: 1, State: model.Pending, Provider: "fake", Profile: "offline", Attempt: 2}
+	if err = s.AddStage(ctx, second); err == nil || !strings.Contains(err.Error(), "STAGE_ATTEMPT_STILL_ACTIVE") {
+		t.Fatalf("parallel active attempt accepted: %v", err)
+	}
+	if err = s.SetStage(ctx, first.ID, model.StageFail); err != nil {
+		t.Fatal(err)
+	}
+	changedRoute := second
+	changedRoute.Provider = "codex"
+	if err = s.AddStage(ctx, changedRoute); err == nil || !strings.Contains(err.Error(), "STAGE_ATTEMPT_CONFIGURATION_CHANGED") {
+		t.Fatalf("retry changed the route: %v", err)
+	}
+	if err = s.AddStage(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.DB.Exec(`UPDATE stages SET profile='mutated' WHERE id=?`, second.ID); err == nil {
+		t.Fatal("database allowed stage attempt mutation")
+	}
+	if err = s.SetStage(ctx, first.ID, model.Succeeded); err == nil {
+		t.Fatal("terminal attempt was mutable")
+	}
+	stages, err := s.Stages(ctx, run.ID)
+	if err != nil || len(stages) != 2 || stages[0].Attempt != 1 || stages[0].State != model.StageFail || stages[1].Attempt != 2 {
+		t.Fatalf("attempt history=%+v err=%v", stages, err)
+	}
+}
+
 func TestArtifactCheckpointAndApprovalRepositories(t *testing.T) {
 	ctx := context.Background()
 	s, run := evidenceStore(t)

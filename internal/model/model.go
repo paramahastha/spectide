@@ -33,6 +33,13 @@ type Run struct {
 	EndedAt   *time.Time `json:"ended_at,omitempty"`
 }
 
+type RunConfiguration struct {
+	RunID      string    `json:"run_id"`
+	ConfigJSON string    `json:"config_json"`
+	SHA256     string    `json:"sha256"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
 type Stage struct {
 	ID       string     `json:"id"`
 	RunID    string     `json:"run_id"`
@@ -57,13 +64,14 @@ type Event struct {
 }
 
 type Report struct {
-	Run         Run               `json:"run"`
-	Stages      []Stage           `json:"stages"`
-	Decisions   []RoutingDecision `json:"routing_decisions"`
-	Gates       []Gate            `json:"gates"`
-	Artifacts   []Artifact        `json:"artifacts"`
-	Checkpoints []Checkpoint      `json:"checkpoints"`
-	Approvals   []Approval        `json:"approvals"`
+	Run           Run               `json:"run"`
+	Configuration *RunConfiguration `json:"configuration,omitempty"`
+	Stages        []Stage           `json:"stages"`
+	Decisions     []RoutingDecision `json:"routing_decisions"`
+	Gates         []Gate            `json:"gates"`
+	Artifacts     []Artifact        `json:"artifacts"`
+	Checkpoints   []Checkpoint      `json:"checkpoints"`
+	Approvals     []Approval        `json:"approvals"`
 }
 
 type RoutingDecision struct {

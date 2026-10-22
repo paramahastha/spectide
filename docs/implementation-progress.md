@@ -250,6 +250,20 @@
 
 - Fake adapter scripted failure/cancellation/rate-limit scenarios (T019) and canonical workflow integration remain open.
 
+### Phase checkpoint — immutable run configuration and attempts
+
+**Verified in this checkpoint**
+
+- Added migration 4 for effective run configurations, storing canonical JSON and a SHA-256 integrity digest in the same transaction as run creation. Configured idempotency keys now include the effective route configuration.
+- Reports include the immutable configuration record and its digest. Reads detect digest mismatch; SQLite triggers reject configuration update/delete and stage attempt update/delete.
+- Stage attempt inserts must start at 1 and continue without gaps, wait for the previous attempt to become terminal, and preserve the original route and position. Attempts remain visible as separate stage rows.
+- Tests cover migration registration, configuration hash/report persistence, idempotent reuse and changed-config rejection, mutation denial, append sequencing, immutable routing, and preserved failure history.
+- `go test ./internal/store ./internal/workflow -count=1` passed. T050 is complete.
+
+**Remaining**
+
+- Retry orchestration that creates subsequent attempts and verified restart recovery remain open (T016, T034, T036).
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified

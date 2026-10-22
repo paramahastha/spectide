@@ -81,6 +81,14 @@ func (s *Store) migrate() error {
 			return err
 		}
 	}
+	if version < 4 {
+		if _, err = tx.Exec(schemaV4); err != nil {
+			return fmt.Errorf("apply schema migration 4: %w", err)
+		}
+		if _, err = tx.Exec(`INSERT INTO schema_migrations(version,applied_at) VALUES(4,?)`, now().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 
@@ -92,6 +100,9 @@ var schemaV2 string
 
 //go:embed migrations/003_run_controls.sql
 var schemaV3 string
+
+//go:embed migrations/004_run_configuration.sql
+var schemaV4 string
 
 func now() time.Time { return time.Now().UTC().Round(0) }
 func parse(v string) *time.Time {
@@ -111,11 +122,23 @@ func (s *Store) CreateRun(ctx context.Context, project, prompt string) (model.Ru
 }
 
 func (s *Store) CreateRunIdempotent(ctx context.Context, key, project, prompt string) (model.Run, bool, error) {
+	return s.CreateRunWithConfiguration(ctx, key, project, prompt, nil)
+}
+
+func (s *Store) CreateRunWithConfiguration(ctx context.Context, key, project, prompt string, configJSON []byte) (model.Run, bool, error) {
 	prompt = security.Redact(prompt)
 	requestHash := ""
 	if key != "" {
-		sum := sha256.Sum256([]byte(project + "\x00" + prompt))
+		sum := sha256.Sum256([]byte(project + "\x00" + prompt + "\x00" + string(configJSON)))
 		requestHash = hex.EncodeToString(sum[:])
+	}
+	configHash := ""
+	if len(configJSON) > 0 {
+		if !json.Valid(configJSON) {
+			return model.Run{}, false, fmt.Errorf("RUN_CONFIGURATION_INVALID_JSON")
+		}
+		sum := sha256.Sum256(configJSON)
+		configHash = hex.EncodeToString(sum[:])
 	}
 	t := now()
 	r := model.Run{ID: uuid.NewString(), Project: project, Prompt: prompt, State: model.Created, CreatedAt: t}
@@ -144,6 +167,11 @@ func (s *Store) CreateRunIdempotent(ctx context.Context, key, project, prompt st
 	if err != nil {
 		return r, false, err
 	}
+	if len(configJSON) > 0 {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO run_configurations(run_id,config_json,config_sha256,created_at) VALUES(?,?,?,?)`, r.ID, string(configJSON), configHash, t.Format(time.RFC3339Nano)); err != nil {
+			return r, false, err
+		}
+	}
 	if key != "" {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO idempotency_keys(key,request_hash,run_id,created_at) VALUES(?,?,?,?)`, key, requestHash, r.ID, t.Format(time.RFC3339Nano)); err != nil {
 			return r, false, err
@@ -155,29 +183,19 @@ func (s *Store) CreateRunIdempotent(ctx context.Context, key, project, prompt st
 	return r, false, tx.Commit()
 }
 
-func (s *Store) IdempotentRun(ctx context.Context, key, project, prompt string) (model.Run, bool, error) {
-	if key == "" {
-		return model.Run{}, false, nil
+func (s *Store) RunConfiguration(ctx context.Context, runID string) (model.RunConfiguration, error) {
+	var c model.RunConfiguration
+	var created string
+	err := s.DB.QueryRowContext(ctx, `SELECT run_id,config_json,config_sha256,created_at FROM run_configurations WHERE run_id=?`, runID).Scan(&c.RunID, &c.ConfigJSON, &c.SHA256, &created)
+	if err != nil {
+		return c, err
 	}
-	prompt = security.Redact(prompt)
-	sum := sha256.Sum256([]byte(project + "\x00" + prompt))
-	requestHash := hex.EncodeToString(sum[:])
-	run, err := scanRun(s.DB.QueryRowContext(ctx, `SELECT r.id,r.project,r.prompt,r.state,r.created_at,COALESCE(r.started_at,''),COALESCE(r.ended_at,'') FROM idempotency_keys i JOIN runs r ON r.id=i.run_id WHERE i.key=? AND i.request_hash=?`, key, requestHash))
-	if err == nil {
-		return run, true, nil
+	actual := sha256.Sum256([]byte(c.ConfigJSON))
+	if hex.EncodeToString(actual[:]) != c.SHA256 {
+		return model.RunConfiguration{}, fmt.Errorf("RUN_CONFIGURATION_HASH_MISMATCH")
 	}
-	if err != sql.ErrNoRows {
-		return model.Run{}, false, err
-	}
-	var storedHash string
-	err = s.DB.QueryRowContext(ctx, `SELECT request_hash FROM idempotency_keys WHERE key=?`, key).Scan(&storedHash)
-	if err == nil {
-		return model.Run{}, false, fmt.Errorf("IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST")
-	}
-	if err != sql.ErrNoRows {
-		return model.Run{}, false, err
-	}
-	return model.Run{}, false, nil
+	c.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+	return c, nil
 }
 
 func appendEvent(ctx context.Context, tx *sql.Tx, runID, stage, typ, severity string, payload map[string]any) error {
@@ -404,12 +422,57 @@ func (s *Store) RoutingDecisions(ctx context.Context, runID string) ([]model.Rou
 }
 
 func (s *Store) AddStage(ctx context.Context, st model.Stage) error {
-	_, err := s.DB.ExecContext(ctx, `INSERT INTO stages VALUES(?,?,?,?,?,?,?,?,?,?)`, st.ID, st.RunID, st.Key, st.Position, st.State, st.Provider, st.Profile, st.Model, st.Effort, st.Attempt)
-	return err
+	if st.Attempt < 1 || st.ID == "" || st.RunID == "" || st.Key == "" {
+		return fmt.Errorf("INVALID_STAGE_ATTEMPT")
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var previousAttempt int
+	var previousState model.StageState
+	var position int
+	var provider, profile, modelName, effort string
+	err = tx.QueryRowContext(ctx, `SELECT attempt,state,position,provider,profile,model,effort FROM stages WHERE run_id=? AND stage_key=? ORDER BY attempt DESC LIMIT 1`, st.RunID, st.Key).Scan(&previousAttempt, &previousState, &position, &provider, &profile, &modelName, &effort)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if err == nil {
+		if st.Attempt != previousAttempt+1 {
+			return fmt.Errorf("STAGE_ATTEMPT_NOT_APPEND_ONLY: expected %d", previousAttempt+1)
+		}
+		if previousState == model.Pending {
+			return fmt.Errorf("STAGE_ATTEMPT_STILL_ACTIVE")
+		}
+		if st.Position != position || st.Provider != provider || st.Profile != profile || st.Model != modelName || st.Effort != effort {
+			return fmt.Errorf("STAGE_ATTEMPT_CONFIGURATION_CHANGED")
+		}
+	} else if st.Attempt != 1 {
+		return fmt.Errorf("STAGE_ATTEMPT_NOT_APPEND_ONLY: first attempt must be 1")
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO stages VALUES(?,?,?,?,?,?,?,?,?,?)`, st.ID, st.RunID, st.Key, st.Position, st.State, st.Provider, st.Profile, st.Model, st.Effort, st.Attempt); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func (s *Store) SetStage(ctx context.Context, id string, state model.StageState) error {
-	_, err := s.DB.ExecContext(ctx, `UPDATE stages SET state=? WHERE id=?`, state, id)
-	return err
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var current model.StageState
+	if err = tx.QueryRowContext(ctx, `SELECT state FROM stages WHERE id=?`, id).Scan(&current); err != nil {
+		return err
+	}
+	if current != model.Pending || (state != model.Succeeded && state != model.StageFail && state != model.Skipped) {
+		return fmt.Errorf("INVALID_STAGE_TRANSITION: %s -> %s", current, state)
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE stages SET state=? WHERE id=? AND state=?`, state, id, model.Pending); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func scanRun(row interface{ Scan(...any) error }) (model.Run, error) {
 	var r model.Run
@@ -606,5 +669,15 @@ func (s *Store) Report(ctx context.Context, id string) (model.Report, error) {
 		return model.Report{}, e
 	}
 	d, e := s.RoutingDecisions(ctx, id)
-	return model.Report{Run: r, Stages: st, Decisions: d, Gates: g, Artifacts: a, Checkpoints: cp, Approvals: ap}, e
+	if e != nil {
+		return model.Report{}, e
+	}
+	var configuration *model.RunConfiguration
+	c, configErr := s.RunConfiguration(ctx, id)
+	if configErr == nil {
+		configuration = &c
+	} else if configErr != sql.ErrNoRows {
+		return model.Report{}, configErr
+	}
+	return model.Report{Run: r, Configuration: configuration, Stages: st, Decisions: d, Gates: g, Artifacts: a, Checkpoints: cp, Approvals: ap}, nil
 }

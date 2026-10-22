@@ -34,6 +34,13 @@ func TestFakeLifecyclePersistsEvidence(t *testing.T) {
 			if len(rep.Stages) != 12 || len(rep.Decisions) != 12 || len(rep.Gates) != 5 {
 				t.Fatalf("stages=%d decisions=%d gates=%d", len(rep.Stages), len(rep.Decisions), len(rep.Gates))
 			}
+			configuration, err := s.RunConfiguration(context.Background(), r.ID)
+			if err != nil || len(configuration.SHA256) != 64 || !strings.Contains(configuration.ConfigJSON, `"simulated":true`) {
+				t.Fatalf("effective run configuration=%+v err=%v", configuration, err)
+			}
+			if rep.Configuration == nil || rep.Configuration.SHA256 != configuration.SHA256 {
+				t.Fatalf("report omitted immutable run configuration: %+v", rep.Configuration)
+			}
 			return
 		}
 		time.Sleep(20 * time.Millisecond)

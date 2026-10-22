@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path"
@@ -46,11 +47,6 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 		return model.Run{}, false, fmt.Errorf("PROJECT_REQUIRED")
 	}
 	project = workspace
-	if existing, reused, err := e.store.IdempotentRun(ctx, key, project, prompt); err != nil {
-		return model.Run{}, false, err
-	} else if reused {
-		return existing, true, nil
-	}
 	cfg, err := config.Load(config.ProjectPath(workspace))
 	if err != nil {
 		return model.Run{}, false, err
@@ -69,7 +65,23 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 	if err = e.store.RegisterProject(ctx, workspace, path.Base(workspace), []string{workspace}); err != nil {
 		return model.Run{}, false, err
 	}
-	r, reused, err := e.store.CreateRunIdempotent(ctx, key, project, prompt)
+	effective := make([]struct {
+		Stage     string          `json:"stage"`
+		Decision  config.Decision `json:"decision"`
+		Simulated bool            `json:"simulated"`
+	}, 0, len(stages))
+	for _, stage := range stages {
+		effective = append(effective, struct {
+			Stage     string          `json:"stage"`
+			Decision  config.Decision `json:"decision"`
+			Simulated bool            `json:"simulated"`
+		}{Stage: stage, Decision: decisions[stage], Simulated: true})
+	}
+	configurationJSON, err := json.Marshal(effective)
+	if err != nil {
+		return model.Run{}, false, err
+	}
+	r, reused, err := e.store.CreateRunWithConfiguration(ctx, key, project, prompt, configurationJSON)
 	if err != nil {
 		return r, false, err
 	}
