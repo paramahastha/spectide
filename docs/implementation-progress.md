@@ -276,6 +276,12 @@
 - On the reference host, `make smoke` passed on macOS 15.1 / Apple M4 / 16 GiB / arm64. The first HTTP 200 arrived 0.295 ms after process launch, within the 2-second SC-001 limit; the offline demo also completed with `SIMULATED` evidence.
 - Added the measured result and honest outstanding PASS/FAIL/BLOCKED/NOT_RUN limits to `docs/final-verification.md`; this is a progress report, not a release approval. T039 is complete; T046 remains open.
 
+### Phase checkpoint — local project and approval CLI commands
+
+- Added `spectide projects list`, `spectide projects register PATH` (canonicalizes symlinks and requires an existing directory), and `spectide approvals list/create/resolve` over the existing durable repositories.
+- CLI tests verify canonical registration/listing and an approval's pending-to-approved lifecycle with a second resolution rejected.
+- `go test ./internal/cli -count=1` passed. T037 is complete; T017 and T025 still own run exit semantics and model/probe details.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified

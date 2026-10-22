@@ -4,8 +4,8 @@ This ledger maps every functional requirement in the single master specification
 
 | Requirement | Status | Evidence |
 |---|---|---|
-| FR-001 CLI commands | Partial | [CLI command tree](../internal/cli/root.go); [task ledger](../specs/001-build-spectide/tasks.md#phase-7-user-story-5--local-installation-and-validation-p2) (T017, T025, T037 open) |
-| FR-002 durable local evidence | Partial | [store repositories](../internal/store); [evidence tests](../internal/store/evidence_test.go); test executions and immutable run configuration remain open (T011) |
+| FR-001 CLI commands | Partial | [CLI command tree](../internal/cli/root.go); project registration and approval list/create/resolve commands are implemented and tested; run exit-code behavior and model/probe details remain open (T017, T025) |
+| FR-002 durable local evidence | Partial | [store repositories](../internal/store); [evidence tests](../internal/store/evidence_test.go); immutable configuration and append-only stage attempts are covered, while retention and recovery remain open (T011, T034, T051) |
 | FR-003 immutable configuration and attempts | Partial | [versioned persistence and tests](../internal/store/migrations/004_run_configuration.sql); effective routes are hashed into run reports and immutable stage attempts are append-only, but retry orchestration and end-to-end historical attempt reporting remain open |
 | FR-004 single owner and workspace writer | Partial | [workspace lock tests](../internal/workflow/engine_test.go); process ownership reconciliation remains open (T034) |
 | FR-005 canonical workflow stages | Partial | [workflow engine](../internal/workflow/engine.go); stage execution is deterministic simulation only; live Spec-Kit orchestration remains open (T016) |

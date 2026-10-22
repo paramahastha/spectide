@@ -172,6 +172,90 @@ func Root() *cobra.Command {
 		}
 		return json.NewEncoder(c.OutOrStdout()).Encode(v)
 	}})
+	projects := &cobra.Command{Use: "projects", Short: "List and register local projects", RunE: func(c *cobra.Command, _ []string) error {
+		a, e := open()
+		if e != nil {
+			return e
+		}
+		defer a.Close()
+		v, e := a.Store.Projects(c.Context())
+		if e != nil {
+			return e
+		}
+		return json.NewEncoder(c.OutOrStdout()).Encode(v)
+	}}
+	projects.AddCommand(&cobra.Command{Use: "list", Short: "List registered local projects", RunE: projects.RunE})
+	projects.AddCommand(&cobra.Command{Use: "register PATH", Args: cobra.ExactArgs(1), Short: "Register an existing local project directory", RunE: func(c *cobra.Command, args []string) error {
+		abs, e := filepath.Abs(args[0])
+		if e != nil {
+			return e
+		}
+		canonical, e := filepath.EvalSymlinks(abs)
+		if e != nil {
+			return e
+		}
+		info, e := os.Stat(canonical)
+		if e != nil || !info.IsDir() {
+			return fmt.Errorf("project path must be an existing directory")
+		}
+		a, e := open()
+		if e != nil {
+			return e
+		}
+		defer a.Close()
+		if e = a.Store.RegisterProject(c.Context(), canonical, filepath.Base(canonical), []string{canonical}); e != nil {
+			return e
+		}
+		registered, e := a.Store.Projects(c.Context())
+		if e != nil {
+			return e
+		}
+		for _, project := range registered {
+			if project.CanonicalPath == canonical {
+				return json.NewEncoder(c.OutOrStdout()).Encode(project)
+			}
+		}
+		return fmt.Errorf("registered project was not returned by the store")
+	}})
+	root.AddCommand(projects)
+	approvals := &cobra.Command{Use: "approvals", Short: "Manage durable run approvals"}
+	approvals.AddCommand(&cobra.Command{Use: "list RUN_ID", Args: cobra.ExactArgs(1), RunE: func(c *cobra.Command, args []string) error {
+		a, e := open()
+		if e != nil {
+			return e
+		}
+		defer a.Close()
+		v, e := a.Store.Approvals(c.Context(), args[0])
+		if e != nil {
+			return e
+		}
+		return json.NewEncoder(c.OutOrStdout()).Encode(v)
+	}})
+	approvals.AddCommand(&cobra.Command{Use: "create RUN_ID ACTION", Args: cobra.ExactArgs(2), RunE: func(c *cobra.Command, args []string) error {
+		a, e := open()
+		if e != nil {
+			return e
+		}
+		defer a.Close()
+		v, e := a.Store.CreateApproval(c.Context(), model.Approval{RunID: args[0], Action: args[1]})
+		if e != nil {
+			return e
+		}
+		return json.NewEncoder(c.OutOrStdout()).Encode(v)
+	}})
+	approvals.AddCommand(&cobra.Command{Use: "resolve APPROVAL_ID APPROVED|DENIED", Args: cobra.ExactArgs(2), RunE: func(c *cobra.Command, args []string) error {
+		a, e := open()
+		if e != nil {
+			return e
+		}
+		defer a.Close()
+		decision := strings.ToUpper(args[1])
+		if e = a.Store.ResolveApproval(c.Context(), args[0], decision); e != nil {
+			return e
+		}
+		return json.NewEncoder(c.OutOrStdout()).Encode(map[string]string{"approval_id": args[0], "decision": decision})
+	}})
+	root.AddCommand(approvals)
 	profiles := &cobra.Command{Use: "profiles", Short: "Manage sanitized local profiles", RunE: func(c *cobra.Command, _ []string) error {
 		a, e := open()
 		if e != nil {

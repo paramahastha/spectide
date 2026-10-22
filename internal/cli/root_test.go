@@ -1,0 +1,83 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/spectide/spectide/internal/model"
+	"github.com/spectide/spectide/internal/store"
+)
+
+func executeCLI(t *testing.T, db string, args ...string) (string, error) {
+	t.Helper()
+	root := Root()
+	var output bytes.Buffer
+	root.SetOut(&output)
+	root.SetErr(&output)
+	root.SetArgs(append([]string{"--db", db}, args...))
+	err := root.Execute()
+	return output.String(), err
+}
+
+func TestProjectRegisterCanonicalizesAndLists(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "spectide.db")
+	projectDir := t.TempDir()
+	canonicalPath, err := filepath.EvalSymlinks(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := executeCLI(t, db, "projects", "register", projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var registered struct {
+		CanonicalPath string `json:"canonical_path"`
+	}
+	if err = json.Unmarshal([]byte(output), &registered); err != nil {
+		t.Fatal(err)
+	}
+	if registered.CanonicalPath != canonicalPath {
+		t.Fatalf("registered canonical path=%q, want %q", registered.CanonicalPath, canonicalPath)
+	}
+	output, err = executeCLI(t, db, "projects", "list")
+	if err != nil || !strings.Contains(output, canonicalPath) {
+		t.Fatalf("projects list=%q err=%v", output, err)
+	}
+}
+
+func TestApprovalCommandsCreateListAndResolve(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "spectide.db")
+	s, err := store.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := s.CreateRun(context.Background(), t.TempDir(), "approval command test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := executeCLI(t, db, "approvals", "create", run.ID, "write workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var approval model.Approval
+	if err = json.Unmarshal([]byte(output), &approval); err != nil || approval.ID == "" {
+		t.Fatalf("approval=%+v err=%v output=%s", approval, err, output)
+	}
+	if _, err = executeCLI(t, db, "approvals", "resolve", approval.ID, "approved"); err != nil {
+		t.Fatal(err)
+	}
+	output, err = executeCLI(t, db, "approvals", "list", run.ID)
+	if err != nil || !strings.Contains(output, "APPROVED") {
+		t.Fatalf("approval list=%q err=%v", output, err)
+	}
+	if _, err = executeCLI(t, db, "approvals", "resolve", approval.ID, "DENIED"); err == nil {
+		t.Fatal("resolved approval was mutable")
+	}
+}
