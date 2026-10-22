@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import axe from 'axe-core'
-import { App, ApprovalActions, ProfileReadinessPanel, RoutePreviewPanel, RunDetailStatus, RunList, SharedStateSurface } from './App'
+import { App, ApprovalActions, EventList, ExecutionHistoryPanel, ProfileReadinessPanel, RoutePreviewPanel, RunDetailStatus, RunList, SharedStateSurface } from './App'
 import type { Profile, Report, Run, RunState } from './domain'
 
 afterEach(() => {
@@ -28,7 +28,7 @@ const preview = {
   dry_run: true,
   execution: 'NOT_RUN',
   mode: 'hybrid',
-  decisions: [{ stage: 'implement', route: { provider: 'fake', profile: 'offline' }, explanation: 'deterministic offline route' }],
+  decisions: [{ stage: 'implement', route: { provider: 'fake', profile: 'offline', model: 'fixture-model', effort: 'high' }, explanation: 'deterministic offline route' }],
 }
 
 describe('FR-026 dashboard page and state matrix', () => {
@@ -86,6 +86,7 @@ describe('FR-026 dashboard page and state matrix', () => {
   it('renders route-preview ready, blocked, and disconnected states', () => {
     const { rerender } = render(<RoutePreviewPanel state="ready" preview={preview} error="" />)
     expect(screen.getByText(/Ready · NOT RUN/)).toBeTruthy()
+    expect(screen.getByText(/fixture-model.*high/)).toBeTruthy()
     rerender(<RoutePreviewPanel state="blocked" preview={null} error="PROFILE_NOT_ALLOWED" />)
     expect(screen.getByRole('alert').textContent).toContain('PROFILE_NOT_ALLOWED')
     rerender(<RoutePreviewPanel state="disconnected" preview={null} error="API unavailable" />)
@@ -124,6 +125,46 @@ describe('FR-026 dashboard page and state matrix', () => {
     expect(requestBody?.project).toBe('./examples/fake-provider-demo')
   })
 
+  it('invalidates a ready route preview when project intent changes', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/version')) return json({ csrf_token: 'csrf-fixture' })
+      if (url.endsWith('/api/v1/profiles')) return json([])
+      if (url.endsWith('/api/v1/runs') && init?.method === 'POST') return json(preview)
+      if (url.endsWith('/api/v1/runs')) return json([])
+      return json({}, 404)
+    }))
+    vi.stubGlobal('EventSource', class { close() {} addEventListener() {} })
+    Object.defineProperty(globalThis.crypto, 'randomUUID', { configurable: true, value: () => 'preview-key-12345678' })
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: /Route preview/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /Preview routes/ }))
+    expect(await screen.findByText(/fixture-model.*high/)).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Project path'), { target: { value: '/workspace/other' } })
+    expect(screen.getByText(/Route preview has not been run/)).toBeTruthy()
+    expect(screen.queryByText(/fixture-model/)).toBeNull()
+  })
+
+  it('clears disconnected state after run-list recovery without a selected event stream', async () => {
+    vi.useFakeTimers()
+    let disconnected = true
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/version')) return json({ csrf_token: 'csrf-fixture' })
+      if (url.endsWith('/api/v1/profiles')) return disconnected ? Promise.reject(new Error('offline')) : json([])
+      if (url.endsWith('/api/v1/runs')) return disconnected ? Promise.reject(new Error('offline')) : json([])
+      return json({}, 404)
+    }))
+    vi.stubGlobal('EventSource', class { close() {} addEventListener() {} })
+    render(<App />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.getAllByLabelText('disconnected state').length).toBeGreaterThan(0)
+    disconnected = false
+    await act(async () => { await vi.advanceTimersByTimeAsync(1800) })
+    expect(screen.queryByLabelText('disconnected state')).toBeNull()
+    vi.useRealTimers()
+  })
+
   it.each([
     ['empty', 'No records yet'],
     ['error', 'The stored report could not be loaded'],
@@ -139,6 +180,8 @@ describe('FR-026 dashboard page and state matrix', () => {
       run: item,
       acceptance: { execution: 'MIXED', verdict: 'BLOCKED', required_gates: [] },
       stages: [{ id: 'stage-1', key: 'analyze', state: 'SKIPPED', provider: 'fake', profile: 'offline', model: 'fixture-model', effort: 'high', attempt: 1 }],
+      execution_attempts: [{ id: 'attempt-2', stage: 'analyze', phase: 'analyze_remediation', iteration: 2, provider: 'fake', profile: 'offline', model: 'fixture-model', effort: 'high', started_at: '2026-10-22T12:00:00Z', result: 'RUNNING', duration_ms: 0, exit_code: 0 }],
+      quality_executions: [{ id: 'quality-1', phase: 'tests', iteration: 2, started_at: '2026-10-22T12:00:00Z', finished_at: '2026-10-22T12:00:02Z', verdict: 'PASS', results: [{ key: 'unit_tests', verdict: 'PASS', command: ['go', 'test', './...'], duration_ns: 2000000000, summary: 'all checks passed', exit_code: 0 }] }],
       gates: [{ key: 'required_tests', verdict: 'NOT_RUN', evidence: 'blocked before tests' }],
       routing_decisions: [{ stage: 'analyze', provider: 'fake', profile: 'offline', model: '', effort: '', policy: 'hybrid', explanation: 'offline fixture' }], artifacts: [], approvals: [],
     }
@@ -160,7 +203,10 @@ describe('FR-026 dashboard page and state matrix', () => {
     expect(screen.getByText('NOT_RUN')).toBeTruthy()
     expect(screen.getByText('MIXED')).toBeTruthy()
     expect(screen.getAllByText('BLOCKED').length).toBeGreaterThanOrEqual(1)
-    expect(screen.getByText(/fixture-model.*high.*attempt 1/)).toBeTruthy()
+    expect(screen.getByText(/fixture-model.*high.*analyze_remediation iteration 2/)).toBeTruthy()
+    expect(screen.getByText(/analyze_remediation · ACTIVE/)).toBeTruthy()
+    expect(screen.getByText(/tests · iteration 2 · PASS/)).toBeTruthy()
+    expect(screen.getByText(/unit_tests: PASS · all checks passed/)).toBeTruthy()
     expect(screen.getAllByText('BLOCKED').length).toBeGreaterThanOrEqual(1)
     expect(screen.getByText('MIXED')).toBeTruthy()
   })
@@ -200,7 +246,7 @@ describe('FR-026 dashboard page and state matrix', () => {
     screen.getAllByRole('button', { name: /Review a bounded workflow.*COMPLETED/ }).forEach((button) => fireEvent.click(button))
     await waitFor(() => expect(MockEventSource.instances.length).toBeGreaterThanOrEqual(2))
     const originalStreams = MockEventSource.instances.slice(0, 2)
-    await act(async () => originalStreams.forEach((stream) => stream.emit(1, 'provider.codex.message')))
+    await act(async () => originalStreams.forEach((stream) => stream.emit(1, 'provider.event')))
     await act(async () => { originalStreams.forEach((stream) => stream.onerror?.()) })
     expect(screen.getAllByText(/RECONNECTING/).length).toBe(2)
 
@@ -217,7 +263,7 @@ describe('FR-026 dashboard page and state matrix', () => {
     ])
     await act(async () => replayStreams.forEach((stream) => stream.onopen?.()))
     const backlog = [
-      [2, 'approval.created'], [3, 'quality.gate_recorded'], [4, 'analysis.failed'],
+      [2, 'approval.created'], [3, 'quality.gate_recorded'], [4, 'provider.codex.turn.started'], [5, 'provider.codex.turn.completed'],
     ] as const
     await act(async () => {
       replayStreams.forEach((stream) => {
@@ -233,15 +279,31 @@ describe('FR-026 dashboard page and state matrix', () => {
     for (const container of [left.container, right.container]) {
       const rows = [...container.querySelectorAll('.event-row')]
       expect(rows.map((row) => row.textContent)).toEqual([
-        expect.stringContaining('provider codex message'),
+        expect.stringContaining('provider event'),
         expect.stringContaining('approval created'),
         expect.stringContaining('quality gate_recorded'),
-        expect.stringContaining('analysis failed'),
+        expect.stringContaining('provider codex turn started'),
+        expect.stringContaining('provider codex turn completed'),
       ])
-      expect(container.querySelectorAll('.event-row')).toHaveLength(4)
+      expect(container.querySelectorAll('.event-row')).toHaveLength(5)
       expect(container.querySelector('[aria-label="Event stream connected"]')?.textContent).toContain('LIVE')
     }
     expect(replayStreams[0].url).toContain('after=1')
+  })
+
+  it('shows safe provider event summaries without rendering raw payload bodies', () => {
+    render(<EventList events={[{ id: 'run-1-1', run_id: 'run-1', seq: 1, type: 'provider.event', stage: 'implement', payload: { provider_event_type: 'codex.turn.completed', summary: 'structured provider event', raw: 'private provider body' } }]} />)
+    expect(screen.getByText('structured provider event')).toBeTruthy()
+    expect(screen.getByText('codex.turn.completed')).toBeTruthy()
+    expect(screen.queryByText('private provider body')).toBeNull()
+  })
+
+  it('renders persisted attempt iterations and quality outcomes, including the active invocation', () => {
+    render(<ExecutionHistoryPanel attempts={[{ id: 'attempt-active', stage: 'implement', phase: 'convergence_implementation', iteration: 3, provider: 'codex', profile: 'work', model: 'model-a', effort: 'high', started_at: '2026-10-22T12:00:00Z', result: 'RUNNING', duration_ms: 0, exit_code: 0 }]} qualityExecutions={[{ id: 'quality-1', phase: 'tests', iteration: 2, started_at: '2026-10-22T12:00:00Z', finished_at: '2026-10-22T12:00:02Z', verdict: 'FAIL', results: [{ key: 'unit_tests', verdict: 'FAIL', command: ['go', 'test', './...'], duration_ns: 2000000000, summary: 'one package failed', exit_code: 1 }] }]} />)
+    expect(screen.getByText(/convergence_implementation · ACTIVE/)).toBeTruthy()
+    expect(screen.getByText(/codex \/ work · model-a · high · iteration 3/)).toBeTruthy()
+    expect(screen.getByText(/tests · iteration 2 · FAIL/)).toBeTruthy()
+    expect(screen.getByText(/unit_tests: FAIL · one package failed/)).toBeTruthy()
   })
 })
 

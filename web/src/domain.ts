@@ -40,10 +40,49 @@ export interface Report {
   run: Run
   acceptance?: { verdict: string; execution: 'SIMULATED' | 'LIVE' | 'MIXED'; required_gates: Gate[]; simulation_gates?: Gate[] }
   stages: Stage[]
+  execution_attempts?: ExecutionAttempt[]
+  quality_executions?: QualityExecution[]
   gates: Gate[]
   routing_decisions: Decision[]
   artifacts: Array<{ id: string; stage: string; path: string; kind: string; sha256: string }>
   approvals: Approval[]
+}
+
+export interface ExecutionAttempt {
+  id: string
+  stage: string
+  phase: string
+  iteration: number
+  provider: string
+  profile: string
+  model: string
+  effort?: string
+  started_at: string
+  finished_at?: string
+  duration_ms: number
+  result: string
+  exit_code: number
+  error?: string
+  artifact_ids?: string[]
+}
+
+export interface QualityExecution {
+  id: string
+  phase: string
+  iteration: number
+  started_at: string
+  finished_at: string
+  verdict: string
+  results: QualityResult[]
+}
+
+export interface QualityResult {
+  key: string
+  verdict: string
+  command: string[]
+  duration_ns: number
+  summary: string
+  exit_code: number
 }
 
 export interface Approval {

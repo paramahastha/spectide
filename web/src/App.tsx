@@ -4,6 +4,8 @@ import {
   summarizeRuns,
   type Profile,
   type Approval,
+  type ExecutionAttempt,
+  type QualityExecution,
   type Report,
   type Run,
 } from './domain'
@@ -12,7 +14,7 @@ type View = 'workflow' | 'history' | 'profiles' | 'routing' | 'readiness'
 type ConnectionState = 'loading' | 'connected' | 'disconnected'
 type PreviewState = 'idle' | 'ready' | 'blocked' | 'disconnected'
 type LocalEvent = { id?: string; run_id: string; seq: number; timestamp?: string; type: string; stage?: string; payload?: Record<string, unknown> }
-type RoutePreview = { dry_run: boolean; execution: string; mode: string; decisions: Array<{ stage: string; route: { provider: string; profile: string; model?: string; effort?: string }; explanation: string }> }
+export type RoutePreview = { dry_run: boolean; execution: string; mode: string; decisions: Array<{ stage: string; route: { provider: string; profile: string; model?: string; effort?: string }; explanation: string }> }
 
 export function App() {
   const [token, setToken] = useState('')
@@ -50,6 +52,7 @@ export function App() {
     try {
       const currentRuns = await api<Run[]>('/api/v1/runs')
       setRuns(currentRuns)
+      setConnection('connected')
       const summary = summarizeRuns(currentRuns)
       setMessage(`${summary.active} active · ${summary.completed} completed · ${summary.total} durable runs`)
       if (selected) {
@@ -84,7 +87,7 @@ export function App() {
   useEffect(() => {
     if (!token) return
     void refresh()
-    void api<Profile[]>('/api/v1/profiles').then((items) => { setProfiles(items); setProfileError('') }).catch((error) => setProfileError(String(error)))
+    void api<Profile[]>('/api/v1/profiles').then((items) => { setProfiles(items); setProfileError(''); setConnection('connected') }).catch((error) => { setProfileError(String(error)); setConnection('disconnected') })
     const timer = window.setInterval(() => void refresh(), 1800)
     return () => window.clearInterval(timer)
   }, [api, refresh, token])
@@ -123,11 +126,12 @@ export function App() {
       'stage.owner_artifact_present', 'stage.owner_artifact_invalid', 'analysis.clean', 'analysis.failed', 'analysis.remediated',
       'tests.passed', 'tests.failed', 'converge.converged', 'convergence.report', 'routing.resolved',
       'approval.created', 'approval.resolved', 'approval.denied', 'quality.inventory_initialized', 'quality.gate_recorded', 'quality.execution_completed',
-      'execution.attempt_started', 'execution.attempt_completed', 'checkpoint.failed', 'feature.directory_failed', 'workspace.lock_denied',
+      'execution.attempt_started', 'execution.attempt_completed', 'execution.attempt_interrupted', 'stage.attempt_interrupted', 'checkpoint.failed', 'feature.directory_failed', 'workspace.lock_denied',
       'profile.capability_invalidated',
-      'provider.codex.message', 'provider.codex.assistant', 'provider.codex.item.completed', 'provider.codex.turn.completed',
-      'provider.claude.message', 'provider.claude.assistant', 'provider.claude.content_block_delta', 'provider.claude.message_start', 'provider.claude.message_stop',
-      'provider.opencode.message', 'provider.opencode.text', 'provider.opencode.result', 'provider.fake.event', 'provider.fake.started',
+      'provider.event', 'provider.events.dropped', 'provider.started', 'provider.result', 'provider.failed', 'provider.completed',
+      'provider.codex.thread.started', 'provider.codex.turn.started', 'provider.codex.turn.completed', 'provider.codex.turn.failed', 'provider.codex.item.started', 'provider.codex.item.updated', 'provider.codex.item.completed', 'provider.codex.rate_limits', 'provider.codex.rate_limits.error', 'provider.codex.error',
+      'provider.claude.system', 'provider.claude.assistant', 'provider.claude.content_block_start', 'provider.claude.content_block_delta', 'provider.claude.content_block_stop', 'provider.claude.message_start', 'provider.claude.message_delta', 'provider.claude.message_stop', 'provider.claude.result', 'provider.claude.ping', 'provider.claude.error',
+      'provider.opencode.step_start', 'provider.opencode.text', 'provider.opencode.reasoning', 'provider.opencode.tool_use', 'provider.opencode.tool_result', 'provider.opencode.step_finish', 'provider.opencode.session.idle', 'provider.opencode.step_error', 'provider.opencode.error', 'provider.fake.event', 'provider.fake.started', 'provider.fake.result',
     ]
     const connect = () => {
       if (!live) return
@@ -156,6 +160,12 @@ export function App() {
       stream.close()
     }
   }, [api, refresh, selected])
+
+  useEffect(() => {
+    setPreview(null)
+    setPreviewState('idle')
+    setPreviewError('')
+  }, [project, prompt])
 
   const selectedRun = useMemo(() => runs.find((run) => run.id === selected), [runs, selected])
   async function startRun(nextPrompt = prompt, nextProject = project) {
@@ -293,7 +303,11 @@ export function App() {
               {!report ? <div className="empty-inline">Select a run to inspect its stages, routes, and evidence.</div> : <>
                 <div className="run-context"><span className="context-label">EXECUTION</span><span className={`execution-tag ${(report.acceptance?.execution ?? report.run.execution ?? 'UNKNOWN').toLowerCase()}`}>{report.acceptance?.execution ?? report.run.execution ?? 'UNKNOWN'}</span><span className="context-label">ACCEPTANCE</span><span>{report.acceptance?.verdict ?? 'NOT_RECORDED'}</span></div>
                 <div className="run-context"><span className="context-label">TASK</span><span>{report.run.prompt}</span><span className="context-label">PROJECT</span><code>{report.run.project}</code></div>
-                <div className="stage-list">{report.stages.map((stage, index) => <div className="stage-row" key={stage.id}><span className={stage.state === 'SUCCEEDED' ? 'stage-index complete' : 'stage-index'} aria-hidden="true">{stage.state === 'SUCCEEDED' ? '✓' : String(index + 1).padStart(2, '0')}</span><strong>{stage.key.replaceAll('_', ' ')}</strong><span className="stage-route">{stage.provider} <i>/</i> {stage.profile} <i>·</i> {stage.model || 'default'} <i>·</i> {stage.effort || 'default effort'} <i>·</i> attempt {stage.attempt}</span><span className={`stage-state ${stage.state === 'SUCCEEDED' ? 'good' : ''}`}>{stage.state}</span></div>)}</div>
+                <div className="stage-list">{report.stages.map((stage, index) => {
+                  const latest = (report.execution_attempts ?? []).filter((attempt) => attempt.stage === stage.key).at(-1)
+                  return <div className="stage-row" key={stage.id}><span className={stage.state === 'SUCCEEDED' ? 'stage-index complete' : 'stage-index'} aria-hidden="true">{stage.state === 'SUCCEEDED' ? '✓' : String(index + 1).padStart(2, '0')}</span><strong>{stage.key.replaceAll('_', ' ')}</strong><span className="stage-route">{stage.provider} <i>/</i> {stage.profile} <i>·</i> {latest?.model || stage.model || 'default'} <i>·</i> {latest?.effort || stage.effort || 'default effort'} <i>·</i> {latest ? `${latest.phase} iteration ${latest.iteration}` : `attempt ${stage.attempt}`}</span><span className={`stage-state ${stage.state === 'SUCCEEDED' ? 'good' : ''}`}>{stage.state}</span></div>
+                })}</div>
+                <ExecutionHistoryPanel attempts={report.execution_attempts ?? []} qualityExecutions={report.quality_executions ?? []} />
                 {!!report.routing_decisions?.length && <details className="route-details"><summary>Routing decisions <span>{report.routing_decisions.length} stages</span></summary><div className="route-list">{report.routing_decisions.map((decision) => <div key={decision.stage}><strong>{decision.stage}</strong><span>{decision.provider} / {decision.profile}</span><small>{decision.explanation}</small></div>)}</div></details>}
               </>}
             </section>
@@ -324,9 +338,23 @@ export function RunDetailStatus({ run, onPause, onResume, onCancel }: { run: Run
   return <div className="detail-actions"><span className={`state-pill ${runTone(run.state)}`}>{run.state}</span>{run.state === 'RUNNING' && <button className="button button-secondary control-button" onClick={onPause}>Pause</button>}{run.state === 'PAUSED' && <button className="button button-secondary control-button" onClick={onResume}>Resume</button>}{['RUNNING', 'PAUSED'].includes(run.state) && <button className="button button-danger" onClick={onCancel}>Cancel run</button>}</div>
 }
 
-function EventList({ events }: { events: LocalEvent[] }) {
+export function EventList({ events }: { events: LocalEvent[] }) {
   if (!events.length) return <div className="empty-inline">Select a run to follow its persisted event stream.</div>
-  return <div className="event-list">{events.map((event, index) => <div className="event-row" key={`${event.id}-${index}`}><time>{event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : '—'}</time><span className="event-dot" /><span className="event-copy"><strong>{event.type.replaceAll('.', ' ')}</strong>{event.stage && <small>{event.stage}</small>}</span></div>)}</div>
+  return <div className="event-list">{events.map((event, index) => {
+    const payload = event.payload ?? {}
+    const summaries = [payload.summary, payload.provider_event_type, payload.result, payload.verdict, payload.phase, payload.iteration != null ? `iteration ${payload.iteration}` : undefined, payload.dropped_count != null ? `${payload.dropped_count} events dropped` : undefined].filter((value): value is string => typeof value === 'string' && value.length > 0)
+    return <div className="event-row" key={`${event.id}-${index}`}><time>{event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : '—'}</time><span className="event-dot" /><span className="event-copy"><strong>{event.type.replaceAll('.', ' ')}</strong>{event.stage && <small>{event.stage}</small>}{summaries.map((summary, summaryIndex) => <small key={`${summaryIndex}-${summary}`}>{summary}</small>)}</span></div>
+  })}</div>
+}
+
+export function ExecutionHistoryPanel({ attempts, qualityExecutions }: { attempts: ExecutionAttempt[]; qualityExecutions: QualityExecution[] }) {
+  const active = attempts.filter((attempt) => attempt.result === 'RUNNING').at(-1)
+  return <section className="execution-history" aria-label="Provider and quality execution history">
+    <h3>Provider invocations</h3>
+    {!attempts.length ? <div className="empty-inline">No provider invocation history is recorded.</div> : <div className="stage-list">{attempts.map((attempt) => <div className="stage-row" key={attempt.id} data-active={attempt.id === active?.id || undefined}><span className="stage-index" aria-hidden="true">{attempt.iteration}</span><strong>{attempt.phase} · {attempt.result === 'RUNNING' ? 'ACTIVE' : attempt.result}</strong><span className="stage-route">{attempt.provider} / {attempt.profile} · {attempt.model || 'default'} · {attempt.effort || 'default effort'} · iteration {attempt.iteration}</span><span className="stage-state">{attempt.duration_ms} ms</span></div>)}</div>}
+    <h3>Quality execution history</h3>
+    {!qualityExecutions.length ? <div className="empty-inline">No local quality execution history is recorded.</div> : <div className="gate-list">{qualityExecutions.map((execution) => <article className="gate-row" key={execution.id}><span className="gate-symbol">{execution.verdict === 'PASS' ? '✓' : '!'}</span><span className="gate-name"><strong>{execution.phase} · iteration {execution.iteration} · {execution.verdict}</strong>{execution.results.map((result) => <small key={result.key}>{result.key}: {result.verdict}{result.summary ? ` · ${result.summary}` : ''}</small>)}</span><span className={`gate-verdict ${execution.verdict === 'PASS' ? 'good' : ''}`}>{execution.results.length} checks</span></article>)}</div>}
+  </section>
 }
 
 function GateList({ gates }: { gates: Report['gates'] }) {
@@ -339,7 +367,7 @@ export function RoutePreviewPanel({ state, preview, error }: { state: PreviewSta
   if (state === 'disconnected') return <SharedStateSurface state="disconnected" message={error || 'Connect to the local API to preview routes.'} />
   if (state === 'blocked') return <SharedStateSurface state="error" title="Blocked" message={error || 'The configured route is not authorized.'} />
   if (!preview?.decisions.length) return <div className="empty-inline" role="status">No route decisions were returned.</div>
-  return <div className="route-preview-results" role="status" aria-label="Ready route preview"><p><strong>Ready · NOT RUN</strong><span>Mode: {preview.mode} · Execution: {preview.execution}</span></p><div className="route-list">{preview.decisions.map((decision) => <div key={decision.stage}><strong>{decision.stage.replaceAll('_', ' ')}</strong><span>{decision.route.provider} / {decision.route.profile}</span><small>{decision.explanation}</small></div>)}</div></div>
+  return <div className="route-preview-results" role="status" aria-label="Ready route preview"><p><strong>Ready · NOT RUN</strong><span>Mode: {preview.mode} · Execution: {preview.execution}</span></p><div className="route-list">{preview.decisions.map((decision) => <div key={decision.stage}><strong>{decision.stage.replaceAll('_', ' ')}</strong><span>{decision.route.provider} / {decision.route.profile} · {decision.route.model || 'default model'} · {decision.route.effort || 'default effort'}</span><small>{decision.explanation}</small></div>)}</div></div>
 }
 
 export function SharedStateSurface({ state, title, message }: { state: 'empty' | 'error' | 'disconnected'; title?: string; message: string }) {
