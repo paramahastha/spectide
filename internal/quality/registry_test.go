@@ -3,6 +3,7 @@ package quality
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -63,5 +64,83 @@ func TestRegistryBoundsFormattingOutputAndRejectsDuplicateKeys(t *testing.T) {
 	evidence := registry.Run(context.Background(), t.TempDir())
 	if evidence[0].Verdict != Fail {
 		t.Fatalf("evidence=%+v", evidence[0])
+	}
+}
+
+func TestDiscoverUsesGoProjectChecksWithoutSpecTideLayoutAssumptions(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.test/other\ngo 1.27.2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := Discover(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checks := registry.Checks()
+	if len(checks) != 4 || checks[0].Key != "gofmt" || checks[0].Args[0] != "-l" || checks[0].Args[1] != "." || checks[3].Args[1] != "./..." {
+		t.Fatalf("Go checks=%+v", checks)
+	}
+}
+
+func TestDiscoverUsesNodeProjectScriptsAndNoGoCommands(t *testing.T) {
+	root := t.TempDir()
+	data := []byte(`{"scripts":{"test":"vitest run","build":"vite build"}}`)
+	if err := os.WriteFile(filepath.Join(root, "package.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := Discover(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checks := registry.Checks()
+	if len(checks) != 2 || checks[0].Key != "node_tests" || checks[0].Binary != "npm" || checks[0].Args[0] != "test" || checks[1].Key != "node_build" {
+		t.Fatalf("Node checks=%+v", checks)
+	}
+}
+
+func TestDiscoverUsesPythonPytestMarker(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "pyproject.toml"), []byte("[project]\nname='fixture'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := Discover(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checks := registry.Checks()
+	if len(checks) != 1 || checks[0].Key != "python_tests" || checks[0].Binary != "python3" || len(checks[0].Args) != 3 || checks[0].Args[1] != "pytest" {
+		t.Fatalf("Python checks=%+v", checks)
+	}
+}
+
+func TestDiscoverReportsMissingScriptsCommandsAndUnsupportedProjectsAsBlocked(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{"scripts":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := Discover(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := registry.Run(context.Background(), root)
+	if len(evidence) != 1 || evidence[0].Verdict != Blocked || registry.RequiredPassed(evidence) {
+		t.Fatalf("missing node script=%+v", evidence)
+	}
+	root = t.TempDir()
+	registry, err = Discover(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence = registry.Run(context.Background(), root)
+	if len(evidence) != 1 || evidence[0].Verdict != Blocked || evidence[0].Summary == "" {
+		t.Fatalf("unsupported project=%+v", evidence)
+	}
+	missing := NewRegistry(nil)
+	if err = missing.Register(Check{Key: "missing", Binary: "spectide-no-such-quality-command", Required: true}); err != nil {
+		t.Fatal(err)
+	}
+	evidence = missing.Run(context.Background(), root)
+	if len(evidence) != 1 || evidence[0].Verdict != Blocked {
+		t.Fatalf("missing command=%+v", evidence)
 	}
 }

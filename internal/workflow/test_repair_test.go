@@ -60,8 +60,8 @@ func TestRunTestRepairGateStopsOnNoProgressAndAfterFourRepairs(t *testing.T) {
 		_, err := RunTestRepairGate(context.Background(), TestRepairHooks{
 			Test: func(context.Context) (map[string]string, error) {
 				runs++
-				verdicts := []string{"FAIL", "BLOCKED", "NOT_RUN", "FAIL", "BLOCKED"}
-				return map[string]string{"unit": verdicts[runs-1]}, nil
+				keys := []string{"unit", "lint", "unit", "lint", "unit"}
+				return map[string]string{keys[runs-1]: "FAIL"}, nil
 			},
 			Repair: func(context.Context, map[string]string) error { repairs++; return nil },
 		}, DefaultLoopLimits())
@@ -69,4 +69,12 @@ func TestRunTestRepairGateStopsOnNoProgressAndAfterFourRepairs(t *testing.T) {
 			t.Fatalf("err=%v runs=%d repairs=%d", err, runs, repairs)
 		}
 	})
+}
+
+func TestRunTestRepairGateDoesNotRepairUnavailableQualityChecks(t *testing.T) {
+	repairs := 0
+	_, err := RunTestRepairGate(context.Background(), TestRepairHooks{Test: func(context.Context) (map[string]string, error) { return map[string]string{"unit": "BLOCKED"}, nil }, Repair: func(context.Context, map[string]string) error { repairs++; return nil }}, DefaultLoopLimits())
+	if err == nil || !strings.Contains(err.Error(), "REQUIRED_TEST_CHECK_BLOCKED") || repairs != 0 {
+		t.Fatalf("err=%v repairs=%d", err, repairs)
+	}
 }

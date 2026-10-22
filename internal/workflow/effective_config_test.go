@@ -2,11 +2,14 @@ package workflow
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
+	"github.com/spectide/spectide/internal/quality"
 )
 
 func TestEffectiveRunConfigurationFreezesBoundsChecksAndProfileReferences(t *testing.T) {
@@ -65,6 +68,40 @@ func TestEffectiveRunConfigurationFreezesBoundsChecksAndProfileReferences(t *tes
 	drifted.Capability.ModelValues = []string{"changed-model"}
 	if profileMatchesReference(drifted, pinned) {
 		t.Fatal("verified model catalog drift matched immutable run configuration")
+	}
+}
+
+func TestEffectiveRunConfigurationFreezesDiscoveredProjectQualityChecks(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "package.json"), []byte(`{"scripts":{"test":"vitest run"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := quality.Discover(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	decisions := map[string]config.Decision{}
+	for _, stage := range stages {
+		route := config.Route{Provider: "fake", Profile: "demo"}
+		decisions[stage] = config.Decision{Stage: stage, Route: route, Mode: "hybrid"}
+	}
+	effective := buildEffectiveRunConfiguration(cfg, decisions, nil, registry)
+	encoded, err := json.Marshal(effective)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := parseEffectiveRunConfiguration(string(encoded))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checks, err := restored.qualityRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := checks.Checks()
+	if len(got) != 1 || got[0].Key != "node_tests" || got[0].UnavailableReason != "" || got[0].Binary != "npm" {
+		t.Fatalf("project checks were not frozen/restored: %+v", got)
 	}
 }
 

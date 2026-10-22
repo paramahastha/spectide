@@ -39,6 +39,9 @@ func RunTestRepairGateWithBudget(ctx context.Context, hooks TestRepairHooks, bud
 	if err = validateTestVerdicts(verdicts); err != nil {
 		return verdicts, err
 	}
+	if containsUnavailableTestVerdict(verdicts) {
+		return verdicts, fmt.Errorf("REQUIRED_TEST_CHECK_BLOCKED")
+	}
 	for {
 		failed := failedTestVerdicts(verdicts)
 		if len(failed) == 0 {
@@ -57,11 +60,23 @@ func RunTestRepairGateWithBudget(ctx context.Context, hooks TestRepairHooks, bud
 		if err = validateTestVerdicts(next); err != nil {
 			return next, err
 		}
+		if containsUnavailableTestVerdict(next) {
+			return next, fmt.Errorf("REQUIRED_TEST_CHECK_BLOCKED")
+		}
 		if verdictFingerprint(verdicts) == verdictFingerprint(next) {
 			return next, fmt.Errorf("TEST_REPAIR_NO_PROGRESS")
 		}
 		verdicts = next
 	}
+}
+
+func containsUnavailableTestVerdict(verdicts map[string]string) bool {
+	for _, verdict := range verdicts {
+		if verdict == "BLOCKED" || verdict == "NOT_RUN" {
+			return true
+		}
+	}
+	return false
 }
 
 func validateTestVerdicts(verdicts map[string]string) error {

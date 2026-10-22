@@ -50,15 +50,16 @@ type approvedProfileReference struct {
 }
 
 type requiredCheckReference struct {
-	Key             string   `json:"key"`
-	Binary          string   `json:"binary"`
-	Args            []string `json:"args"`
-	Required        bool     `json:"required"`
-	RequireEmptyOut bool     `json:"require_empty_output"`
-	TimeoutSeconds  int      `json:"timeout_seconds"`
+	Key               string   `json:"key"`
+	Binary            string   `json:"binary"`
+	Args              []string `json:"args"`
+	Required          bool     `json:"required"`
+	RequireEmptyOut   bool     `json:"require_empty_output"`
+	TimeoutSeconds    int      `json:"timeout_seconds"`
+	UnavailableReason string   `json:"unavailable_reason,omitempty"`
 }
 
-func buildEffectiveRunConfiguration(cfg config.Config, decisions map[string]config.Decision, profiles []model.Profile) effectiveRunConfiguration {
+func buildEffectiveRunConfiguration(cfg config.Config, decisions map[string]config.Decision, profiles []model.Profile, registries ...*quality.Registry) effectiveRunConfiguration {
 	effective := effectiveRunConfiguration{SchemaVersion: 1, Execution: cfg.EffectiveExecution()}
 	for _, stage := range stages {
 		decision := decisions[stage]
@@ -93,10 +94,14 @@ func buildEffectiveRunConfiguration(cfg config.Config, decisions map[string]conf
 		effective.Profiles = append(effective.Profiles, reference)
 	}
 	sort.Slice(effective.Profiles, func(i, j int) bool { return effective.Profiles[i].Name < effective.Profiles[j].Name })
-	for _, check := range quality.DefaultRegistry(nil).Checks() {
+	registry := quality.DefaultRegistry(nil)
+	if len(registries) > 0 && registries[0] != nil {
+		registry = registries[0]
+	}
+	for _, check := range registry.Checks() {
 		effective.RequiredChecks = append(effective.RequiredChecks, requiredCheckReference{
 			Key: check.Key, Binary: check.Binary, Args: append([]string(nil), check.Args...), Required: check.Required,
-			RequireEmptyOut: check.RequireEmptyOut, TimeoutSeconds: int(check.Timeout / time.Second),
+			RequireEmptyOut: check.RequireEmptyOut, TimeoutSeconds: int(check.Timeout / time.Second), UnavailableReason: check.UnavailableReason,
 		})
 	}
 	return effective
@@ -123,7 +128,7 @@ func parseEffectiveRunConfiguration(encoded string) (effectiveRunConfiguration, 
 	for _, check := range quality.DefaultRegistry(nil).Checks() {
 		effective.RequiredChecks = append(effective.RequiredChecks, requiredCheckReference{
 			Key: check.Key, Binary: check.Binary, Args: append([]string(nil), check.Args...), Required: check.Required,
-			RequireEmptyOut: check.RequireEmptyOut, TimeoutSeconds: int(check.Timeout / time.Second),
+			RequireEmptyOut: check.RequireEmptyOut, TimeoutSeconds: int(check.Timeout / time.Second), UnavailableReason: check.UnavailableReason,
 		})
 	}
 	return effective, nil
@@ -220,7 +225,7 @@ func (effective effectiveRunConfiguration) qualityRegistry() (*quality.Registry,
 		if check.TimeoutSeconds < 1 || check.TimeoutSeconds > config.MaxStageTimeoutSeconds {
 			return nil, fmt.Errorf("WORKSPACE_DRIFT: immutable check timeout is invalid")
 		}
-		if err := registry.Register(quality.Check{Key: check.Key, Binary: check.Binary, Args: append([]string(nil), check.Args...), Required: check.Required, RequireEmptyOut: check.RequireEmptyOut, Timeout: time.Duration(check.TimeoutSeconds) * time.Second}); err != nil {
+		if err := registry.Register(quality.Check{Key: check.Key, Binary: check.Binary, Args: append([]string(nil), check.Args...), Required: check.Required, RequireEmptyOut: check.RequireEmptyOut, Timeout: time.Duration(check.TimeoutSeconds) * time.Second, UnavailableReason: check.UnavailableReason}); err != nil {
 			return nil, fmt.Errorf("WORKSPACE_DRIFT: immutable quality check is invalid")
 		}
 	}

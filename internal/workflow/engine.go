@@ -19,6 +19,7 @@ import (
 	"github.com/spectide/spectide/internal/adapters/opencode"
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
+	"github.com/spectide/spectide/internal/quality"
 	"github.com/spectide/spectide/internal/routing"
 	"github.com/spectide/spectide/internal/speckit"
 	"github.com/spectide/spectide/internal/store"
@@ -138,7 +139,11 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 	if err = e.store.RecoverAbandonedRuns(ctx, time.Now().UTC()); err != nil {
 		return model.Run{}, false, err
 	}
-	effective := buildEffectiveRunConfiguration(cfg, decisions, profiles)
+	qualityRegistry, qualityErr := quality.Discover(workspace, nil)
+	if qualityErr != nil {
+		return model.Run{}, false, qualityErr
+	}
+	effective := buildEffectiveRunConfiguration(cfg, decisions, profiles, qualityRegistry)
 	configurationJSON, err := json.Marshal(effective)
 	if err != nil {
 		return model.Run{}, false, err
@@ -821,7 +826,8 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 					e.failPersistence(r.ID)
 					return
 				}
-				if persistErr := e.store.Gate(context.Background(), r.ID, "required_tests", "FAIL", safeStageError(testErr)); persistErr != nil {
+				gateVerdict := testGateVerdict(verdicts)
+				if persistErr := e.store.Gate(context.Background(), r.ID, "required_tests", gateVerdict, safeStageError(testErr)); persistErr != nil {
 					e.failPersistence(r.ID)
 					return
 				}

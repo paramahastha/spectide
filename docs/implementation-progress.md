@@ -557,6 +557,12 @@
 - Provider parsers extract Claude result/assistant text, Codex completed agent messages, and OpenCode text parts. `speckit.ExecuteStage` exposes terminal text separately from captured raw stdout, and the live workflow feeds that extracted text to analyze/converge parsers while retaining hashes of raw output for attempt evidence.
 - Tests exercise partial JSONL frames, final result selection, error/unsupported-version records, oversized frames, live runner callbacks, and the integrated Spec-Kit invocation path. Full `make verify` passed. Latest SC-001: 21.637 ms; offline smoke remains `SIMULATED`. T067 is complete; T068 is next. T031, T045, and T046 remain open.
 
+### T068 — Project-aware required quality checks — 2026-10-23
+
+- Workflow run creation now detects Go modules, Node manifests/scripts/package manager lockfiles, and Python pytest markers. It freezes exact required command arguments, timeout, empty-output policy, and unavailable reason into the immutable run configuration. Go checks use `gofmt -l .`, `go vet ./...`, `go test ./...`, and `go build ./...`; Node checks invoke only the detected package manager's test script and optional build script; Python uses `python3 -m pytest -q`.
+- Unsupported project layouts, invalid/missing Node test scripts, unavailable commands, and conventional shell exit 126/127 produce BLOCKED evidence. Missing checks do not trigger repair loops. The registry keeps commands as argument vectors and does not launch browser executables; every invoked check retains the actual process ID, command, timing, exit code, and safe summary.
+- Tests cover Go and Node discovery, missing scripts and commands, unsupported projects, frozen configuration restore, and blocked-check repair suppression. Full `make verify` passed. Latest SC-001: 19.104 ms; offline smoke remains `SIMULATED`. T068 is complete; T069 is next. T031, T045, and T046 remain open.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified
