@@ -66,6 +66,8 @@ func (b *LoopBudget) Counts() LoopLimits {
 	return LoopLimits{AnalyzeRemediations: b.analyzeRemediations, TestRepairs: b.testRepairs, ConvergenceRounds: b.convergenceRounds}
 }
 
+func (b *LoopBudget) Limits() LoopLimits { return b.limits }
+
 func equalGateVerdicts(a, b map[string]string) bool {
 	if len(a) != len(b) {
 		return false

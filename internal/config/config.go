@@ -20,13 +20,30 @@ type Route struct {
 	Fallback           []Route `json:"fallback,omitempty"`
 }
 type Config struct {
-	Version       int              `json:"version"`
-	Project       string           `json:"project,omitempty"`
-	RoutingMode   string           `json:"routing_mode"`
-	DefaultRoute  Route            `json:"default_route"`
-	StageRoutes   map[string]Route `json:"stage_routes,omitempty"`
-	AllowedScopes []string         `json:"allowed_scopes,omitempty"`
+	Version       int               `json:"version"`
+	Project       string            `json:"project,omitempty"`
+	RoutingMode   string            `json:"routing_mode"`
+	DefaultRoute  Route             `json:"default_route"`
+	StageRoutes   map[string]Route  `json:"stage_routes,omitempty"`
+	AllowedScopes []string          `json:"allowed_scopes,omitempty"`
+	Execution     ExecutionSettings `json:"execution,omitempty"`
 }
+
+// ExecutionSettings contains validated, non-secret per-run bounds. Zero values
+// mean the product default; effective snapshots always store fully resolved values.
+type ExecutionSettings struct {
+	DefaultStageTimeoutSeconds int            `json:"default_stage_timeout_seconds,omitempty"`
+	StageTimeoutSeconds        map[string]int `json:"stage_timeout_seconds,omitempty"`
+	AnalyzeRemediationLimit    int            `json:"analyze_remediation_limit,omitempty"`
+	TestRepairLimit            int            `json:"test_repair_limit,omitempty"`
+	ConvergenceRoundLimit      int            `json:"convergence_round_limit,omitempty"`
+}
+
+const (
+	DefaultStageTimeoutSeconds = 30 * 60
+	MinStageTimeoutSeconds     = 1
+	MaxStageTimeoutSeconds     = 4 * 60 * 60
+)
 
 var StageKeys = []string{"constitution", "specify", "clarify", "plan", "checklist", "tasks", "analyze", "implement", "tests", "converge", "final_review", "report"}
 
@@ -136,7 +153,57 @@ func merge(base, override Config) Config {
 	if override.AllowedScopes != nil {
 		base.AllowedScopes = append([]string(nil), override.AllowedScopes...)
 	}
+	base.Execution = mergeExecution(base.Execution, override.Execution)
 	return base
+}
+
+func mergeExecution(base, override ExecutionSettings) ExecutionSettings {
+	if override.DefaultStageTimeoutSeconds != 0 {
+		base.DefaultStageTimeoutSeconds = override.DefaultStageTimeoutSeconds
+	}
+	if override.AnalyzeRemediationLimit != 0 {
+		base.AnalyzeRemediationLimit = override.AnalyzeRemediationLimit
+	}
+	if override.TestRepairLimit != 0 {
+		base.TestRepairLimit = override.TestRepairLimit
+	}
+	if override.ConvergenceRoundLimit != 0 {
+		base.ConvergenceRoundLimit = override.ConvergenceRoundLimit
+	}
+	if override.StageTimeoutSeconds != nil {
+		if base.StageTimeoutSeconds == nil {
+			base.StageTimeoutSeconds = make(map[string]int)
+		}
+		for stage, seconds := range override.StageTimeoutSeconds {
+			base.StageTimeoutSeconds[stage] = seconds
+		}
+	}
+	return base
+}
+
+func (c Config) EffectiveExecution() ExecutionSettings {
+	settings := c.Execution
+	if settings.DefaultStageTimeoutSeconds == 0 {
+		settings.DefaultStageTimeoutSeconds = DefaultStageTimeoutSeconds
+	}
+	if settings.AnalyzeRemediationLimit == 0 {
+		settings.AnalyzeRemediationLimit = 3
+	}
+	if settings.TestRepairLimit == 0 {
+		settings.TestRepairLimit = 4
+	}
+	if settings.ConvergenceRoundLimit == 0 {
+		settings.ConvergenceRoundLimit = 5
+	}
+	resolved := make(map[string]int, len(StageKeys))
+	for _, stage := range StageKeys {
+		resolved[stage] = settings.DefaultStageTimeoutSeconds
+	}
+	for stage, seconds := range settings.StageTimeoutSeconds {
+		resolved[stage] = seconds
+	}
+	settings.StageTimeoutSeconds = resolved
+	return settings
 }
 
 func routeEmpty(route Route) bool {
@@ -219,8 +286,35 @@ func Validate(c Config) error {
 			return fmt.Errorf("INVALID_DEFAULT_ROUTE: %w", err)
 		}
 	}
+	if err := validateExecution(c.Execution); err != nil {
+		return err
+	}
 	if c.RoutingMode != "manual" && (c.DefaultRoute.Provider == "" || c.DefaultRoute.Profile == "") {
 		return fmt.Errorf("DEFAULT_ROUTE_REQUIRED")
+	}
+	return nil
+}
+
+func validateExecution(settings ExecutionSettings) error {
+	if settings.DefaultStageTimeoutSeconds != 0 && (settings.DefaultStageTimeoutSeconds < MinStageTimeoutSeconds || settings.DefaultStageTimeoutSeconds > MaxStageTimeoutSeconds) {
+		return fmt.Errorf("STAGE_TIMEOUT_OUT_OF_RANGE: default must be %d..%d seconds", MinStageTimeoutSeconds, MaxStageTimeoutSeconds)
+	}
+	for stage, seconds := range settings.StageTimeoutSeconds {
+		if !knownStage(stage) {
+			return fmt.Errorf("UNKNOWN_STAGE_TIMEOUT: %s", stage)
+		}
+		if seconds < MinStageTimeoutSeconds || seconds > MaxStageTimeoutSeconds {
+			return fmt.Errorf("STAGE_TIMEOUT_OUT_OF_RANGE: %s must be %d..%d seconds", stage, MinStageTimeoutSeconds, MaxStageTimeoutSeconds)
+		}
+	}
+	for name, bounds := range map[string][2]int{
+		"analyze_remediation_limit": {settings.AnalyzeRemediationLimit, 3},
+		"test_repair_limit":         {settings.TestRepairLimit, 4},
+		"convergence_round_limit":   {settings.ConvergenceRoundLimit, 5},
+	} {
+		if bounds[0] < 0 || bounds[0] > bounds[1] {
+			return fmt.Errorf("LOOP_LIMIT_OUT_OF_RANGE: %s must be 1..%d when configured", name, bounds[1])
+		}
 	}
 	return nil
 }

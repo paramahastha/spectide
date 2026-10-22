@@ -76,7 +76,7 @@ func (e *Engine) runLiveAnalyzeLoop(ctx context.Context, run model.Run, decision
 			return e.store.Event(ctx, run.ID, "analyze", "analysis.remediated", "info", map[string]any{"finding_id": finding.ID, "owner": finding.Owner, "severity": finding.Severity})
 		},
 	}
-	return RunAnalyzeGateWithBudget(ctx, hooks, budget, DefaultLoopLimits())
+	return RunAnalyzeGateWithBudget(ctx, hooks, budget, budget.Limits())
 }
 
 func validateWorkspaceOwnerChange(before, after map[string]stageFile, owner string) error {

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -104,6 +105,83 @@ func TestLoadEffectiveUsesDefaultsWhenLayersAreAbsent(t *testing.T) {
 	cfg, err := LoadEffective(filepath.Join(t.TempDir(), "missing-global.json"), filepath.Join(t.TempDir(), "missing-project.json"))
 	if err != nil || cfg.RoutingMode != "hybrid" || cfg.DefaultRoute.Provider != "fake" {
 		t.Fatalf("effective config=%+v err=%v", cfg, err)
+	}
+}
+
+func TestExecutionSettingsResolveDefaultsAndOverrides(t *testing.T) {
+	cfg := Default()
+	effective := cfg.EffectiveExecution()
+	if effective.DefaultStageTimeoutSeconds != 1800 || effective.AnalyzeRemediationLimit != 3 || effective.TestRepairLimit != 4 || effective.ConvergenceRoundLimit != 5 {
+		t.Fatalf("execution defaults=%+v", effective)
+	}
+	for _, stage := range StageKeys {
+		if effective.StageTimeoutSeconds[stage] != 1800 {
+			t.Fatalf("default timeout for %s=%d", stage, effective.StageTimeoutSeconds[stage])
+		}
+	}
+	cfg.Execution = ExecutionSettings{DefaultStageTimeoutSeconds: 900, StageTimeoutSeconds: map[string]int{"analyze": 45}, AnalyzeRemediationLimit: 2, TestRepairLimit: 3, ConvergenceRoundLimit: 4}
+	if err := Validate(cfg); err != nil {
+		t.Fatal(err)
+	}
+	effective = cfg.EffectiveExecution()
+	if effective.DefaultStageTimeoutSeconds != 900 || effective.StageTimeoutSeconds["analyze"] != 45 || effective.StageTimeoutSeconds["plan"] != 900 || effective.AnalyzeRemediationLimit != 2 || effective.TestRepairLimit != 3 || effective.ConvergenceRoundLimit != 4 {
+		t.Fatalf("execution overrides=%+v", effective)
+	}
+}
+
+func TestExecutionSettingsRejectTimeoutAndLoopLimitOutOfRange(t *testing.T) {
+	cases := map[string]ExecutionSettings{
+		"zero stage timeout":       {StageTimeoutSeconds: map[string]int{"plan": 0}},
+		"timeout below one second": {DefaultStageTimeoutSeconds: -1},
+		"timeout above four hours": {DefaultStageTimeoutSeconds: MaxStageTimeoutSeconds + 1},
+		"unknown stage timeout":    {StageTimeoutSeconds: map[string]int{"not-a-stage": 60}},
+		"analyze rounds":           {AnalyzeRemediationLimit: 4},
+		"test repairs":             {TestRepairLimit: 5},
+		"convergence rounds":       {ConvergenceRoundLimit: 6},
+	}
+	for name, execution := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Execution = execution
+			if err := Validate(cfg); err == nil {
+				t.Fatal("out-of-range execution setting accepted")
+			}
+		})
+	}
+}
+
+func TestExecutionTimeoutAcceptsDocumentedBoundaryValues(t *testing.T) {
+	for _, seconds := range []int{MinStageTimeoutSeconds, MaxStageTimeoutSeconds} {
+		t.Run(fmt.Sprintf("%d seconds", seconds), func(t *testing.T) {
+			cfg := Default()
+			cfg.Execution = ExecutionSettings{DefaultStageTimeoutSeconds: seconds}
+			if err := Validate(cfg); err != nil {
+				t.Fatalf("documented timeout boundary rejected: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoadEffectiveMergesExecutionOverrides(t *testing.T) {
+	root := t.TempDir()
+	globalPath, projectPath := filepath.Join(root, "global.json"), filepath.Join(root, "project.json")
+	global := Default()
+	global.Execution = ExecutionSettings{DefaultStageTimeoutSeconds: 600, StageTimeoutSeconds: map[string]int{"analyze": 120}, AnalyzeRemediationLimit: 2}
+	project := Default()
+	project.Execution = ExecutionSettings{StageTimeoutSeconds: map[string]int{"analyze": 90}, TestRepairLimit: 3}
+	if err := Save(globalPath, global); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(projectPath, project); err != nil {
+		t.Fatal(err)
+	}
+	effective, err := LoadEffective(globalPath, projectPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := effective.EffectiveExecution()
+	if settings.DefaultStageTimeoutSeconds != 600 || settings.StageTimeoutSeconds["analyze"] != 90 || settings.StageTimeoutSeconds["plan"] != 600 || settings.AnalyzeRemediationLimit != 2 || settings.TestRepairLimit != 3 || settings.ConvergenceRoundLimit != 5 {
+		t.Fatalf("merged execution settings=%+v", settings)
 	}
 }
 

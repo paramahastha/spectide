@@ -31,7 +31,7 @@ func (Adapter) Build(r adapters.Request) (runner.Invocation, error) {
 	if r.Profile.ConfigDir != "" {
 		env = append(env, "CODEX_HOME="+r.Profile.ConfigDir)
 	}
-	return runner.Invocation{Binary: r.Profile.Executable, Args: a, Dir: r.ProjectRoot, Env: env}, nil
+	return runner.Invocation{Binary: r.Profile.Executable, Args: a, Dir: r.ProjectRoot, Env: env, Timeout: r.Timeout}, nil
 }
 func (Adapter) Normalize(raw []byte) ([]adapters.Event, error) {
 	return adapters.NormalizeJSONL(adapters.Codex, raw)

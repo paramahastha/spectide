@@ -84,7 +84,7 @@ func (e *Engine) runLiveConvergenceLoop(ctx context.Context, run model.Run, deci
 	if decisions["converge"].Route.Provider == "fake" || decisions["implement"].Route.Provider == "fake" {
 		return fmt.Errorf("CONVERGENCE_ADAPTER_UNAVAILABLE")
 	}
-	converged, err := RunConvergenceWithBudget(ctx, e.liveConvergenceHooks(run, "convergence", decisions, installation, featureDir, gateVerdicts, budget), budget, DefaultLoopLimits())
+	converged, err := RunConvergenceWithBudget(ctx, e.liveConvergenceHooks(run, "convergence", decisions, installation, featureDir, gateVerdicts, budget), budget, budget.Limits())
 	if err != nil {
 		return err
 	}
@@ -139,7 +139,7 @@ func (e *Engine) runLiveFinalReviewLoop(ctx context.Context, run model.Run, deci
 			return err
 		},
 	}
-	converged, err := RunFinalReviewWithBudget(ctx, hooks, budget, DefaultLoopLimits())
+	converged, err := RunFinalReviewWithBudget(ctx, hooks, budget, budget.Limits())
 	if err != nil {
 		return err
 	}

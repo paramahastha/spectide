@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spectide/spectide/internal/adapters"
 	"github.com/spectide/spectide/internal/config"
@@ -19,7 +20,7 @@ import (
 	"github.com/spectide/spectide/internal/store"
 )
 
-type liveFixtureAdapter struct{}
+type liveFixtureAdapter struct{ timeouts []time.Duration }
 
 func verifiedFixtureCapability(t *testing.T, provider, executable, configDirectory string) model.ProfileCapability {
 	t.Helper()
@@ -34,26 +35,27 @@ func verifiedFixtureCapability(t *testing.T, provider, executable, configDirecto
 	return model.ProfileCapability{Provider: provider, ExecutableFound: true, ApprovedExecutablePath: reference.Path, ExecutableSHA256: reference.SHA256, ApprovedConfigDirectory: approvedConfig, Version: "fixture-1", Authenticated: "AUTHENTICATED", ReadOnlyExecution: true, WorkspaceWrite: true}
 }
 
-func (liveFixtureAdapter) Name() adapters.ProviderName { return adapters.Codex }
-func (liveFixtureAdapter) Probe(context.Context, adapters.Profile) (adapters.Capability, error) {
+func (*liveFixtureAdapter) Name() adapters.ProviderName { return adapters.Codex }
+func (*liveFixtureAdapter) Probe(context.Context, adapters.Profile) (adapters.Capability, error) {
 	return adapters.Capability{}, nil
 }
-func (liveFixtureAdapter) Build(request adapters.Request) (runner.Invocation, error) {
+func (a *liveFixtureAdapter) Build(request adapters.Request) (runner.Invocation, error) {
+	a.timeouts = append(a.timeouts, request.Timeout)
 	output := "{\"type\":\"message\"}"
 	if request.Stage == "plan" {
 		path := filepath.Join(request.ProjectRoot, "specs", "001-product", "plan.md")
-		return runner.Invocation{Binary: "/bin/sh", Args: []string{"-c", "printf '%s\\n' 'generated plan evidence' > \"" + path + "\"; printf '%s' 'plan generated'"}, Dir: request.ProjectRoot}, nil
+		return runner.Invocation{Binary: "/bin/sh", Args: []string{"-c", "printf '%s\\n' 'generated plan evidence' > \"" + path + "\"; printf '%s' 'plan generated'"}, Dir: request.ProjectRoot, Timeout: request.Timeout}, nil
 	}
 	if request.Stage == "implement" {
 		path := filepath.Join(request.ProjectRoot, "internal", "fixture.go")
-		return runner.Invocation{Binary: "/bin/sh", Args: []string{"-c", "printf '\\n%s\\n' '// implementation evidence' >> \"" + path + "\"; printf '%s' 'implementation generated'"}, Dir: request.ProjectRoot}, nil
+		return runner.Invocation{Binary: "/bin/sh", Args: []string{"-c", "printf '\\n%s\\n' '// implementation evidence' >> \"" + path + "\"; printf '%s' 'implementation generated'"}, Dir: request.ProjectRoot, Timeout: request.Timeout}, nil
 	}
 	if request.Stage == "analyze" {
 		output = "## Specification Analysis Report\n\n| ID | Category | Severity | Location(s) | Summary | Recommendation |\n|---|---|---|---|---|---|\n| — | — | — | — | — | — |\n\n### Metrics\n- Coverage: 100% (1/1)\n"
 	} else if request.Stage == "converge" {
 		output = "✅ Converged — required gates pass."
 	}
-	return runner.Invocation{Binary: "/bin/sh", Args: []string{"-c", "printf '%s' '" + output + "'"}, Dir: request.ProjectRoot}, nil
+	return runner.Invocation{Binary: "/bin/sh", Args: []string{"-c", "printf '%s' '" + output + "'"}, Dir: request.ProjectRoot, Timeout: request.Timeout}, nil
 }
 
 func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *testing.T) {
@@ -121,6 +123,7 @@ func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *t
 		commands[stage] = "/speckit." + stage
 	}
 	cfg := config.Default()
+	cfg.Execution.StageTimeoutSeconds = map[string]int{"plan": 42}
 	cfg.StageRoutes = map[string]config.Route{
 		"constitution": {Provider: "codex", Profile: "fixture"},
 		"specify":      {Provider: "codex", Profile: "fixture"},
@@ -140,7 +143,8 @@ func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *t
 	if _, err = state.SaveProfileCapability(ctx, "fixture", capability); err != nil {
 		t.Fatal(err)
 	}
-	engine := NewWithAdapters(state, liveFixtureAdapter{})
+	fixtureAdapter := &liveFixtureAdapter{}
+	engine := NewWithAdapters(state, fixtureAdapter)
 	engine.discover = func(root string) (speckit.Installation, error) {
 		return speckit.Installation{
 			ProjectRoot: root, Verified: true,
@@ -176,6 +180,16 @@ func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *t
 	}
 	if !foundLivePlan {
 		t.Fatal("verified live plan stage produced no persisted provider event")
+	}
+	foundConfiguredPlanTimeout := false
+	for _, timeout := range fixtureAdapter.timeouts {
+		if timeout == 42*time.Second {
+			foundConfiguredPlanTimeout = true
+			break
+		}
+	}
+	if !foundConfiguredPlanTimeout {
+		t.Fatalf("configured plan timeout was not delivered to provider adapter: %v", fixtureAdapter.timeouts)
 	}
 	for _, stage := range []string{"constitution", "specify"} {
 		foundProviderEvent := false
@@ -324,7 +338,7 @@ func TestRunLiveStageUsesVerifiedCommandAndPersistsSanitizedEvidence(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine := NewWithAdapters(state, liveFixtureAdapter{})
+	engine := NewWithAdapters(state, &liveFixtureAdapter{})
 	evidence, err := engine.runLiveStage(ctx, run, "plan", config.Route{Provider: "codex", Profile: "fixture"}, installation, feature)
 	if err != nil {
 		t.Fatal(err)

@@ -8,14 +8,19 @@ import (
 	"github.com/spectide/spectide/internal/adapters/opencode"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBuildersDoNotContainBypassFlags(t *testing.T) {
 	cases := []adapters.Adapter{claude.Adapter{}, codex.Adapter{}, opencode.Adapter{}}
 	for _, a := range cases {
-		in, e := a.Build(adapters.Request{ProjectRoot: "/tmp/work", Prompt: "test", Profile: adapters.Profile{Executable: string(a.Name())}})
+		configuredTimeout := 17 * time.Minute
+		in, e := a.Build(adapters.Request{ProjectRoot: "/tmp/work", Prompt: "test", Timeout: configuredTimeout, Profile: adapters.Profile{Executable: string(a.Name())}})
 		if e != nil && a.Name() == adapters.Claude {
 			continue
+		}
+		if in.Timeout != configuredTimeout {
+			t.Fatalf("%s adapter dropped configured timeout: got %s want %s", a.Name(), in.Timeout, configuredTimeout)
 		}
 		for _, arg := range in.Args {
 			if arg == "--dangerously-bypass-approvals-and-sandbox" {

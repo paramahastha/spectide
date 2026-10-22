@@ -138,18 +138,7 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 	if err = e.store.RecoverAbandonedRuns(ctx, time.Now().UTC()); err != nil {
 		return model.Run{}, false, err
 	}
-	effective := make([]struct {
-		Stage     string          `json:"stage"`
-		Decision  config.Decision `json:"decision"`
-		Simulated bool            `json:"simulated"`
-	}, 0, len(stages))
-	for _, stage := range stages {
-		effective = append(effective, struct {
-			Stage     string          `json:"stage"`
-			Decision  config.Decision `json:"decision"`
-			Simulated bool            `json:"simulated"`
-		}{Stage: stage, Decision: decisions[stage], Simulated: decisions[stage].Route.Provider == "fake"})
-	}
+	effective := buildEffectiveRunConfiguration(cfg, decisions, profiles)
 	configurationJSON, err := json.Marshal(effective)
 	if err != nil {
 		return model.Run{}, false, err
@@ -351,10 +340,11 @@ func (e *Engine) Resume(id string) error {
 		return e.blockUnverifiedRestart(run, fmt.Errorf("WORKSPACE_DRIFT: owner lease expired while local worker remains registered"))
 	}
 	{
-		decisions, parseErr := parseStoredDecisions(configuration.ConfigJSON)
+		effectiveConfiguration, parseErr := parseEffectiveRunConfiguration(configuration.ConfigJSON)
 		if parseErr != nil {
 			return e.blockUnverifiedRestart(run, parseErr)
 		}
+		decisions := effectiveConfiguration.decisions()
 		featureDir := ""
 		if checkpointState.FeatureDirectory != "" {
 			featureDir = filepath.Join(run.Project, filepath.FromSlash(checkpointState.FeatureDirectory))
@@ -363,7 +353,7 @@ func (e *Engine) Resume(id string) error {
 		if discoverErr != nil {
 			return e.blockUnverifiedRestart(run, discoverErr)
 		}
-		budget, budgetErr := restoreLoopBudget(DefaultLoopLimits(), checkpointState.LoopCounts)
+		budget, budgetErr := restoreLoopBudget(effectiveConfiguration.loopLimits(), checkpointState.LoopCounts)
 		if budgetErr != nil {
 			return e.blockUnverifiedRestart(run, budgetErr)
 		}
@@ -630,7 +620,14 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 		e.finish(r.ID)
 		return
 	}
-	loopBudget, err := restoreLoopBudget(DefaultLoopLimits(), restoredCounts)
+	effectiveConfiguration, err := parseEffectiveRunConfiguration(configuration.ConfigJSON)
+	if err != nil {
+		_ = e.store.SetRunState(context.Background(), r.ID, model.Blocked)
+		e.finish(r.ID)
+		return
+	}
+	decisions = effectiveConfiguration.decisions()
+	loopBudget, err := restoreLoopBudget(effectiveConfiguration.loopLimits(), restoredCounts)
 	if err != nil {
 		_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
 		e.finish(r.ID)

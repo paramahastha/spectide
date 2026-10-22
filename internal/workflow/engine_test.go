@@ -322,15 +322,18 @@ func TestEngineDoesNotSilentlySimulateLiveRoute(t *testing.T) {
 		t.Fatalf("blocked live-route evidence=%+v err=%v", report, err)
 	}
 	configuration, err := s.RunConfiguration(context.Background(), run.ID)
-	var configuredStages []struct {
-		Stage     string `json:"stage"`
-		Simulated bool   `json:"simulated"`
+	var configuredConfiguration struct {
+		SchemaVersion int `json:"schema_version"`
+		Stages        []struct {
+			Stage     string `json:"stage"`
+			Simulated bool   `json:"simulated"`
+		} `json:"stages"`
 	}
 	if err == nil {
-		err = json.Unmarshal([]byte(configuration.ConfigJSON), &configuredStages)
+		err = json.Unmarshal([]byte(configuration.ConfigJSON), &configuredConfiguration)
 	}
-	if err != nil || len(configuredStages) == 0 || configuredStages[0].Stage != "constitution" || configuredStages[0].Simulated {
-		t.Fatalf("live route was marked simulated: configuration=%+v stages=%+v err=%v", configuration, configuredStages, err)
+	if err != nil || configuredConfiguration.SchemaVersion != 1 || len(configuredConfiguration.Stages) == 0 || configuredConfiguration.Stages[0].Stage != "constitution" || configuredConfiguration.Stages[0].Simulated {
+		t.Fatalf("live route was marked simulated: configuration=%+v stages=%+v err=%v", configuration, configuredConfiguration, err)
 	}
 }
 

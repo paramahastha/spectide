@@ -531,6 +531,13 @@
 - Cursor checkpoints persist the selected feature directory relative to the workspace. Restart uses that persisted path and validates containment rather than selecting again from whatever artifacts happen to exist later.
 - Acceptance tests cover fresh and partial directory selection, path escape rejection, preserving an existing constitution/specification, creating a missing plan, and checkpoint persistence. Full `make verify` passed: Go vet/tests, dashboard typecheck/tests/build, binary build, secret scan, and offline `SIMULATED` smoke. Latest SC-001: 21.319 ms. T063 is complete; T064 is next. T031, T045, and T046 remain open.
 
+### T064 — Freeze effective run execution settings — 2026-10-22
+
+- Added optional global/project execution configuration for stage timeout defaults and per-stage overrides, plus bounded analyze/test/convergence loop settings. Defaults resolve to 1,800 seconds and 3/4/5; provider-stage timeout values accept 1–14,400 seconds, and loop overrides may lower but not exceed the specified maxima.
+- Each run stores a versioned immutable snapshot of all effective stage routes, approved profile executable/configuration/scope and capability references, required-check definitions, loop limits, and fully resolved per-stage timeouts. Configuration hash and checkpoint verification preserve that snapshot across restart.
+- Live provider calls receive the frozen timeout through `adapters.Request` into every production adapter's `runner.Invocation`. Local quality checks reconstruct from frozen definitions, and analyze/test-repair/convergence/final-review loops run with the frozen limits. Provider launch rejects profile or capability-reference drift.
+- Tests cover 3/4/5 defaults, global/project override merging, timeout defaults and minimum/maximum, invalid values, profile drift, frozen checks, and adapter timeout propagation. Full `make verify` passed: Go vet/tests, dashboard typecheck/tests/build, binary build, secret scan, and offline `SIMULATED` smoke. Latest SC-001: 22.153 ms. T064 is complete; T065 is next. T031, T045, and T046 remain open.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified

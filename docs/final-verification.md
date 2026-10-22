@@ -28,6 +28,7 @@
 | Dashboard component states and Axe scan | PASS, jsdom scope | `cd web && npm test` (26 tests; seven surfaces; zero critical/serious); see [accessibility audit](accessibility-audit.md) |
 | Offline demo and startup smoke | PASS | `make smoke` |
 | Unified verification and secret scan | PASS | `make verify` (format, vet, Go tests, dashboard checks/build, binary build, secret scan, and smoke) |
+| Frozen effective run configuration | PASS | `make verify`; immutable run configuration stores effective routes, profile executable/config/scope and capability references, required-check definitions, bounded loop settings, and stage timeouts. Tests cover defaults, overrides, supported ranges, profile drift, adapter timeout propagation, and restoration from the hashed run snapshot (T064). |
 | Runner timeout/output/cancellation | PASS | `go test ./internal/runner -count=1` |
 | Deterministic repeated lifecycle | PASS | `TestTwentyDeterministicRunsCompleteWithRequiredEvidence` (20 runs) |
 | Workspace path/scope enforcement | PASS | Focused `go test ./internal/workflow ./internal/api ./internal/workspace`; missing paths and disallowed roots rejected before run creation, canonical symlink path accepted within scope |

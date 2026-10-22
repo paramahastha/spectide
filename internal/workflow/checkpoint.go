@@ -42,16 +42,15 @@ type storedRunDecision struct {
 }
 
 func parseStoredDecisions(encoded string) (map[string]config.Decision, error) {
-	var stored []storedRunDecision
-	if err := json.Unmarshal([]byte(encoded), &stored); err != nil {
-		return nil, fmt.Errorf("WORKSPACE_DRIFT: immutable run configuration is invalid")
+	effective, err := parseEffectiveRunConfiguration(encoded)
+	if err != nil {
+		return nil, err
 	}
-	decisions := make(map[string]config.Decision, len(stored))
-	for _, item := range stored {
-		if indexOfStage(item.Stage) < 0 || item.Decision.Route.Provider == "" {
+	decisions := effective.decisions()
+	for stage, decision := range decisions {
+		if indexOfStage(stage) < 0 || decision.Route.Provider == "" {
 			return nil, fmt.Errorf("WORKSPACE_DRIFT: immutable run configuration has invalid stage routing")
 		}
-		decisions[item.Stage] = item.Decision
 	}
 	if len(decisions) != len(stages) {
 		return nil, fmt.Errorf("WORKSPACE_DRIFT: immutable run configuration is incomplete")

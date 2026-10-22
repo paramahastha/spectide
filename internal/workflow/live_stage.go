@@ -99,6 +99,14 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 	if profile == nil {
 		return nil, fmt.Errorf("PROFILE_NOT_FOUND: %s", route.Profile)
 	}
+	runConfiguration, err := e.store.RunConfiguration(ctx, run.ID)
+	if err != nil {
+		return nil, err
+	}
+	effectiveConfiguration, err := parseEffectiveRunConfiguration(runConfiguration.ConfigJSON)
+	if err != nil {
+		return nil, err
+	}
 	if _, err := workspaceguard.Canonical(run.Project, profile.AllowedScopes); err != nil {
 		return nil, fmt.Errorf("PROFILE_NOT_ALLOWED: %s: %w", route.Profile, err)
 	}
@@ -108,6 +116,12 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 	approvedExecutable, approvedConfig, err := e.validateProfileReferences(ctx, run.ID, *profile)
 	if err != nil {
 		return nil, err
+	}
+	if effectiveConfiguration.SchemaVersion == 1 {
+		pinned, ok := effectiveConfiguration.profile(profile.Name)
+		if !ok || !profileMatchesReference(*profile, pinned) || approvedExecutable.Path != pinned.ApprovedExecutablePath || approvedExecutable.SHA256 != pinned.ExecutableSHA256 || approvedConfig != pinned.ApprovedConfigDirectory {
+			return nil, fmt.Errorf("RUN_CONFIGURATION_PROFILE_DRIFT: %s", profile.Name)
+		}
 	}
 	var before string
 	if stage == "analyze" {
@@ -132,6 +146,7 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 		Prompt:      prompt,
 		Model:       route.Model,
 		Effort:      route.Effort,
+		Timeout:     time.Duration(effectiveConfiguration.Execution.StageTimeoutSeconds[stage]) * time.Second,
 		Profile: adapters.Profile{
 			Name: profile.Name, Provider: adapters.ProviderName(profile.Provider),
 			Executable: profile.Executable, ConfigDir: approvedConfig,

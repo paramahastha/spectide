@@ -10,7 +10,6 @@ import (
 
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
-	"github.com/spectide/spectide/internal/quality"
 	"github.com/spectide/spectide/internal/security"
 	"github.com/spectide/spectide/internal/speckit"
 )
@@ -19,7 +18,18 @@ func (e *Engine) runTestRepairLoop(ctx context.Context, run model.Run, phase str
 	latest := map[string]string{}
 	hooks := TestRepairHooks{
 		Test: func(ctx context.Context) (map[string]string, error) {
-			registry := quality.DefaultRegistry(nil)
+			runConfiguration, err := e.store.RunConfiguration(ctx, run.ID)
+			if err != nil {
+				return nil, err
+			}
+			effectiveConfiguration, err := parseEffectiveRunConfiguration(runConfiguration.ConfigJSON)
+			if err != nil {
+				return nil, err
+			}
+			registry, err := effectiveConfiguration.qualityRegistry()
+			if err != nil {
+				return nil, err
+			}
 			startedAt := time.Now().UTC()
 			evidence := registry.Run(ctx, run.Project)
 			finishedAt := time.Now().UTC()
@@ -64,7 +74,7 @@ func (e *Engine) runTestRepairLoop(ctx context.Context, run model.Run, phase str
 			return nil
 		},
 	}
-	verdicts, err := RunTestRepairGateWithBudget(ctx, hooks, budget, DefaultLoopLimits())
+	verdicts, err := RunTestRepairGateWithBudget(ctx, hooks, budget, budget.Limits())
 	if err != nil {
 		return verdicts, err
 	}

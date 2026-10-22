@@ -28,7 +28,7 @@ func (Adapter) Build(r adapters.Request) (runner.Invocation, error) {
 	if r.Profile.ConfigDir != "" {
 		env = append(env, "CLAUDE_CONFIG_DIR="+r.Profile.ConfigDir)
 	}
-	return runner.Invocation{Binary: r.Profile.Executable, Args: a, Env: env, Dir: r.ProjectRoot}, nil
+	return runner.Invocation{Binary: r.Profile.Executable, Args: a, Env: env, Dir: r.ProjectRoot, Timeout: r.Timeout}, nil
 }
 func (Adapter) Normalize(raw []byte) ([]adapters.Event, error) {
 	return adapters.NormalizeJSONL(adapters.Claude, raw)
