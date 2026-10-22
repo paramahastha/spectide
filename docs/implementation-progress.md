@@ -445,6 +445,13 @@
 - The engine fixture executes live plan/analyze/converge/final-review routes and asserts `analyze_clean`, `required_tests`, `converged`, and `final_review` are PASS. The simulated-E2E gate remains blocked, so the mixed live/fixture run cannot claim full completion. Shared-budget, exhaustion, no-progress, owner-only mutation, append-only, and same-spec tests pass.
 - Full `make verify` passed. Latest SC-001: 20.894 ms on macOS 15.1 / Apple M4 / 16 GiB / arm64; offline demo remains `SIMULATED`. T016 and T035 are complete in the canonical task ledger. T031, T034, T036, T045, and T046 remain open.
 
+### Phase checkpoint — dashboard state coverage and accessibility evidence
+
+- Added route-preview and profile-readiness views backed by the local dry-run/profile endpoints. Added explicit disconnected, blocked/error, empty, skipped, not-run, and simulated labels with semantic status/alert roles and visible keyboard focus styling.
+- Added 26 Vitest/jsdom checks covering dashboard state pairs, run controls, dry-run request behavior, seven named Axe surfaces, and stylesheet contrast/focus/reduced-motion rules. Axe reports zero critical/serious violations; the color-contrast Axe rule is disabled under jsdom and measured separately (minimum tested primary-text ratio 5.29:1).
+- Updated Vite to 7.3.7 and Vitest to 4.1.12 after the new dev-test dependencies exposed advisories; `npm audit --audit-level=low` reports zero vulnerabilities.
+- Full `make verify` passed, including Go suites, dashboard typecheck/tests/build, secret scan, and offline smoke. Latest SC-001: 19.005 ms. Browser E2E, real 200% zoom, rendered focus/reduced-motion checks, and screenshots remain NOT_RUN; no browser executable is installed, and the earlier localhost browser access gate denied the browser inspection. T031 remains unchecked; details are in [the accessibility audit](accessibility-audit.md).
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified

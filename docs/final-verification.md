@@ -13,7 +13,7 @@
 - Architecture: arm64
 - Build command: `make build` (`go build -o bin/spectide ./cmd/spectide`)
 - Startup/health command: `make smoke` (`scripts/smoke.sh` starts `spectide serve --port 0`, then requests `/healthz`)
-- Measurement: latest `make verify` run measured 20.894 ms from the monotonic timestamp immediately before `Popen` through the first HTTP 200 from `/healthz`; acceptance limit is 2,000 ms. Earlier measurements are retained in the implementation checkpoint history.
+- Measurement: latest `make verify` run measured 19.005 ms from the monotonic timestamp immediately before `Popen` through the first HTTP 200 from `/healthz`; acceptance limit is 2,000 ms. Earlier measurements are retained in the implementation checkpoint history.
 - The same smoke run completed the offline demo and reported `SIMULATED`.
 
 ## Other verification executed
@@ -22,9 +22,10 @@
 |---|---|---|
 | Go unit/integration suite | PASS | `go test ./...` |
 | Go static analysis | PASS | `go vet ./...` |
-| Dashboard tests | PASS | `make web-test` (2 tests) |
+| Dashboard tests | PASS | `make web-test` (26 tests) |
 | Dashboard typecheck | PASS | `make lint` |
 | Dashboard production build | PASS | `make web-build` |
+| Dashboard component states and Axe scan | PASS, jsdom scope | `cd web && npm test` (26 tests; seven surfaces; zero critical/serious); see [accessibility audit](accessibility-audit.md) |
 | Offline demo and startup smoke | PASS | `make smoke` |
 | Unified verification and secret scan | PASS | `make verify` (format, vet, Go tests, dashboard checks/build, binary build, secret scan, and smoke) |
 | Runner timeout/output/cancellation | PASS | `go test ./internal/runner -count=1` |
@@ -47,5 +48,5 @@
 
 - Official Spec-Kit/provider execution and convergence against a real authenticated account: NOT_RUN. The verified workflow path is covered by a fixture adapter; `doctor` reports the installed provider CLIs as not authenticated. T014 implementation is complete; T045 remains open.
 - Mixed live workflow final acceptance: BLOCKED at `simulated_e2e`; T016/T035 loop wiring is complete, but the full end-to-end recovery/secret-leak/exhaustion matrix remains T036.
-- Browser end-to-end and accessibility scans/screenshots: NOT_RUN. The local browser inspection was denied by the browser access gate; T031/T046 remain open.
+- Browser E2E, actual 200% zoom, rendered keyboard/focus/contrast and reduced-motion checks, and screenshots: NOT_RUN. No Chromium/Chrome/Edge executable is installed and the prior localhost browser inspection was denied by the browser access gate; T031/T046 remain open. Component-level Axe and stylesheet contrast checks are recorded separately.
 - Full release acceptance: INCOMPLETE. See [the acceptance ledger](acceptance-ledger.md) and [the implementation task ledger](../specs/001-build-spectide/tasks.md).

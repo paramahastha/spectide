@@ -50,6 +50,14 @@ export interface Profile {
   provider: string
   executable: string
   allowed_scopes: string[]
+  capability?: {
+    provider: string
+    executable_found: boolean
+    version: string
+    authenticated: string
+    read_only_execution: boolean
+    workspace_write: boolean
+  }
 }
 
 export function summarizeRuns(runs: Run[]) {

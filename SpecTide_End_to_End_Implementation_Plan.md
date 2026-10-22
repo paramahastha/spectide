@@ -1508,6 +1508,8 @@ The detailed phase checklists below remain the full blueprint. Their original bo
 
 **T016/T035 checkpoint (22 October 2026):** Live `analyze`, `tests`, `converge`, and `final_review` now run their bounded loops with a shared per-run budget. Analyze remediation is restricted to its owning canonical artifact; test verdicts, convergence reports, and final gates are persisted; appended tasks are validated and re-tested; the final review uses a verified read-only analyze route. The final-review checkpoint stores loop counts. Focused workflow tests and full `make verify` pass. This is fixture-backed workflow evidence; real provider authentication and official convergence remain T045. See [implementation progress](docs/implementation-progress.md).
 
+**T031 checkpoint (22 October 2026):** Added route-preview and profile-readiness views, explicit empty/error/disconnected states, and state/accessibility tests. `cd web && npm test` passes 26 tests, and the Axe scan reports zero critical/serious issues across the seven named surfaces; stylesheet contrast checks pass for the primary text tokens. Full `make verify` passes (latest SC-001: 19.005 ms). T031 remains unchecked because browser E2E, 200% zoom, rendered keyboard/focus/reduced-motion checks, and screenshots could not run: no Chromium/Chrome/Edge executable is installed, and the previous localhost browser access request was denied. Evidence and this limitation are recorded in [the accessibility audit](docs/accessibility-audit.md).
+
 ### Phase 0 — Constitution, requirements, and repository setup
 
 **Objective:** Establish stable product boundaries and verified execution baseline.
