@@ -70,6 +70,9 @@ func TestRunnerCapsStdoutAndStderrAtOneMiB(t *testing.T) {
 			t.Errorf("%s truncation marker missing", name)
 		}
 	}
+	if !r.StdoutTruncated {
+		t.Fatal("runner did not report stdout truncation to stream consumer")
+	}
 }
 
 func TestRunnerStageTimeoutBounds(t *testing.T) {
@@ -108,5 +111,23 @@ func TestRunnerSendsGracefulTerminationBeforeEscalation(t *testing.T) {
 	}
 	if _, statErr := os.Stat(marker); statErr != nil {
 		t.Fatalf("process did not handle graceful termination before escalation: %v", statErr)
+	}
+}
+
+func TestRunnerStreamsOnlyRetainedStdoutWhileProcessRuns(t *testing.T) {
+	var streamed strings.Builder
+	seenAt := time.Time{}
+	r, err := Run(context.Background(), Invocation{Binary: "/bin/sh", Args: []string{"-c", "printf 'one'; sleep 0.05; printf 'two'"}, StreamStdout: func(chunk []byte) error {
+		if seenAt.IsZero() {
+			seenAt = time.Now()
+		}
+		streamed.Write(chunk)
+		return nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if streamed.String() != "onetwo" || !strings.Contains(r.Stdout, "onetwo") || seenAt.IsZero() || !seenAt.Before(r.FinishedAt) {
+		t.Fatalf("stream=%q stdout=%q", streamed.String(), r.Stdout)
 	}
 }

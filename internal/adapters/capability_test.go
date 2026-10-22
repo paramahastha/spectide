@@ -67,3 +67,58 @@ func TestUnavailableProviderDiscoveryFailsClosed(t *testing.T) {
 		t.Fatalf("unavailable catalog=%v", got)
 	}
 }
+
+func TestProviderOutputStreamHandlesPartialFramesAndExtractsTerminalText(t *testing.T) {
+	stream := NewOutputStream(Claude)
+	if err := stream.Feed([]byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"review `)); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Feed([]byte(`complete"}]}}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := stream.TerminalText(); got != "review complete" {
+		t.Fatalf("terminal=%q", got)
+	}
+	if events := stream.Events(); len(events) != 1 || events[0].Summary != "structured provider event" {
+		t.Fatalf("events=%+v", events)
+	}
+}
+
+func TestProviderOutputStreamUsesTerminalResultAndRejectsErrors(t *testing.T) {
+	stream := NewOutputStream(Codex)
+	for _, frame := range []string{`{"type":"item.completed","item":{"type":"agent_message","text":"intermediate"}}`, `{"type":"turn.completed","last_agent_message":"final answer"}`} {
+		if err := stream.Feed([]byte(frame + "\n")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := stream.TerminalText(); got != "final answer" {
+		t.Fatalf("terminal=%q", got)
+	}
+	bad := NewOutputStream(OpenCode)
+	if err := bad.Feed([]byte(`{"type":"error","message":"sensitive provider body"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := bad.Close(); err == nil || !strings.Contains(err.Error(), "PROVIDER_REPORTED_ERROR") || strings.Contains(err.Error(), "sensitive") {
+		t.Fatalf("provider error=%v", err)
+	}
+	unsupported := NewOutputStream(OpenCode)
+	if err := unsupported.Feed([]byte(`{"type":"text","version":"99","text":"hidden"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := unsupported.Close(); err == nil || !strings.Contains(err.Error(), "UNSUPPORTED_PROVIDER_EVENT_VERSION") {
+		t.Fatalf("version error=%v", err)
+	}
+}
+
+func TestProviderOutputStreamRejectsOversizedPartialFrame(t *testing.T) {
+	stream := NewOutputStream(Claude)
+	if err := stream.Feed([]byte(strings.Repeat("x", maxEventLine+1))); err == nil || !strings.Contains(err.Error(), "PROVIDER_STREAM_LIMIT") {
+		t.Fatalf("oversized stream error=%v", err)
+	}
+}

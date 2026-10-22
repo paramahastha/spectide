@@ -201,7 +201,7 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 			} else if before != after {
 				runErr = fmt.Errorf("ANALYZE_MUTATED_ARTIFACTS")
 			} else {
-				analysis, parseErr := speckit.ParseAnalysisOutput(result.Process.Stdout)
+				analysis, parseErr := speckit.ParseAnalysisOutput(result.Output)
 				if parseErr != nil {
 					runErr = parseErr
 				} else {
@@ -215,7 +215,7 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 			currentTasks, readErr := os.ReadFile(filepath.Join(featureDir, "tasks.md"))
 			if readErr != nil {
 				runErr = fmt.Errorf("CONVERGENCE_TASKS_UNAVAILABLE: %w", readErr)
-			} else if convergence, parseErr := speckit.ParseConvergenceOutput(result.Process.Stdout); parseErr != nil {
+			} else if convergence, parseErr := speckit.ParseConvergenceOutput(result.Output); parseErr != nil {
 				runErr = parseErr
 			} else if convergence.Converged && string(oldTasks) != string(currentTasks) {
 				runErr = fmt.Errorf("CONVERGENCE_CHANGED_TASKS_WITHOUT_APPEND_REPORT")
@@ -304,7 +304,7 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 	if runErr != nil {
 		return nil, runErr
 	}
-	evidence["_stage_output"] = result.Process.Stdout
+	evidence["_stage_output"] = result.Output
 	return evidence, nil
 }
 

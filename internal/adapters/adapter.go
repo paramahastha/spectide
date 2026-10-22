@@ -1,7 +1,7 @@
 package adapters
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -14,6 +14,7 @@ import (
 )
 
 const maxEventLine = 1 << 20
+const maxStreamEvents = 10000
 
 type ProviderName string
 
@@ -103,6 +104,175 @@ type Adapter interface {
 	Probe(context.Context, Profile) (Capability, error)
 	Build(Request) (runner.Invocation, error)
 	Normalize([]byte) ([]Event, error)
+}
+
+type StreamingAdapter interface{ NewOutputStream() *OutputStream }
+
+// OutputStream incrementally parses bounded provider JSONL and retains only
+// normalized event metadata plus the final user-visible answer text.
+type OutputStream struct {
+	provider ProviderName
+	pending  []byte
+	events   []Event
+	terminal strings.Builder
+	total    int
+	failed   error
+	closed   bool
+}
+
+func NewOutputStream(provider ProviderName) *OutputStream { return &OutputStream{provider: provider} }
+func (s *OutputStream) Feed(chunk []byte) error {
+	if s.closed {
+		return NewProviderError("PROVIDER_STREAM_CLOSED", "provider output arrived after stream close")
+	}
+	if s.failed != nil {
+		return s.failed
+	}
+	s.total += len(chunk)
+	if s.total > maxEventLine {
+		s.failed = NewProviderError("PROVIDER_STREAM_LIMIT", "provider output exceeds the stream limit")
+		return s.failed
+	}
+	s.pending = append(s.pending, chunk...)
+	for {
+		i := bytes.IndexByte(s.pending, '\n')
+		if i < 0 {
+			break
+		}
+		line := bytes.TrimSpace(append([]byte(nil), s.pending[:i]...))
+		s.pending = append(s.pending[:0], s.pending[i+1:]...)
+		if len(line) > 0 {
+			if err := s.consume(line); err != nil {
+				s.failed = err
+				return err
+			}
+		}
+	}
+	if len(s.pending) > maxEventLine {
+		s.failed = NewProviderError("PROVIDER_FRAME_LIMIT", "provider frame exceeds the line limit")
+		return s.failed
+	}
+	return nil
+}
+func (s *OutputStream) Close() error {
+	if s.closed {
+		return s.failed
+	}
+	s.closed = true
+	if s.failed != nil {
+		return s.failed
+	}
+	line := bytes.TrimSpace(s.pending)
+	s.pending = nil
+	if len(line) > 0 {
+		if err := s.consume(line); err != nil {
+			s.failed = err
+			return err
+		}
+	}
+	return nil
+}
+func (s *OutputStream) Events() []Event { return append([]Event(nil), s.events...) }
+func (s *OutputStream) TerminalText() string {
+	return security.Redact(strings.TrimSpace(s.terminal.String()))
+}
+func (s *OutputStream) consume(line []byte) error {
+	var record map[string]any
+	if err := json.Unmarshal(line, &record); err != nil {
+		return NewProviderError("MALFORMED_PROVIDER_EVENT", "provider event is not valid JSON")
+	}
+	typ, _ := record["type"].(string)
+	if strings.TrimSpace(typ) == "" {
+		return NewProviderError("UNSUPPORTED_PROVIDER_EVENT", "provider event has no supported type")
+	}
+	if version, ok := record["version"].(string); ok && version != "1" {
+		return NewProviderError("UNSUPPORTED_PROVIDER_EVENT_VERSION", "provider event version is not supported")
+	}
+	if typ == "error" || strings.HasSuffix(typ, ".failed") || record["is_error"] == true {
+		return NewProviderError("PROVIDER_REPORTED_ERROR", "provider reported an execution error")
+	}
+	if typ == "result" {
+		if subtype, ok := record["subtype"].(string); ok && subtype != "success" {
+			return NewProviderError("PROVIDER_REPORTED_ERROR", "provider reported an unsuccessful result")
+		}
+	}
+	if len(s.events) >= maxStreamEvents {
+		return NewProviderError("PROVIDER_EVENT_LIMIT", "provider event count exceeds the stream limit")
+	}
+	s.events = append(s.events, Event{Type: string(s.provider) + "." + typ, Summary: "structured provider event"})
+	s.extract(typ, record)
+	return nil
+}
+func (s *OutputStream) extract(typ string, record map[string]any) {
+	appendText := func(value string) {
+		if value != "" && s.terminal.Len()+len(value) <= maxEventLine {
+			if s.terminal.Len() > 0 {
+				s.terminal.WriteByte('\n')
+			}
+			s.terminal.WriteString(value)
+		}
+	}
+	resetText := func(value string) {
+		if value != "" && len(value) <= maxEventLine {
+			s.terminal.Reset()
+			s.terminal.WriteString(value)
+		}
+	}
+	textField, _ := record["text"].(string)
+	switch s.provider {
+	case Claude:
+		if typ == "result" {
+			if value, ok := record["result"].(string); ok {
+				resetText(value)
+				return
+			}
+		}
+		if typ == "content_block_delta" {
+			if delta, ok := record["delta"].(map[string]any); ok {
+				value, _ := delta["text"].(string)
+				appendText(value)
+				return
+			}
+		}
+		if typ == "assistant" {
+			if message, ok := record["message"].(map[string]any); ok {
+				if parts, ok := message["content"].([]any); ok {
+					for _, part := range parts {
+						if item, ok := part.(map[string]any); ok {
+							value, _ := item["text"].(string)
+							appendText(value)
+						}
+					}
+				}
+			}
+		}
+	case Codex:
+		if typ == "turn.completed" {
+			if value, ok := record["last_agent_message"].(string); ok {
+				resetText(value)
+				return
+			}
+		}
+		if typ == "item.completed" {
+			if item, ok := record["item"].(map[string]any); ok && item["type"] == "agent_message" {
+				value, _ := item["text"].(string)
+				appendText(value)
+				return
+			}
+		}
+		if typ == "message" {
+			appendText(textField)
+		}
+	case OpenCode:
+		if part, ok := record["part"].(map[string]any); ok && part["type"] == "text" {
+			value, _ := part["text"].(string)
+			appendText(value)
+			return
+		}
+		if typ == "text" || textField != "" {
+			appendText(textField)
+		}
+	}
 }
 
 func ProbeBinary(p Profile) (Capability, error) {
@@ -342,26 +512,12 @@ func parseModelIDs(raw string, ok bool) []string {
 // NormalizeJSONL accepts newline-delimited provider objects while discarding
 // payload bodies that may contain user code, credentials, or private reasoning.
 func NormalizeJSONL(provider ProviderName, raw []byte) ([]Event, error) {
-	scanner := bufio.NewScanner(strings.NewReader(string(raw)))
-	scanner.Buffer(make([]byte, 4096), maxEventLine)
-	var events []Event
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		var record map[string]any
-		if err := json.Unmarshal([]byte(line), &record); err != nil {
-			return nil, WrapProviderError("MALFORMED_PROVIDER_EVENT", "provider event is not valid JSON", err)
-		}
-		typ, _ := record["type"].(string)
-		if typ == "" {
-			typ = "unknown"
-		}
-		events = append(events, Event{Type: string(provider) + "." + typ, Summary: "structured provider event"})
+	stream := NewOutputStream(provider)
+	if err := stream.Feed(raw); err != nil {
+		return nil, err
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, WrapProviderError("PROVIDER_EVENT_LIMIT", "provider event exceeds the line-size limit", err)
+	if err := stream.Close(); err != nil {
+		return nil, err
 	}
-	return events, nil
+	return stream.Events(), nil
 }

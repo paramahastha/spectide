@@ -551,6 +551,12 @@
 - Added a report acceptance projection and ordered `run.acceptance`/terminal events. The summary labels execution `LIVE`, `MIXED`, or `SIMULATED`, preserves each gate verdict, and reports `PASS`, `FAIL`, `BLOCKED`, or `SIMULATED` without treating deterministic fake output as live evidence.
 - The fixture-backed mixed workflow now completes after all applicable live/local gates pass. Model tests cover successful mixed acceptance, fake evidence failing a live gate, a failing gate, and missing simulated evidence. Focused model/store/workflow/API/CLI tests and full `make verify` passed. Latest SC-001: 22.210 ms; offline smoke remains `SIMULATED`. T066 is complete; T067 is next. T031, T045, and T046 remain open.
 
+### T067 — Bounded provider stream and terminal result extraction — 2026-10-23
+
+- Runner stdout now tees retained bytes into the selected adapter while the child is running. The stream parser bounds total bytes, individual frames, and normalized event count; output truncation, malformed JSON, unsupported event versions, and typed provider failures return stable errors. Payload and reasoning bodies are not copied to normalized event records.
+- Provider parsers extract Claude result/assistant text, Codex completed agent messages, and OpenCode text parts. `speckit.ExecuteStage` exposes terminal text separately from captured raw stdout, and the live workflow feeds that extracted text to analyze/converge parsers while retaining hashes of raw output for attempt evidence.
+- Tests exercise partial JSONL frames, final result selection, error/unsupported-version records, oversized frames, live runner callbacks, and the integrated Spec-Kit invocation path. Full `make verify` passed. Latest SC-001: 21.637 ms; offline smoke remains `SIMULATED`. T067 is complete; T068 is next. T031, T045, and T046 remain open.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified

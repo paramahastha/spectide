@@ -10,6 +10,9 @@ import (
 type Adapter struct{}
 
 func (Adapter) Name() adapters.ProviderName { return adapters.Codex }
+func (Adapter) NewOutputStream() *adapters.OutputStream {
+	return adapters.NewOutputStream(adapters.Codex)
+}
 func (Adapter) Probe(ctx context.Context, p adapters.Profile) (adapters.Capability, error) {
 	return adapters.ProbeProvider(ctx, p)
 }

@@ -26,14 +26,16 @@ type Invocation struct {
 	ExpectedWorkingDirectory string
 	ExpectedConfigDirectory  string
 	EnforceConfigDirectory   bool
+	StreamStdout             func([]byte) error
 }
 type Result struct {
-	Stdout, Stderr string
-	ExitCode       int
-	ProcessID      int
-	StartedAt      time.Time
-	FinishedAt     time.Time
-	Duration       time.Duration
+	Stdout, Stderr  string
+	StdoutTruncated bool
+	ExitCode        int
+	ProcessID       int
+	StartedAt       time.Time
+	FinishedAt      time.Time
+	Duration        time.Duration
 }
 
 const maxOutputBytes = 1 << 20
@@ -69,6 +71,30 @@ func (c *cappedBuffer) String() string {
 		s += "\n[SpecTide: output truncated at 1 MiB]"
 	}
 	return s
+}
+
+type streamingBuffer struct {
+	buffer    *cappedBuffer
+	callback  func([]byte) error
+	streamErr error
+	truncated bool
+}
+
+func (s *streamingBuffer) Write(p []byte) (int, error) {
+	kept := len(p)
+	if kept > s.buffer.remaining {
+		kept = s.buffer.remaining
+	}
+	if kept < len(p) {
+		s.truncated = true
+	}
+	_, _ = s.buffer.Write(p)
+	if kept > 0 && s.callback != nil && s.streamErr == nil {
+		if err := s.callback(append([]byte(nil), p[:kept]...)); err != nil {
+			s.streamErr = err
+		}
+	}
+	return len(p), nil
 }
 
 func Run(ctx context.Context, in Invocation) (Result, error) {
@@ -132,12 +158,13 @@ func Run(ctx context.Context, in Invocation) (Result, error) {
 	}
 	cmd.WaitDelay = terminationGrace
 	out, errOut := &cappedBuffer{remaining: maxOutputBytes}, &cappedBuffer{remaining: maxOutputBytes}
-	cmd.Stdout = out
+	streamOut := &streamingBuffer{buffer: out, callback: in.StreamStdout}
+	cmd.Stdout = streamOut
 	cmd.Stderr = errOut
 	err := cmd.Run()
 	close(stopEscalation)
 	finished := time.Now()
-	res := Result{Stdout: security.Redact(out.String()), Stderr: security.Redact(errOut.String()), StartedAt: start.UTC(), FinishedAt: finished.UTC(), Duration: finished.Sub(start)}
+	res := Result{Stdout: security.Redact(out.String()), Stderr: security.Redact(errOut.String()), StdoutTruncated: streamOut.truncated, StartedAt: start.UTC(), FinishedAt: finished.UTC(), Duration: finished.Sub(start)}
 	if cmd.Process != nil {
 		res.ProcessID = cmd.Process.Pid
 	}
@@ -146,6 +173,9 @@ func Run(ctx context.Context, in Invocation) (Result, error) {
 			return res, fmt.Errorf("STAGE_TIMEOUT: provider stage exceeded %s", timeout)
 		}
 		return res, fmt.Errorf("RUN_CANCELLED: provider stage was cancelled")
+	}
+	if streamOut.streamErr != nil {
+		return res, fmt.Errorf("PROVIDER_STREAM_INVALID")
 	}
 	if exit, ok := err.(*exec.ExitError); ok {
 		res.ExitCode = exit.ExitCode()

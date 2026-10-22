@@ -11,6 +11,7 @@ import (
 type StageResult struct {
 	Process runner.Result
 	Events  []adapters.Event
+	Output  string
 }
 
 // ExecuteStage expands a verified installed Spec-Kit command as a provider
@@ -58,14 +59,32 @@ func ExecuteStageWithTemplate(ctx context.Context, installation Installation, ad
 	invocation.ExpectedWorkingDirectory = installation.ProjectRoot
 	invocation.ExpectedConfigDirectory = request.Profile.ApprovedConfigDirectory
 	invocation.EnforceConfigDirectory = request.Profile.ApprovedExecutablePath != ""
+	var stream *adapters.OutputStream
+	if streaming, ok := adapter.(adapters.StreamingAdapter); ok {
+		stream = streaming.NewOutputStream()
+		invocation.StreamStdout = stream.Feed
+	}
 	process, runErr := runner.Run(ctx, invocation)
-	result := StageResult{Process: process}
+	result := StageResult{Process: process, Output: process.Stdout}
+	if stream != nil {
+		streamErr := stream.Close()
+		if process.StdoutTruncated && streamErr == nil {
+			streamErr = adapters.NewProviderError("PROVIDER_STREAM_LIMIT", "provider output exceeded the retained stream limit")
+		}
+		if runErr == nil && streamErr != nil {
+			runErr = streamErr
+		}
+		result.Events = stream.Events()
+		result.Output = stream.TerminalText()
+	}
 	if runErr != nil {
 		return result, runErr
 	}
-	result.Events, err = adapter.Normalize([]byte(process.Stdout))
-	if err != nil {
-		return result, err
+	if stream == nil {
+		result.Events, err = adapter.Normalize([]byte(process.Stdout))
+		if err != nil {
+			return result, err
+		}
 	}
 	return result, nil
 }

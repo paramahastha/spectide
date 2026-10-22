@@ -118,3 +118,41 @@ func TestExecuteStageWithOwnerTemplateAvoidsGeneralImplementationPrompt(t *testi
 		t.Fatalf("owner remediation received the wrong template or execution policy: %+v", adapter.request)
 	}
 }
+
+type streamingFixtureAdapter struct{}
+
+func (streamingFixtureAdapter) Name() adapters.ProviderName { return adapters.OpenCode }
+func (streamingFixtureAdapter) Probe(context.Context, adapters.Profile) (adapters.Capability, error) {
+	return adapters.Capability{}, nil
+}
+func (streamingFixtureAdapter) Build(request adapters.Request) (runner.Invocation, error) {
+	return runner.Invocation{Binary: "/bin/sh", Args: []string{"-c", `printf '%s' '{"type":"text","text":"terminal output"}'`}, Dir: request.ProjectRoot}, nil
+}
+func (streamingFixtureAdapter) Normalize(raw []byte) ([]adapters.Event, error) {
+	return adapters.NormalizeJSONL(adapters.OpenCode, raw)
+}
+func (streamingFixtureAdapter) NewOutputStream() *adapters.OutputStream {
+	return adapters.NewOutputStream(adapters.OpenCode)
+}
+
+func TestExecuteStageParsesStreamingProviderTerminalText(t *testing.T) {
+	root := t.TempDir()
+	rel := filepath.Join(".opencode", "commands", "speckit.analyze.md")
+	command := filepath.Join(root, rel)
+	if err := os.MkdirAll(filepath.Dir(command), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("Analyze safely: $ARGUMENTS")
+	if err := os.WriteFile(command, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(body)
+	installation := Installation{ProjectRoot: root, Verified: true, Commands: map[string]string{"analyze": "/speckit.analyze"}, CommandFiles: map[string]string{"analyze": filepath.ToSlash(rel)}, CommandHashes: map[string]string{"analyze": hex.EncodeToString(digest[:])}}
+	result, err := ExecuteStage(context.Background(), installation, streamingFixtureAdapter{}, adapters.Request{Profile: adapters.Profile{Provider: adapters.OpenCode}}, "analyze", "review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Output != "terminal output" || len(result.Events) != 1 || result.Events[0].Type != "opencode.text" {
+		t.Fatalf("stream result=%+v", result)
+	}
+}
