@@ -389,8 +389,8 @@
 
 ### Read-only analyze remediation driver foundation
 
-- Added `RunAnalyzeGate`: it runs a baseline analysis, fingerprints managed artifacts before/after each analysis to enforce read-only behavior, routes one blocking finding per remediation, and repeats analysis after the owner-artifact change. Critical/high findings block; medium findings block only when their category and text identify an unsatisfied security boundary, acceptance criterion, or prerequisite. The baseline does not spend a remediation round.
-- Focused tests passed for severity policy, baseline handling, read-only mutation rejection, no progress, and exhaustion after exactly three remediation rounds. T016 remains open pending integration of the remediation and retry hooks with persisted canonical stage outcomes.
+- Added `RunAnalyzeGate`: it runs a baseline analysis, fingerprints managed artifacts before/after each analysis to enforce read-only behavior, routes one blocking finding per remediation to `spec.md`, `plan.md`, or `tasks.md` by finding ownership, and repeats analysis after that owner-artifact change. Unresolved owners fail closed. Critical/high findings block; medium findings block only when their category and text identify an unsatisfied security boundary, acceptance criterion, or prerequisite. The baseline does not spend a remediation round.
+- Focused tests passed for severity policy, owner mapping, baseline handling, read-only mutation rejection, no progress, and exhaustion after exactly three remediation rounds. T016 remains open pending integration of the remediation and retry hooks with persisted canonical stage outcomes.
 
 ### Bounded test-repair driver foundation
 

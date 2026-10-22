@@ -17,6 +17,7 @@ type Finding struct {
 	Location   string
 	Summary    string
 	Resolution string
+	Owner      string
 }
 
 type Analysis struct {

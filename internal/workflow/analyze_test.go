@@ -40,7 +40,7 @@ func TestRunAnalyzeGateExcludesBaselineAndRemediatesThenReanalyzes(t *testing.T)
 		},
 		Remediate: func(_ context.Context, finding speckit.Finding) error {
 			remediationCalls++
-			if finding.ID != "C1" {
+			if finding.ID != "C1" || finding.Owner != "spec.md" {
 				t.Fatalf("unexpected finding routed: %+v", finding)
 			}
 			artifactHash = "artifact-1"
@@ -50,6 +50,25 @@ func TestRunAnalyzeGateExcludesBaselineAndRemediatesThenReanalyzes(t *testing.T)
 	analysis, err := RunAnalyzeGate(context.Background(), hooks, DefaultLoopLimits())
 	if err != nil || len(BlockingAnalysisFindings(analysis)) != 0 || analyzeCalls != 2 || remediationCalls != 1 {
 		t.Fatalf("analysis=%+v err=%v analyzes=%d remediations=%d", analysis, err, analyzeCalls, remediationCalls)
+	}
+}
+
+func TestAnalysisOwnerMapsFindingsToTheirOwningArtifact(t *testing.T) {
+	for _, test := range []struct {
+		finding speckit.Finding
+		want    string
+	}{
+		{speckit.Finding{ID: "S1", Category: "Scope", Summary: "acceptance criterion is missing"}, "spec.md"},
+		{speckit.Finding{ID: "P1", Category: "Architecture", Summary: "data model conflict"}, "plan.md"},
+		{speckit.Finding{ID: "T1", Category: "Coverage", Location: "tasks.md Phase 2", Summary: "task coverage gap"}, "tasks.md"},
+	} {
+		got, err := AnalysisOwner(test.finding)
+		if err != nil || got != test.want {
+			t.Errorf("finding=%+v owner=%q err=%v want=%q", test.finding, got, err, test.want)
+		}
+	}
+	if _, err := AnalysisOwner(speckit.Finding{ID: "unknown", Category: "Ambiguity"}); err == nil || !strings.Contains(err.Error(), "ANALYSIS_OWNER_UNRESOLVED") {
+		t.Fatalf("unowned blocking finding error=%v", err)
 	}
 }
 

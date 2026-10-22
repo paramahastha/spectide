@@ -36,7 +36,12 @@ func RunAnalyzeGate(ctx context.Context, hooks AnalyzeHooks, limits LoopLimits) 
 		if budget.Counts().AnalyzeRemediations >= limits.AnalyzeRemediations {
 			return analysis, fmt.Errorf("ANALYZE_REMEDIATION_EXHAUSTED")
 		}
-		if err = hooks.Remediate(ctx, blocking[0]); err != nil {
+		finding := blocking[0]
+		finding.Owner, err = AnalysisOwner(finding)
+		if err != nil {
+			return analysis, err
+		}
+		if err = hooks.Remediate(ctx, finding); err != nil {
 			return analysis, err
 		}
 		remediatedHash, hashErr := hooks.ArtifactHash(ctx)
@@ -50,6 +55,23 @@ func RunAnalyzeGate(ctx context.Context, hooks AnalyzeHooks, limits LoopLimits) 
 		if err != nil {
 			return analysis, err
 		}
+	}
+}
+
+// AnalysisOwner maps blocking findings to the artifact that owns the affected
+// requirement. Unknown findings fail closed rather than editing an arbitrary
+// project artifact.
+func AnalysisOwner(f speckit.Finding) (string, error) {
+	text := strings.ToLower(strings.Join([]string{f.Category, f.Location, f.Summary, f.Resolution}, " "))
+	switch {
+	case strings.Contains(text, "tasks.md"), strings.Contains(text, "task coverage"), strings.Contains(text, "task ordering"), strings.Contains(text, "dependency order"):
+		return "tasks.md", nil
+	case strings.Contains(text, "plan.md"), strings.Contains(text, "architecture"), strings.Contains(text, "data model"), strings.Contains(text, "api contract"), strings.Contains(text, "design contract"):
+		return "plan.md", nil
+	case strings.Contains(text, "spec.md"), strings.Contains(text, "scope"), strings.Contains(text, "acceptance"), strings.Contains(text, "security boundary"), strings.Contains(text, "user requirement"):
+		return "spec.md", nil
+	default:
+		return "", fmt.Errorf("ANALYSIS_OWNER_UNRESOLVED: %s", f.ID)
 	}
 }
 
