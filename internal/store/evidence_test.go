@@ -283,6 +283,70 @@ func TestStateMutationsRollbackWhenTheirOrderedEventCannotBeWritten(t *testing.T
 	}
 }
 
+func TestWorkflowApprovalIsRunBoundDurableAndSingleResolution(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "approval.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := s.CreateRun(ctx, "/workspace", "approval")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := s.CreateRun(ctx, "/workspace", "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SetRunState(ctx, run.ID, model.Running); err != nil {
+		t.Fatal(err)
+	}
+	a, err := s.CreateWorkflowApprovalAndPause(ctx, run.ID, "implement", "Write project files")
+	if err != nil || a.Status != model.ApprovalPending {
+		t.Fatalf("approval=%+v err=%v", a, err)
+	}
+	paused, err := s.GetRun(ctx, run.ID)
+	if err != nil || paused.State != model.Paused {
+		t.Fatalf("run=%+v err=%v", paused, err)
+	}
+	if err = s.ResolveApprovalForRun(ctx, other.ID, a.ID, model.ApprovalApproved); err == nil {
+		t.Fatal("mismatched run resolved approval")
+	}
+	stillPending, err := s.Approval(ctx, run.ID, a.ID)
+	if err != nil || stillPending.Status != model.ApprovalPending {
+		t.Fatalf("mismatched URL changed approval=%+v err=%v", stillPending, err)
+	}
+	if err = s.ResolveApprovalForRun(ctx, run.ID, a.ID, model.ApprovalApproved); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.ResolveApprovalForRun(ctx, run.ID, a.ID, model.ApprovalDenied); err == nil {
+		t.Fatal("duplicate resolution was accepted")
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	durable, err := s.Approval(ctx, run.ID, a.ID)
+	if err != nil || durable.Status != model.ApprovalApproved || durable.Decision != model.ApprovalApproved || durable.ResolvedAt == nil {
+		t.Fatalf("durable approval=%+v err=%v", durable, err)
+	}
+	if err = s.SetRunState(ctx, run.ID, model.Running); err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := s.CreateWorkflowApprovalAndPause(ctx, run.ID, "implement", "Write project files")
+	if err != nil || replayed.ID != a.ID || replayed.Status != model.ApprovalApproved {
+		t.Fatalf("replayed approval=%+v err=%v", replayed, err)
+	}
+	approvals, err := s.Approvals(ctx, run.ID)
+	if err != nil || len(approvals) != 1 {
+		t.Fatalf("approvals=%+v err=%v", approvals, err)
+	}
+}
+
 func TestProviderAndQualityAttemptHistoriesAreAppendOnlyAndReported(t *testing.T) {
 	ctx := context.Background()
 	s, run := evidenceStore(t)

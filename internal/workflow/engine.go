@@ -692,6 +692,32 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			e.failPersistence(r.ID)
 			return
 		}
+		if key == "implement" && d.Provider != "fake" {
+			action := fmt.Sprintf("Write project files during implement stage via %s/%s", d.Provider, d.Profile)
+			approval, approvalErr := e.store.CreateWorkflowApprovalAndPause(ctx, r.ID, key, action)
+			if approvalErr != nil {
+				e.failPersistence(r.ID)
+				return
+			}
+			if approval.Status == model.ApprovalPending {
+				approved, waitErr := e.waitForSensitiveApproval(ctx, r.ID, key, st.ID, approval, resume)
+				if waitErr != nil {
+					e.failPersistence(r.ID)
+					return
+				}
+				if !approved {
+					e.finish(r.ID)
+					return
+				}
+			} else if approval.Status == model.ApprovalDenied {
+				if err := e.denySensitiveApproval(ctx, r.ID, key, st.ID, approval); err != nil {
+					e.failPersistence(r.ID)
+				} else {
+					e.finish(r.ID)
+				}
+				return
+			}
+		}
 		if d.Provider != "fake" {
 			ownerPath, present, inspectErr := existingOwnerArtifact(r.Project, featureDir, key)
 			if inspectErr != nil {
@@ -1061,6 +1087,90 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 		return
 	}
 	e.finish(r.ID)
+}
+
+func (e *Engine) waitForSensitiveApproval(ctx context.Context, runID, stage, stageID string, approval model.Approval, resume <-chan struct{}) (bool, error) {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			if err := e.cancelRun(runID, stage, stageID); err != nil {
+				return false, err
+			}
+			return false, nil
+		case <-ticker.C:
+			current, err := e.store.Approval(ctx, runID, approval.ID)
+			if err != nil {
+				return false, err
+			}
+			switch current.Status {
+			case model.ApprovalApproved:
+				_ = e.store.ClearRunControl(ctx, runID)
+				run, err := e.store.GetRun(ctx, runID)
+				if err != nil {
+					return false, err
+				}
+				if run.State == model.Paused {
+					if err = e.store.SetRunState(ctx, runID, model.Running); err != nil {
+						return false, err
+					}
+					if err = e.store.Event(ctx, runID, stage, "run.resumed", "info", map[string]any{"stage": stage, "approval_id": approval.ID}); err != nil {
+						return false, err
+					}
+				}
+				return true, nil
+			case model.ApprovalDenied:
+				return false, e.denySensitiveApproval(ctx, runID, stage, stageID, current)
+			}
+			if action, err := e.store.RunControl(ctx, runID); err != nil {
+				return false, err
+			} else if action == "cancel" {
+				if err = e.cancelRun(runID, stage, stageID); err != nil {
+					return false, err
+				}
+				return false, nil
+			}
+		case <-resume:
+			// Approval resolution is authoritative; this signal only shortens the polling interval.
+			current, err := e.store.Approval(ctx, runID, approval.ID)
+			if err != nil {
+				return false, err
+			}
+			if current.Status == model.ApprovalApproved {
+				_ = e.store.ClearRunControl(ctx, runID)
+				run, err := e.store.GetRun(ctx, runID)
+				if err != nil {
+					return false, err
+				}
+				if run.State == model.Paused {
+					if err = e.store.SetRunState(ctx, runID, model.Running); err != nil {
+						return false, err
+					}
+					if err = e.store.Event(ctx, runID, stage, "run.resumed", "info", map[string]any{"stage": stage, "approval_id": approval.ID}); err != nil {
+						return false, err
+					}
+				}
+				return true, nil
+			}
+			if current.Status == model.ApprovalDenied {
+				return false, e.denySensitiveApproval(ctx, runID, stage, stageID, current)
+			}
+		}
+	}
+}
+
+func (e *Engine) denySensitiveApproval(ctx context.Context, runID, stage, stageID string, approval model.Approval) error {
+	if err := e.store.SetStage(ctx, stageID, model.Skipped); err != nil {
+		return err
+	}
+	if err := e.store.Gate(ctx, runID, "sensitive_action_authorized", "BLOCKED", "workspace modification approval was denied"); err != nil {
+		return err
+	}
+	if err := e.store.Event(ctx, runID, stage, "approval.denied", "warning", map[string]any{"approval_id": approval.ID, "execution": "NOT_RUN"}); err != nil {
+		return err
+	}
+	return e.store.SetRunState(ctx, runID, model.Blocked)
 }
 
 func acceptanceDecisions(decisions map[string]config.Decision) []model.RoutingDecision {

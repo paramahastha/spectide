@@ -25,6 +25,38 @@ type liveFixtureAdapter struct {
 	models, efforts []string
 }
 
+func approveWhenRequested(t *testing.T, state *store.Store, runID string) func() {
+	t.Helper()
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				approvals, err := state.Approvals(context.Background(), runID)
+				if err != nil {
+					t.Errorf("load approvals: %v", err)
+					return
+				}
+				for _, approval := range approvals {
+					if approval.Status == model.ApprovalPending {
+						if err := state.ResolveApprovalForRun(context.Background(), runID, approval.ID, model.ApprovalApproved); err != nil {
+							t.Errorf("approve workflow action: %v", err)
+						}
+						return
+					}
+				}
+			}
+		}
+	}()
+	return func() { close(stop); <-done }
+}
+
 func verifiedFixtureCapability(t *testing.T, provider, executable, configDirectory string) model.ProfileCapability {
 	t.Helper()
 	reference, err := security.ResolveExecutableReference(executable)
@@ -161,6 +193,8 @@ func TestEngineCompletesVerifiedMixedRunWithApplicableEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	stopApproval := approveWhenRequested(t, state, run.ID)
+	defer stopApproval()
 	run, err = engine.Wait(ctx, run.ID)
 	if !stringSliceContains(fixtureAdapter.models, "fixture/model") || !stringSliceContains(fixtureAdapter.efforts, "medium") {
 		t.Fatalf("verified configured model/effort did not reach offline launch: models=%v efforts=%v", fixtureAdapter.models, fixtureAdapter.efforts)

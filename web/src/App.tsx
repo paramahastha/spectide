@@ -3,6 +3,7 @@ import {
   runTone,
   summarizeRuns,
   type Profile,
+  type Approval,
   type Report,
   type Run,
 } from './domain'
@@ -24,6 +25,7 @@ export function App() {
   const [project, setProject] = useState('./examples/fake-provider-demo')
   const [prompt, setPrompt] = useState('Validate the complete SpecTide workflow')
   const [busy, setBusy] = useState(false)
+  const [approvalBusy, setApprovalBusy] = useState('')
   const [message, setMessage] = useState('Loading local run history…')
   const [connection, setConnection] = useState<ConnectionState>('loading')
   const [profileError, setProfileError] = useState('')
@@ -111,6 +113,7 @@ export function App() {
       'run.created', 'run.RUNNING', 'run.PAUSED', 'run.COMPLETED', 'run.CANCELLED', 'run.FAILED', 'run.BLOCKED',
       'stage.started', 'stage.completed', 'stage.cancelled', 'analysis.clean', 'tests.passed', 'converge.converged',
       'routing.resolved', 'run.interrupted',
+      'run.paused', 'run.resumed', 'approval.created', 'approval.resolved', 'approval.denied',
     ]
     types.forEach((type) => stream.addEventListener(type, receive))
     return () => {
@@ -165,6 +168,22 @@ export function App() {
       await refresh()
     } catch (error) {
       setMessage(`Unable to ${action} run: ${String(error)}`)
+    }
+  }
+
+  async function resolveApproval(approvalID: string, decision: 'approved' | 'denied') {
+    if (!selected || approvalBusy) return
+    setApprovalBusy(approvalID)
+    try {
+      await api(`/api/v1/runs/${encodeURIComponent(selected)}/approvals/${encodeURIComponent(approvalID)}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision }),
+      })
+      setMessage(decision === 'approved' ? 'Workspace write approved; workflow continuation requested' : 'Workspace write denied; workflow will stop before writing')
+      await refresh()
+    } catch (error) {
+      setMessage(`Unable to resolve approval: ${String(error)}`)
+    } finally {
+      setApprovalBusy('')
     }
   }
 
@@ -252,13 +271,17 @@ export function App() {
               <div className="panel evidence-panel"><div className="panel-head"><div><div className="eyebrow">DURABLE EVENTS</div><h2>Activity stream</h2></div><span className="live-label"><i /> LIVE</span></div><EventList events={events} /></div>
               <div className="panel evidence-panel"><div className="panel-head"><div><div className="eyebrow">RECORDED VERDICTS</div><h2>Quality gates</h2></div><span className="count">{report?.gates.length ?? 0}</span></div><GateList gates={report?.gates ?? []} /></div>
             </section>
-            {report && <section className="panel artifacts-panel"><div className="panel-head"><div><div className="eyebrow">RUN OUTPUTS</div><h2>Artifacts &amp; approvals</h2></div></div>{report.artifacts?.length || report.approvals?.length ? <div className="artifact-list">{report.artifacts?.map((artifact) => <div className="artifact-row" key={artifact.id}><span>▤</span><strong>{artifact.path}</strong><code>{artifact.sha256.slice(0, 12)}</code></div>)}{report.approvals?.map((approval) => <div className="artifact-row" key={approval.id}><span>◇</span><strong>{approval.action}</strong><span className="state-pill quiet">{approval.status}</span></div>)}</div> : <div className="empty-inline">No artifacts or approvals recorded for this run.</div>}</section>}
+            {report && <section className="panel artifacts-panel"><div className="panel-head"><div><div className="eyebrow">RUN OUTPUTS</div><h2>Artifacts &amp; approvals</h2></div></div>{report.artifacts?.length || report.approvals?.length ? <div className="artifact-list">{report.artifacts?.map((artifact) => <div className="artifact-row" key={artifact.id}><span>▤</span><strong>{artifact.path}</strong><code>{artifact.sha256.slice(0, 12)}</code></div>)}<ApprovalActions approvals={report.approvals ?? []} runState={report.run.state} busy={approvalBusy} onResolve={(id, decision) => void resolveApproval(id, decision)} /></div> : <div className="empty-inline">No artifacts or approvals recorded for this run.</div>}</section>}
           </>
         )}
         <footer className="footer"><span>SpecTide <b>0.1.0-dev</b></span><span>State is read from local SQLite · provider fixtures are marked simulated</span></footer>
       </main>
     </div>
   )
+}
+
+export function ApprovalActions({ approvals, runState, busy = '', onResolve }: { approvals: Approval[]; runState: Run['state']; busy?: string; onResolve: (id: string, decision: 'approved' | 'denied') => void }) {
+  return <>{approvals.map((approval) => <div className="artifact-row" key={approval.id}><span aria-hidden="true">◇</span><strong>{approval.action}</strong><span className="state-pill quiet">{approval.status}</span>{approval.status === 'PENDING' && runState === 'PAUSED' && <span className="detail-actions"><button className="button button-primary control-button" aria-label={`Approve ${approval.action}`} disabled={Boolean(busy)} onClick={() => onResolve(approval.id, 'approved')}>Approve write</button><button className="button button-danger" aria-label={`Deny ${approval.action}`} disabled={Boolean(busy)} onClick={() => onResolve(approval.id, 'denied')}>Deny</button></span>}</div>)}</>
 }
 
 export function RunList({ runs, selected, onSelect, simulatedRunIDs = new Set<string>(), disconnected = false }: { runs: Run[]; selected: string; onSelect: (id: string) => void; simulatedRunIDs?: Set<string>; disconnected?: boolean }) {

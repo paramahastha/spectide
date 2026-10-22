@@ -150,7 +150,85 @@ func (s *Store) CreateApproval(ctx context.Context, a model.Approval) (model.App
 	return a, tx.Commit()
 }
 
+// CreateWorkflowApprovalAndPause atomically records a pending sensitive action
+// and pauses its active run before the action can execute. Existing decisions
+// for the same run/action are reused during restart recovery.
+func (s *Store) CreateWorkflowApprovalAndPause(ctx context.Context, runID, stage, action string) (model.Approval, error) {
+	action = security.Redact(strings.TrimSpace(action))
+	if runID == "" || stage == "" || action == "" {
+		return model.Approval{}, fmt.Errorf("APPROVAL_FIELDS_REQUIRED")
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return model.Approval{}, err
+	}
+	defer tx.Rollback()
+	var a model.Approval
+	var created, resolved string
+	err = tx.QueryRowContext(ctx, `SELECT id,run_id,action,status,decision,created_at,COALESCE(resolved_at,'') FROM approvals WHERE run_id=? AND action=? ORDER BY created_at DESC LIMIT 1`, runID, action).Scan(&a.ID, &a.RunID, &a.Action, &a.Status, &a.Decision, &created, &resolved)
+	if err == sql.ErrNoRows {
+		a = model.Approval{ID: uuid.NewString(), RunID: runID, Action: action, Status: model.ApprovalPending, CreatedAt: now()}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO approvals(id,run_id,action,status,decision,created_at,resolved_at) VALUES(?,?,?,?,?,?,NULL)`, a.ID, a.RunID, a.Action, a.Status, "", a.CreatedAt.Format(time.RFC3339Nano)); err != nil {
+			return a, err
+		}
+		if err = appendEvent(ctx, tx, runID, "", "approval.created", "info", map[string]any{"approval_id": a.ID, "action": a.Action, "status": a.Status}); err != nil {
+			return a, err
+		}
+	} else if err != nil {
+		return a, err
+	} else {
+		a.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+		if resolved != "" {
+			parsed, _ := time.Parse(time.RFC3339Nano, resolved)
+			a.ResolvedAt = &parsed
+		}
+	}
+	if a.Status == model.ApprovalPending {
+		var runState model.RunState
+		if err = tx.QueryRowContext(ctx, `SELECT state FROM runs WHERE id=?`, runID).Scan(&runState); err != nil {
+			return a, err
+		}
+		if runState == model.Running {
+			if _, err = tx.ExecContext(ctx, `UPDATE runs SET state=? WHERE id=? AND state=?`, model.Paused, runID, model.Running); err != nil {
+				return a, err
+			}
+			if err = appendEvent(ctx, tx, runID, "", "run.PAUSED", "info", map[string]any{"state": model.Paused}); err != nil {
+				return a, err
+			}
+			if err = appendEvent(ctx, tx, runID, stage, "run.paused", "warning", map[string]any{"stage": stage, "approval_id": a.ID}); err != nil {
+				return a, err
+			}
+		} else if runState != model.Paused {
+			return a, fmt.Errorf("APPROVAL_RUN_NOT_ACTIVE")
+		}
+	}
+	return a, tx.Commit()
+}
+
+func (s *Store) Approval(ctx context.Context, runID, id string) (model.Approval, error) {
+	var a model.Approval
+	var created, resolved string
+	err := s.DB.QueryRowContext(ctx, `SELECT id,run_id,action,status,decision,created_at,COALESCE(resolved_at,'') FROM approvals WHERE run_id=? AND id=?`, runID, id).Scan(&a.ID, &a.RunID, &a.Action, &a.Status, &a.Decision, &created, &resolved)
+	if err != nil {
+		return a, err
+	}
+	a.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+	if resolved != "" {
+		parsed, _ := time.Parse(time.RFC3339Nano, resolved)
+		a.ResolvedAt = &parsed
+	}
+	return a, nil
+}
+
 func (s *Store) ResolveApproval(ctx context.Context, id, decision string) error {
+	var runID string
+	if err := s.DB.QueryRowContext(ctx, `SELECT run_id FROM approvals WHERE id=?`, id).Scan(&runID); err != nil {
+		return err
+	}
+	return s.ResolveApprovalForRun(ctx, runID, id, decision)
+}
+
+func (s *Store) ResolveApprovalForRun(ctx context.Context, runID, id, decision string) error {
 	if decision != model.ApprovalApproved && decision != model.ApprovalDenied {
 		return fmt.Errorf("INVALID_APPROVAL_DECISION")
 	}
@@ -159,14 +237,14 @@ func (s *Store) ResolveApproval(ctx context.Context, id, decision string) error 
 		return err
 	}
 	defer tx.Rollback()
-	var runID string
-	if err = tx.QueryRowContext(ctx, `SELECT run_id FROM approvals WHERE id=? AND status=?`, id, model.ApprovalPending).Scan(&runID); err != nil {
+	var approvalRunID string
+	if err = tx.QueryRowContext(ctx, `SELECT run_id FROM approvals WHERE id=? AND run_id=? AND status=?`, id, runID, model.ApprovalPending).Scan(&approvalRunID); err != nil {
 		if err == sql.ErrNoRows {
 			return fmt.Errorf("APPROVAL_NOT_PENDING")
 		}
 		return err
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE approvals SET status=?,decision=?,resolved_at=? WHERE id=? AND status=?`, decision, decision, now().Format(time.RFC3339Nano), id, model.ApprovalPending)
+	res, err := tx.ExecContext(ctx, `UPDATE approvals SET status=?,decision=?,resolved_at=? WHERE id=? AND run_id=? AND status=?`, decision, decision, now().Format(time.RFC3339Nano), id, approvalRunID, model.ApprovalPending)
 	if err != nil {
 		return err
 	}
@@ -177,7 +255,7 @@ func (s *Store) ResolveApproval(ctx context.Context, id, decision string) error 
 	if changed != 1 {
 		return fmt.Errorf("APPROVAL_NOT_PENDING")
 	}
-	if err = appendEvent(ctx, tx, runID, "", "approval.resolved", "info", map[string]any{"approval_id": id, "decision": decision}); err != nil {
+	if err = appendEvent(ctx, tx, approvalRunID, "", "approval.resolved", "info", map[string]any{"approval_id": id, "decision": decision}); err != nil {
 		return err
 	}
 	return tx.Commit()

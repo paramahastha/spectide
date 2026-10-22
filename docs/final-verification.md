@@ -22,10 +22,10 @@
 |---|---|---|
 | Go unit/integration suite | PASS | `go test ./...` |
 | Go static analysis | PASS | `go vet ./...` |
-| Dashboard tests | PASS | `make web-test` (26 tests) |
+| Dashboard tests | PASS | `make web-test` (27 tests) |
 | Dashboard typecheck | PASS | `make lint` |
 | Dashboard production build | PASS | `make web-build` |
-| Dashboard component states and Axe scan | PASS, jsdom scope | `cd web && npm test` (26 tests; seven surfaces; zero critical/serious); see [accessibility audit](accessibility-audit.md) |
+| Dashboard component states and Axe scan | PASS, jsdom scope | `cd web && npm test` (27 tests; seven surfaces; zero critical/serious); see [accessibility audit](accessibility-audit.md) |
 | Offline demo and startup smoke | PASS | `make smoke` |
 | Unified verification and secret scan | PASS | `make verify` (format, vet, Go tests, dashboard checks/build, binary build, secret scan, and smoke) |
 | Frozen effective run configuration | PASS | `make verify`; immutable run configuration stores effective routes, profile executable/config/scope and capability references, required-check definitions, bounded loop settings, and stage timeouts. Tests cover defaults, overrides, supported ranges, profile drift, adapter timeout propagation, and restoration from the hashed run snapshot (T064). |
@@ -33,6 +33,7 @@
 | Evidence-based live/mixed final acceptance | PASS, fixture-backed implementation | `make verify`; mixed fixture workflow reaches COMPLETED only with PASS analyze/local-test/convergence/final-review evidence. Reports and `run.acceptance` events distinguish LIVE/MIXED/SIMULATED; simulation-only E2E is NOT_RUN for live/mixed runs and missing gates remain BLOCKED (T066). |
 | Bounded provider event streaming and terminal extraction | PASS, fixture-backed implementation | `make verify`; runner streams within its 1 MiB output cap, Spec-Kit consumes provider-specific extracted terminal text, and normalized events retain no payload body. Partial frames, malformed/version/error records, truncation, and oversized frames have fixtures (T067). |
 | Project-aware local quality checks | PASS, fixture-backed implementation | `make verify`; run configuration freezes discovered checks, Go and Node layouts are recognized without SpecTide path assumptions, Python markers select pytest, and missing commands/scripts or unsupported layouts persist BLOCKED evidence without repair attempts (T068). |
+| Durable sensitive-action approval | PASS, fixture-backed implementation | `make verify`; live implementation pauses before workspace writes, run-bound approvals resume only after approval, denial blocks and skips implementation, cross-run and duplicate decisions fail, persisted approvals survive store reopen, and paused pending decisions have accessible dashboard controls (T069). |
 | Runner timeout/output/cancellation | PASS | `go test ./internal/runner -count=1` |
 | Deterministic repeated lifecycle | PASS | `TestTwentyDeterministicRunsCompleteWithRequiredEvidence` (20 runs) |
 | Workspace path/scope enforcement | PASS | Focused `go test ./internal/workflow ./internal/api ./internal/workspace`; missing paths and disallowed roots rejected before run creation, canonical symlink path accepted within scope |

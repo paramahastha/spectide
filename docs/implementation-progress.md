@@ -563,6 +563,13 @@
 - Unsupported project layouts, invalid/missing Node test scripts, unavailable commands, and conventional shell exit 126/127 produce BLOCKED evidence. Missing checks do not trigger repair loops. The registry keeps commands as argument vectors and does not launch browser executables; every invoked check retains the actual process ID, command, timing, exit code, and safe summary.
 - Tests cover Go and Node discovery, missing scripts and commands, unsupported projects, frozen configuration restore, and blocked-check repair suppression. Full `make verify` passed. Latest SC-001: 19.104 ms; offline smoke remains `SIMULATED`. T068 is complete; T069 is next. T031, T045, and T046 remain open.
 
+### T069 — Durable sensitive-action approval and continuation — 2026-10-23
+
+- Live implementation now creates a run-bound pending approval and pauses atomically before writing workspace files. Approval can continue an active worker or restart from the verified checkpoint; denial skips implementation and records a blocked authorization gate.
+- The API binds approval resolution to the URL run ID and pending approval ID. Duplicate decisions and cross-run IDs are rejected. The dashboard presents accessible native approve/deny buttons only for pending approvals on paused runs and refreshes after resolution.
+- Store/API tests cover mismatch, single resolution, persistence across reopen, and approved restart replay; workflow tests cover denial and fixture-backed approval before implementation. `make verify` passed: `go vet ./...`, `go test ./...`, dashboard typecheck, 27 frontend tests, production build, secret scan, and simulated smoke. SC-001: 19.621 ms.
+- T069 is complete; T070 is next. T031, T045, and T046 remain open. Live provider execution remains `NOT_RUN`.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified

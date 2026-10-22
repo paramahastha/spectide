@@ -438,9 +438,18 @@ func (s *Server) approvals(w http.ResponseWriter, r *http.Request, runID string,
 			return
 		}
 		decision := strings.ToUpper(input.Decision)
-		if err := s.Store.ResolveApproval(r.Context(), tail[0], decision); err != nil {
+		if err := s.Store.ResolveApprovalForRun(r.Context(), runID, tail[0], decision); err != nil {
 			apiError(w, http.StatusConflict, "APPROVAL_NOT_RESOLVED", err.Error())
 			return
+		}
+		if run, err := s.Store.GetRun(r.Context(), runID); err == nil && run.State == model.Paused {
+			if resumeErr := s.Engine.Resume(runID); resumeErr != nil {
+				latest, getErr := s.Store.GetRun(r.Context(), runID)
+				if getErr != nil || latest.State == model.Paused {
+					apiError(w, http.StatusConflict, "APPROVAL_CONTINUATION_FAILED", resumeErr.Error())
+					return
+				}
+			}
 		}
 		jsonOut(w, http.StatusOK, map[string]string{"status": decision})
 		return

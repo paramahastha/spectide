@@ -41,7 +41,14 @@ export interface Report {
   gates: Gate[]
   routing_decisions: Decision[]
   artifacts: Array<{ id: string; stage: string; path: string; kind: string; sha256: string }>
-  approvals: Array<{ id: string; action: string; status: string; decision: string }>
+  approvals: Approval[]
+}
+
+export interface Approval {
+  id: string
+  action: string
+  status: 'PENDING' | 'APPROVED' | 'DENIED' | string
+  decision: string
 }
 
 export interface Profile {

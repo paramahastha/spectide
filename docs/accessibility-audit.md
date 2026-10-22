@@ -5,7 +5,7 @@
 ## Automated state and surface coverage
 
 Command: `cd web && npm test`  
-Run: 2026-10-22, Vitest 4.1.12 / jsdom. Result: **26 tests passed**. The FR-026 Axe scan renders each named surface and reports **0 critical and 0 serious violations**.
+Run: 2026-10-22, Vitest 4.1.12 / jsdom. Result at that checkpoint: **26 tests passed**. The FR-026 Axe scan renders each named surface and reports **0 critical and 0 serious violations**. The current suite has 27 tests, including keyboard-operable approval controls; the rendered browser evidence remains outstanding.
 
 | Surface | States covered by automated tests |
 |---|---|

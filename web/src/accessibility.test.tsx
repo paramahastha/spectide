@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import axe from 'axe-core'
-import { App, ProfileReadinessPanel, RoutePreviewPanel, RunDetailStatus, RunList, SharedStateSurface } from './App'
+import { App, ApprovalActions, ProfileReadinessPanel, RoutePreviewPanel, RunDetailStatus, RunList, SharedStateSurface } from './App'
 import type { Profile, Report, Run, RunState } from './domain'
 
 afterEach(() => {
@@ -147,6 +147,24 @@ describe('FR-026 dashboard page and state matrix', () => {
     expect(screen.getByText('NOT_RUN')).toBeTruthy()
     expect(screen.getAllByText('BLOCKED').length).toBeGreaterThanOrEqual(1)
     expect(screen.getAllByText('SIMULATED').length).toBeGreaterThanOrEqual(2)
+  })
+})
+
+describe('sensitive workspace approval controls', () => {
+  it('offers keyboard-operable approve and deny controls only for a paused pending approval', () => {
+    const onResolve = vi.fn()
+    const approvals = [{ id: 'approval-1', action: 'Write project files during implement stage', status: 'PENDING', decision: '' }]
+    const { rerender } = render(<ApprovalActions approvals={approvals} runState="PAUSED" onResolve={onResolve} />)
+    const approve = screen.getByRole('button', { name: /approve write project files/i })
+    const deny = screen.getByRole('button', { name: /deny write project files/i })
+    fireEvent.click(approve)
+    expect(onResolve).toHaveBeenCalledWith('approval-1', 'approved')
+    fireEvent.click(deny)
+    expect(onResolve).toHaveBeenLastCalledWith('approval-1', 'denied')
+    rerender(<ApprovalActions approvals={approvals} runState="RUNNING" onResolve={onResolve} />)
+    expect(screen.queryByRole('button', { name: /approve/i })).toBeNull()
+    rerender(<ApprovalActions approvals={[{ ...approvals[0], status: 'APPROVED' }]} runState="PAUSED" onResolve={onResolve} />)
+    expect(screen.queryByRole('button', { name: /approve/i })).toBeNull()
   })
 })
 

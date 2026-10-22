@@ -480,6 +480,22 @@ func TestProjectConfigAndApprovalEndpoints(t *testing.T) {
 	if err = json.Unmarshal(w.Body.Bytes(), &approval); err != nil || approval.ID == "" {
 		t.Fatalf("approval=%+v err=%v", approval, err)
 	}
+	otherRun, err := s.Store.CreateRun(context.Background(), root, "different run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r = httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs/"+otherRun.ID+"/approvals/"+approval.ID, strings.NewReader(`{"decision":"approved"}`))
+	r.Host = "127.0.0.1"
+	r.Header.Set("X-SpecTide-CSRF", s.CSRF)
+	w = httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("mismatched run approval=%d %s", w.Code, w.Body.String())
+	}
+	pending, err := s.Store.Approval(context.Background(), run.ID, approval.ID)
+	if err != nil || pending.Status != model.ApprovalPending {
+		t.Fatalf("mismatched URL altered approval=%+v err=%v", pending, err)
+	}
 	r = httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs/"+run.ID+"/approvals/"+approval.ID, strings.NewReader(`{"decision":"approved"}`))
 	r.Host = "127.0.0.1"
 	r.Header.Set("X-SpecTide-CSRF", s.CSRF)
@@ -487,6 +503,14 @@ func TestProjectConfigAndApprovalEndpoints(t *testing.T) {
 	s.Handler().ServeHTTP(w, r)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "APPROVED") {
 		t.Fatalf("resolve=%d %s", w.Code, w.Body.String())
+	}
+	r = httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs/"+run.ID+"/approvals/"+approval.ID, strings.NewReader(`{"decision":"approved"}`))
+	r.Host = "127.0.0.1"
+	r.Header.Set("X-SpecTide-CSRF", s.CSRF)
+	w = httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("duplicate approval=%d %s", w.Code, w.Body.String())
 	}
 }
 
