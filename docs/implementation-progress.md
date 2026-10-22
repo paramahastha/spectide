@@ -331,6 +331,12 @@
 - Workflow start now requires an existing directory, resolves symlinks to its canonical path, and applies effective configured allowed scopes before project registration, durable run creation, or provider routing. Rejected or out-of-scope paths create no run.
 - Updated lifecycle fixtures to use real directories and added missing-path, outside-scope, and in-scope symlink coverage. Focused `go test ./internal/workflow ./internal/api ./internal/workspace` and full `make verify` passed. T009 is complete. Latest SC-001 measurement is 20.369 ms on the reference host.
 
+### Phase checkpoint — process policy and event sanitization
+
+- Extracted subprocess executable, working-directory, environment, and timeout checks into a typed `security.ProcessPolicy`, used by the runner before launching any child process.
+- Centralized recursive event/checkpoint payload redaction in `internal/events`, covering map and slice variants as well as sensitive field names. Added explicit approval status constants while preserving the existing one-way durable approval lifecycle.
+- Focused `go test ./internal/security ./internal/events ./internal/runner ./internal/store` and full `make verify` passed. T010 is complete. Latest SC-001 measurement is 16.634 ms on the reference host.
+
 ### Phase checkpoint — durable run-owner leases
 
 - Added migration 6 and per-run heartbeat leases. The workflow writes its owner lease atomically with the workspace lock, refreshes it while the worker is alive, and removes it at finish.

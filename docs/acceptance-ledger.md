@@ -20,7 +20,7 @@ This ledger maps every functional requirement in the single master specification
 | FR-014 capability and execution-policy validation | Partial | [routing policy tests](../internal/routing/routing_test.go); config/profile/capability policy is not yet integrated into run launch (T024) |
 | FR-015 routing modes and audit decisions | Partial | [config routing tests](../internal/config/config_test.go), [workflow route persistence test](../internal/workflow/engine_test.go); full policy inputs remain incomplete (T024) |
 | FR-016 deny-first workspace/profile boundaries | Partial | [workspace tests](../internal/workspace/workspace_test.go), [workflow scope enforcement](../internal/workflow/engine_test.go), and [routing tests](../internal/routing/routing_test.go); configured workspace roots are enforced before launch; profile/capability authorization remains open (T024) |
-| FR-017 bounded safe subprocess execution | Partial | [runner](../internal/runner/runner.go); output is capped at 1 MiB per stream, timeouts default to 30 minutes and are bounded from 1 second to 4 hours, and cancellation escalates after a 2-second grace period; workflow integration remains open |
+| FR-017 bounded safe subprocess execution | Partial | [runner and process policy](../internal/runner/runner.go); explicit argument vectors, minimized environment, allowlisted provider config variables, absolute working directory, 1 MiB per-stream output cap, 30-minute default and 1-second to 4-hour timeout bounds, and 2-second cancellation escalation are implemented; canonical workflow integration remains open |
 | FR-018 atomic transitions and interrupted recovery | Partial | [store transition/recovery implementation](../internal/store/store.go); expired owner leases become blocked with durable interruption evidence; full checkpoint recovery remains open (T034) |
 | FR-019 safe pause, resume, cancellation, crash recovery | Partial | [cross-process and stale-owner tests](../internal/workflow/engine_test.go); fresh owners accept controls, expired owners block with `WORKSPACE_DRIFT` and release locks; positive restart resume with matching checkpoint/artifact/Git fingerprints remains unimplemented (T034) |
 | FR-020 loopback HTTP interface | Partial | [API handlers and tests](../internal/api/server_test.go); capabilities and some documented endpoint behaviors remain open |
@@ -39,7 +39,7 @@ This ledger maps every functional requirement in the single master specification
 
 | Criterion | Current evidence/status |
 |---|---|
-| SC-001 | Pass on recorded host: macOS 15.1, Apple M4, 16 GiB, arm64; latest same-process monotonic `make verify` measured 20.369 ms process-start-to-first-HTTP-200 at `/healthz`. See [verification evidence](final-verification.md). |
+| SC-001 | Pass on recorded host: macOS 15.1, Apple M4, 16 GiB, arm64; latest same-process monotonic `make verify` measured 16.634 ms process-start-to-first-HTTP-200 at `/healthz`. See [verification evidence](final-verification.md). |
 | SC-002 | Pass: 20 deterministic runs passed in `TestTwentyDeterministicRunsCompleteWithRequiredEvidence`. |
 | SC-003 | Partial: quality verdict types exist; terminal simulated reports pass; live blocked/not-run behavior needs end-to-end acceptance. |
 | SC-004 | Partial: persisted replay and cursor tests pass; two independent browser clients are not yet covered. |

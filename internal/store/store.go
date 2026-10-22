@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/spectide/spectide/internal/events"
 	"github.com/spectide/spectide/internal/model"
 	"github.com/spectide/spectide/internal/security"
 	_ "modernc.org/sqlite"
@@ -238,42 +239,12 @@ func appendEvent(ctx context.Context, tx *sql.Tx, runID, stage, typ, severity st
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq),0)+1 FROM events WHERE run_id=?`, runID).Scan(&seq); err != nil {
 		return err
 	}
-	b, err := json.Marshal(redactValue(payload))
+	b, err := json.Marshal(events.SanitizePayload(payload))
 	if err != nil {
 		return err
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO events VALUES(?,?,?,?,?,?,?)`, runID, seq, now().Format(time.RFC3339Nano), stage, typ, severity, b)
 	return err
-}
-
-func redactValue(v any) any {
-	switch x := v.(type) {
-	case string:
-		return security.Redact(x)
-	case map[string]any:
-		out := make(map[string]any, len(x))
-		for k, v := range x {
-			if sensitivePayloadKey(k) {
-				out[k] = "[REDACTED]"
-				continue
-			}
-			out[k] = redactValue(v)
-		}
-		return out
-	case []any:
-		out := make([]any, len(x))
-		for i, v := range x {
-			out[i] = redactValue(v)
-		}
-		return out
-	default:
-		return v
-	}
-}
-
-func sensitivePayloadKey(key string) bool {
-	k := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(key, "-", ""), "_", ""))
-	return k == "token" || k == "apikey" || k == "authorization" || k == "secret" || k == "password" || k == "credential"
 }
 
 func (s *Store) Event(ctx context.Context, runID, stage, typ, severity string, payload map[string]any) error {

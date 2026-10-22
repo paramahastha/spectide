@@ -119,6 +119,12 @@ type Approval struct {
 	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
 }
 
+const (
+	ApprovalPending  = "PENDING"
+	ApprovalApproved = "APPROVED"
+	ApprovalDenied   = "DENIED"
+)
+
 type Profile struct {
 	ID              string   `json:"id"`
 	Name            string   `json:"name"`

@@ -2,6 +2,7 @@
 package security
 
 import "regexp"
+import "strings"
 
 var sensitive = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(authorization\s*[:=]\s*bearer\s+)[^\s"']+`),
@@ -22,4 +23,11 @@ func Redact(input string) string {
 		})
 	}
 	return out
+}
+
+// NormalizeKey strips common separators and lowercases an event field name so
+// secret-bearing variants receive the same treatment.
+func NormalizeKey(key string) string {
+	key = strings.ReplaceAll(strings.ReplaceAll(key, "-", ""), "_", "")
+	return strings.ToLower(key)
 }

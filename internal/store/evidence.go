@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/spectide/spectide/internal/events"
 	"github.com/spectide/spectide/internal/model"
 )
 
@@ -76,7 +77,7 @@ func (s *Store) SaveCheckpoint(ctx context.Context, c model.Checkpoint) (model.C
 	if err := json.Unmarshal([]byte(c.StateJSON), &state); err != nil {
 		return c, fmt.Errorf("CHECKPOINT_STATE_INVALID: %w", err)
 	}
-	clean, err := json.Marshal(redactValue(state))
+	clean, err := json.Marshal(events.SanitizePayload(state))
 	if err != nil {
 		return c, err
 	}
@@ -123,9 +124,9 @@ func (s *Store) CreateApproval(ctx context.Context, a model.Approval) (model.App
 		return a, fmt.Errorf("APPROVAL_FIELDS_REQUIRED")
 	}
 	if a.Status == "" {
-		a.Status = "PENDING"
+		a.Status = model.ApprovalPending
 	}
-	if a.Status != "PENDING" {
+	if a.Status != model.ApprovalPending {
 		return a, fmt.Errorf("INVALID_INITIAL_APPROVAL_STATUS")
 	}
 	if a.CreatedAt.IsZero() {
@@ -144,7 +145,7 @@ func (s *Store) CreateApproval(ctx context.Context, a model.Approval) (model.App
 }
 
 func (s *Store) ResolveApproval(ctx context.Context, id, decision string) error {
-	if decision != "APPROVED" && decision != "DENIED" {
+	if decision != model.ApprovalApproved && decision != model.ApprovalDenied {
 		return fmt.Errorf("INVALID_APPROVAL_DECISION")
 	}
 	tx, err := s.DB.BeginTx(ctx, nil)
@@ -152,7 +153,7 @@ func (s *Store) ResolveApproval(ctx context.Context, id, decision string) error 
 		return err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, `UPDATE approvals SET status=?,decision=?,resolved_at=? WHERE id=? AND status='PENDING'`, decision, decision, now().Format(time.RFC3339Nano), id)
+	res, err := tx.ExecContext(ctx, `UPDATE approvals SET status=?,decision=?,resolved_at=? WHERE id=? AND status=?`, decision, decision, now().Format(time.RFC3339Nano), id, model.ApprovalPending)
 	if err != nil {
 		return err
 	}
