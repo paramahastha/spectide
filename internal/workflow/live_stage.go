@@ -171,6 +171,14 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 	if len(options) > 0 {
 		option = options[0]
 	}
+	if stage == "implement" {
+		e.mu.Lock()
+		resume := e.resumes[run.ID]
+		e.mu.Unlock()
+		if err = e.authorizeSensitiveInvocation(ctx, run, stage, phase, installation.ProjectRoot, *profile, resume); err != nil {
+			return nil, err
+		}
+	}
 	e.mu.Lock()
 	if processLock := e.processLocks[run.ID]; processLock != nil && processLock.File() != nil {
 		request.InheritedFiles = []*os.File{processLock.File()}
@@ -345,6 +353,54 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 	}
 	evidence["_stage_output"] = result.Output
 	return evidence, nil
+}
+
+func (e *Engine) authorizeSensitiveInvocation(ctx context.Context, run model.Run, stage, phase, projectRoot string, profile model.Profile, resume <-chan struct{}) error {
+	stages, err := e.store.Stages(ctx, run.ID)
+	if err != nil {
+		return err
+	}
+	activeStage := model.Stage{}
+	for _, candidate := range stages {
+		if candidate.State == model.StageRun && (activeStage.ID == "" || candidate.Position > activeStage.Position || candidate.Attempt > activeStage.Attempt) {
+			activeStage = candidate
+		}
+	}
+	if activeStage.ID == "" {
+		return fmt.Errorf("SENSITIVE_WRITE_STAGE_REQUIRED")
+	}
+	workspaceScope := workspaceIdentityFingerprint(projectRoot)
+	action := fmt.Sprintf("Write workspace %s during %s/%s via %s/%s", workspaceScope, stage, phase, profile.Provider, profile.Name)
+	approval, err := e.store.CreateWorkflowApprovalAndPause(ctx, run.ID, activeStage.Key, action)
+	if err != nil {
+		return err
+	}
+	if approval.Status == model.ApprovalPending {
+		approved, waitErr := e.waitForSensitiveApproval(ctx, run.ID, activeStage.Key, activeStage.ID, approval, resume)
+		if waitErr != nil {
+			return waitErr
+		}
+		if !approved {
+			if err = e.store.Event(context.Background(), run.ID, activeStage.Key, "approval.denied", "warning", map[string]any{"approval_id": approval.ID, "stage": stage, "phase": phase, "execution": "NOT_RUN"}); err != nil {
+				return err
+			}
+			if err = e.store.Gate(context.Background(), run.ID, "sensitive_action_authorized", "BLOCKED", "workspace modification approval was denied for this invocation"); err != nil {
+				return err
+			}
+			return fmt.Errorf("SENSITIVE_ACTION_NOT_APPROVED")
+		}
+	} else if approval.Status == model.ApprovalDenied {
+		if err = e.store.Event(context.Background(), run.ID, activeStage.Key, "approval.denied", "warning", map[string]any{"approval_id": approval.ID, "stage": stage, "phase": phase, "execution": "NOT_RUN"}); err != nil {
+			return err
+		}
+		if err = e.store.Gate(context.Background(), run.ID, "sensitive_action_authorized", "BLOCKED", "workspace modification approval was denied for this invocation"); err != nil {
+			return err
+		}
+		return fmt.Errorf("SENSITIVE_ACTION_DENIED")
+	} else if approval.Status != model.ApprovalApproved {
+		return fmt.Errorf("SENSITIVE_ACTION_STATUS_INVALID")
+	}
+	return e.store.Event(ctx, run.ID, activeStage.Key, "approval.write_authorized", "info", map[string]any{"approval_id": approval.ID, "stage": stage, "phase": phase, "workspace_scope": workspaceScope, "provider": profile.Provider, "profile": profile.Name, "execution": "LIVE"})
 }
 
 func (e *Engine) validateProfileReferences(ctx context.Context, runID string, profile model.Profile) (security.ExecutableReference, string, error) {

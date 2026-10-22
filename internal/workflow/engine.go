@@ -771,32 +771,6 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			e.failPersistence(r.ID)
 			return
 		}
-		if key == "implement" && d.Provider != "fake" {
-			action := fmt.Sprintf("Write project files during implement stage via %s/%s", d.Provider, d.Profile)
-			approval, approvalErr := e.store.CreateWorkflowApprovalAndPause(ctx, r.ID, key, action)
-			if approvalErr != nil {
-				e.failPersistence(r.ID)
-				return
-			}
-			if approval.Status == model.ApprovalPending {
-				approved, waitErr := e.waitForSensitiveApproval(ctx, r.ID, key, st.ID, approval, resume)
-				if waitErr != nil {
-					e.failPersistence(r.ID)
-					return
-				}
-				if !approved {
-					e.finish(r.ID)
-					return
-				}
-			} else if approval.Status == model.ApprovalDenied {
-				if err := e.denySensitiveApproval(ctx, r.ID, key, st.ID, approval); err != nil {
-					e.failPersistence(r.ID)
-				} else {
-					e.finish(r.ID)
-				}
-				return
-			}
-		}
 		if d.Provider != "fake" {
 			ownerPath, present, inspectErr := existingOwnerArtifact(r.Project, featureDir, key)
 			if inspectErr != nil {
@@ -1237,7 +1211,7 @@ func (e *Engine) waitForSensitiveApproval(ctx context.Context, runID, stage, sta
 				}
 				return true, nil
 			case model.ApprovalDenied:
-				return false, e.denySensitiveApproval(ctx, runID, stage, stageID, current)
+				return false, nil
 			}
 			if action, err := e.store.RunControl(ctx, runID); err != nil {
 				return false, err
@@ -1270,7 +1244,7 @@ func (e *Engine) waitForSensitiveApproval(ctx context.Context, runID, stage, sta
 				return true, nil
 			}
 			if current.Status == model.ApprovalDenied {
-				return false, e.denySensitiveApproval(ctx, runID, stage, stageID, current)
+				return false, nil
 			}
 		}
 	}

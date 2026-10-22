@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/spectide/spectide/internal/model"
@@ -59,6 +60,111 @@ func TestDeniedSensitiveApprovalBlocksBeforeWorkspaceWrite(t *testing.T) {
 	}
 	if _, err = state.DB.ExecContext(ctx, "SELECT 1"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSensitiveWriteApprovalCoversEveryImplementInvocationPhase(t *testing.T) {
+	for _, phase := range []string{"implement", "analyze_remediation", "test_repair", "convergence_implementation", "final_review_fix"} {
+		t.Run(phase, func(t *testing.T) {
+			ctx := context.Background()
+			project := t.TempDir()
+			state, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer state.Close()
+			run, err := state.CreateRun(ctx, project, "write files only after approval")
+			if err != nil {
+				t.Fatal(err)
+			}
+			stage := model.Stage{ID: "active-outer-stage", RunID: run.ID, Key: "analyze", Position: 6, State: model.Pending, Provider: "codex", Profile: "fixture", Attempt: 1}
+			if err = state.AddStage(ctx, stage); err != nil {
+				t.Fatal(err)
+			}
+			if err = state.SetStage(ctx, stage.ID, model.StageRun); err != nil {
+				t.Fatal(err)
+			}
+			if err = state.SetRunState(ctx, run.ID, model.Running); err != nil {
+				t.Fatal(err)
+			}
+			profile := model.Profile{Name: "fixture", Provider: "codex"}
+			action := "Write workspace " + workspaceIdentityFingerprint(project) + " during implement/" + phase + " via codex/fixture"
+			approval, err := state.CreateApproval(ctx, model.Approval{RunID: run.ID, Action: action})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = state.ResolveApprovalForRun(ctx, run.ID, approval.ID, model.ApprovalDenied); err != nil {
+				t.Fatal(err)
+			}
+			engine := New(state)
+			if err = engine.authorizeSensitiveInvocation(ctx, run, "implement", phase, project, profile, nil); err == nil || !strings.Contains(err.Error(), "SENSITIVE_ACTION_DENIED") {
+				t.Fatalf("denied invocation was authorized: %v", err)
+			}
+			attempts, err := state.ExecutionAttempts(ctx, run.ID)
+			if err != nil || len(attempts) != 0 {
+				t.Fatalf("provider attempt was created before approval: %+v err=%v", attempts, err)
+			}
+			gates, err := state.Gates(ctx, run.ID)
+			if err != nil || gateByKey(gates, "sensitive_action_authorized").Verdict != "BLOCKED" {
+				t.Fatalf("denial gate evidence=%+v err=%v", gates, err)
+			}
+		})
+	}
+}
+
+func TestSensitiveWriteApprovalCanReuseOnlyMatchingRunPhaseAndScope(t *testing.T) {
+	ctx := context.Background()
+	project := t.TempDir()
+	state, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	run, err := state.CreateRun(ctx, project, "resume approved write")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stage := model.Stage{ID: "active-outer-stage", RunID: run.ID, Key: "implement", Position: 7, State: model.Pending, Provider: "codex", Profile: "fixture", Attempt: 1}
+	if err = state.AddStage(ctx, stage); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.SetStage(ctx, stage.ID, model.StageRun); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.SetRunState(ctx, run.ID, model.Running); err != nil {
+		t.Fatal(err)
+	}
+	profile := model.Profile{Name: "fixture", Provider: "codex"}
+	action := "Write workspace " + workspaceIdentityFingerprint(project) + " during implement/test_repair via codex/fixture"
+	approval, err := state.CreateApproval(ctx, model.Approval{RunID: run.ID, Action: action})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = state.ResolveApprovalForRun(ctx, run.ID, approval.ID, model.ApprovalApproved); err != nil {
+		t.Fatal(err)
+	}
+	otherScope := t.TempDir()
+	for _, deniedAction := range []string{
+		"Write workspace " + workspaceIdentityFingerprint(project) + " during implement/final_review_fix via codex/fixture",
+		"Write workspace " + workspaceIdentityFingerprint(otherScope) + " during implement/test_repair via codex/fixture",
+	} {
+		denied, createErr := state.CreateApproval(ctx, model.Approval{RunID: run.ID, Action: deniedAction})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		if err = state.ResolveApprovalForRun(ctx, run.ID, denied.ID, model.ApprovalDenied); err != nil {
+			t.Fatal(err)
+		}
+	}
+	engine := New(state)
+	if err = engine.authorizeSensitiveInvocation(ctx, run, "implement", "test_repair", project, profile, nil); err != nil {
+		t.Fatalf("matching approved run/phase/scope was not reused: %v", err)
+	}
+	if err = engine.authorizeSensitiveInvocation(ctx, run, "implement", "final_review_fix", project, profile, nil); err == nil || !strings.Contains(err.Error(), "SENSITIVE_ACTION_DENIED") {
+		t.Fatalf("approval for another phase was reused: %v", err)
+	}
+	if err = engine.authorizeSensitiveInvocation(ctx, run, "implement", "test_repair", otherScope, profile, nil); err == nil || !strings.Contains(err.Error(), "SENSITIVE_ACTION_DENIED") {
+		t.Fatalf("approval for another workspace scope was reused: %v", err)
 	}
 }
 

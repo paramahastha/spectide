@@ -708,3 +708,10 @@
 - On an expired-owner restart, active/ambiguous provider attempts are finalized as `FAILED` with an explicit interruption reason. A still-active outer stage is finalized as failed, then the resumed stage is appended with the next attempt number rather than reusing attempt 1.
 - The restart fixture verifies attempt finalization and numbering, and unit tests verify persisted cursor fields and that analyze/convergence boundaries observe spent counters.
 - `go test ./internal/store ./internal/workflow -count=1`, `go vet ./internal/store ./internal/workflow`, and `git diff --check` passed. T087 remains open: Resume currently replays the whole active outer stage instead of dispatching the stored inner cursor. Process-exit/resume tests for approval, analyze remediation, local checks, and appended-task convergence are still required before marking complete.
+
+### T088 — Invocation-bound workspace write authorization — partial, 2026-10-23
+
+- Removed the single outer `implement` approval check. Every live `implement` invocation now checks a durable approval immediately before an execution attempt can be created, including analyze remediation, test repair, convergence implementation, and final-review fixes.
+- Approval actions bind the run, phase, workspace identity, provider, and profile. Only the same stored action can reuse an approved decision. Denials persist a blocked authorization gate and return before provider invocation; tests verify no attempt is created and cross-phase/workspace decisions are rejected.
+- The mixed live-engine fixture and approval phase tests pass with targeted checks; full store/workflow suites, vet, and diff checks passed.
+- T088 remains open pending checkpointed recovery of a pending phase-specific approval and process-exit tests across repair paths; this depends on the unfinished executable inner-loop cursor in T087.

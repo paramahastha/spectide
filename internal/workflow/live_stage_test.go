@@ -52,9 +52,13 @@ func approveWhenRequested(t *testing.T, state *store.Store, runID string) func()
 					if approval.Status == model.ApprovalPending {
 						if err := state.ResolveApprovalForRun(context.Background(), runID, approval.ID, model.ApprovalApproved); err != nil {
 							t.Errorf("approve workflow action: %v", err)
+							return
 						}
-						return
 					}
+				}
+				run, err := state.GetRun(context.Background(), runID)
+				if err == nil && (run.State == model.Completed || run.State == model.Blocked || run.State == model.Failed || run.State == model.Cancelled) {
+					return
 				}
 			}
 		}
@@ -469,6 +473,24 @@ func TestRunLiveStageUsesVerifiedCommandAndPersistsSanitizedEvidence(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	outer := model.Stage{ID: "analyze-stage", RunID: run.ID, Key: "analyze", Position: indexOfStage("analyze"), State: model.Pending, Provider: "codex", Profile: "fixture", Attempt: 1}
+	if err = state.AddStage(ctx, outer); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.SetStage(ctx, outer.ID, model.StageRun); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.SetRunState(ctx, run.ID, model.Running); err != nil {
+		t.Fatal(err)
+	}
+	writeAction := "Write workspace " + workspaceIdentityFingerprint(project) + " during implement/analyze_remediation via codex/fixture"
+	writeApproval, err := state.CreateApproval(ctx, model.Approval{RunID: run.ID, Action: writeAction})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = state.ResolveApprovalForRun(ctx, run.ID, writeApproval.ID, model.ApprovalApproved); err != nil {
+		t.Fatal(err)
+	}
 	engine := NewWithAdapters(state, &liveFixtureAdapter{})
 	evidence, err := engine.runLiveStage(ctx, run, "plan", config.Route{Provider: "codex", Profile: "fixture"}, installation, feature)
 	if err != nil {
@@ -492,12 +514,18 @@ func TestRunLiveStageUsesVerifiedCommandAndPersistsSanitizedEvidence(t *testing.
 		t.Fatalf("remediation accepted source-code mutation outside its owning artifact: %v", err)
 	}
 	events, err := state.Events(ctx, run.ID, 0)
-	if err != nil || len(events) != 11 {
+	if err != nil || len(events) < 11 {
 		t.Fatalf("events=%+v err=%v", events, err)
 	}
-	providerEvent := events[3]
-	if providerEvent.Type != "provider.codex.message" || providerEvent.Payload["execution"] != "LIVE" {
-		t.Fatalf("unexpected persisted provider event: %+v", providerEvent)
+	var providerEvent model.Event
+	for _, event := range events {
+		if event.Type == "provider.codex.message" {
+			providerEvent = event
+			break
+		}
+	}
+	if providerEvent.Type == "" || providerEvent.Payload["execution"] != "LIVE" {
+		t.Fatalf("provider event missing from persisted stream: %+v", events)
 	}
 	attempts, err := state.ExecutionAttempts(ctx, run.ID)
 	if err != nil || len(attempts) != 3 || attempts[0].Result != "SUCCEEDED" || attempts[0].Iteration != 1 || attempts[0].ProcessID < 1 || attempts[0].StdoutSHA256 == "" || attempts[1].Iteration != 2 || attempts[1].Result != "FAILED" || attempts[2].Result != "FAILED" || attempts[2].Phase != "analyze_remediation" {

@@ -1605,6 +1605,8 @@ The detailed phase checklists below remain the full blueprint. Their original bo
 
 **T087 checkpoint (23 October 2026, partial):** Cursor state now records pending phase/operation, tasks and position, check key, and spent loop budgets. Analyze/convergence pause points follow budget updates. Recovery finalizes dangling provider attempts as FAILED with an interruption reason, finalizes an active stage attempt, and appends the next numbered stage attempt. Restart and focused budget/cursor tests plus store/workflow suites and vet pass. The task remains open because restart still replays the whole active stage instead of dispatching the saved inner cursor, and owner-process-exit coverage for approval, analyze remediation, local checks, and appended-task convergence is not yet implemented.
 
+**T088 checkpoint (23 October 2026, partial):** Sensitive-write approval moved from the outer implement stage to the live invocation boundary. Main implementation, analyze remediation, test repair, convergence implementation, and final-review fixes now require a durable decision bound to the run, phase, workspace identity, provider, and profile before an execution attempt is created. Matching decisions can be reused; another phase or workspace cannot reuse them. Denial evidence and tests confirm no provider attempt starts. Full store/workflow tests, vet, and diff checks pass. T088 remains open until pending phase-specific approval recovery is checkpointed and process-exit repair-path cases pass with T087's executable cursor.
+
 ### Phase 0 — Constitution, requirements, and repository setup
 
 **Objective:** Establish stable product boundaries and verified execution baseline.
