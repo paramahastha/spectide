@@ -390,7 +390,12 @@
 ### Read-only analyze remediation driver foundation
 
 - Added `RunAnalyzeGate`: it runs a baseline analysis, fingerprints managed artifacts before/after each analysis to enforce read-only behavior, routes one blocking finding per remediation, and repeats analysis after the owner-artifact change. Critical/high findings block; medium findings block only when their category and text identify an unsatisfied security boundary, acceptance criterion, or prerequisite. The baseline does not spend a remediation round.
-- Focused tests passed for severity policy, baseline handling, read-only mutation rejection, no progress, and exhaustion after exactly three remediation rounds. T016 remains open because test-repair retries and live stage outcome integration are still outstanding.
+- Focused tests passed for severity policy, baseline handling, read-only mutation rejection, no progress, and exhaustion after exactly three remediation rounds. T016 remains open pending integration of the remediation and retry hooks with persisted canonical stage outcomes.
+
+### Bounded test-repair driver foundation
+
+- Added `RunTestRepairGate` with a baseline test pass, repair callbacks receiving only non-passing checks, a four-repair per-run cap, and deterministic verdict-set progress detection. Missing evidence and invalid verdicts fail closed.
+- `go test ./internal/workflow -run RunTestRepairGate -count=1` passed for initial pass, repaired pass, unchanged failure, and exact four-repair exhaustion. T016 remains open until analyze, test repair, and convergence hooks are driven by persisted canonical stage outcomes in the run engine.
 
 ### Workflow convergence driver foundation
 
