@@ -94,6 +94,30 @@ func TestRunConfigurationAndStageAttemptsAreImmutable(t *testing.T) {
 	}
 }
 
+func TestIdempotencyHashesOriginalPromptButPersistsRedactedPrompt(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	firstPrompt := "inspect api_key=first-synthetic-secret-123456"
+	first, reused, err := s.CreateRunIdempotent(ctx, "secret-request-key", "/workspace", firstPrompt)
+	if err != nil || reused {
+		t.Fatalf("first run=%+v reused=%v err=%v", first, reused, err)
+	}
+	if strings.Contains(first.Prompt, "first-synthetic-secret-123456") || !strings.Contains(first.Prompt, "[REDACTED]") {
+		t.Fatalf("persisted prompt was not redacted: %q", first.Prompt)
+	}
+	if _, reused, err = s.CreateRunIdempotent(ctx, "secret-request-key", "/workspace", firstPrompt); err != nil || !reused {
+		t.Fatalf("same raw request not idempotent: reused=%v err=%v", reused, err)
+	}
+	_, _, err = s.CreateRunIdempotent(ctx, "secret-request-key", "/workspace", "inspect api_key=second-synthetic-secret-654321")
+	if err == nil || !strings.Contains(err.Error(), "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST") {
+		t.Fatalf("different secret-bearing prompt reused the request key: %v", err)
+	}
+}
+
 func TestArtifactCheckpointAndApprovalRepositories(t *testing.T) {
 	ctx := context.Background()
 	s, run := evidenceStore(t)

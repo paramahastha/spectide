@@ -459,6 +459,13 @@
 - Added tests for valid restart continuation, tracked managed-file drift, ignored registered-artifact drift, Git HEAD drift, checkpoint identity/configuration mismatch, and unchanged recovery evidence. `go test ./internal/workflow ./internal/store -count=1` and full `make verify` passed. Latest SC-001: 29.799 ms; offline smoke remained `SIMULATED`.
 - T034 is complete in the canonical task ledger. T031 browser checks, T036 cross-layer failure/secret-leak/exhaustion scenarios, T045 official Spec-Kit convergence, and T046 screenshots/release reporting remain open.
 
+### Phase checkpoint — cross-layer recovery, redaction, and retry bounds
+
+- Added an API recovery test that resumes a stale paused run without a verified checkpoint, confirms the API returns `WORKSPACE_DRIFT`, the run becomes `BLOCKED`, and the workspace file remains unchanged.
+- Added an API secret-leak test that carries a synthetic `api_key` through run creation, persisted SQLite prompt, report response, and SSE replay; none expose the secret. The store now hashes the original request prompt for idempotency before redacting the prompt for persistence, and a test verifies distinct secrets do not alias under one idempotency key.
+- Existing workflow acceptance tests verify exhaustion at exactly 3 analyze remediations, 4 test repairs, and 5 convergence rounds, plus no-progress termination; T034 restart tests verify continuation and checkpoint/workspace drift evidence preservation.
+- Focused workflow/API/store acceptance tests and full `make verify` passed, including static analysis, Go suites, dashboard tests/build, secret scan, and offline smoke. Latest SC-001: 19.849 ms; smoke remained `SIMULATED`. T036 is complete. T031 browser acceptance, T045 official Spec-Kit convergence, and T046 screenshot/release evidence remain open.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified

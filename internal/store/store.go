@@ -183,12 +183,12 @@ func (s *Store) CreateRunIdempotent(ctx context.Context, key, project, prompt st
 }
 
 func (s *Store) CreateRunWithConfiguration(ctx context.Context, key, project, prompt string, configJSON []byte) (model.Run, bool, error) {
-	prompt = security.Redact(prompt)
 	requestHash := ""
 	if key != "" {
 		sum := sha256.Sum256([]byte(project + "\x00" + prompt + "\x00" + string(configJSON)))
 		requestHash = hex.EncodeToString(sum[:])
 	}
+	prompt = security.Redact(prompt)
 	configHash := ""
 	if len(configJSON) > 0 {
 		if !json.Valid(configJSON) {

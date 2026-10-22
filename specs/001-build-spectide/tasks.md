@@ -82,7 +82,7 @@
 - [x] T033 [P] [US4] Add malformed stream, timeout, cancellation, and redaction adapter fixture tests in `internal/adapters/`, `internal/runner/`, and `internal/security/`
 - [x] T034 [US4] Implement pause/resume/cancel at safe stage boundaries and checkpoint recovery; test resume only after canonical workspace identity and exclusive lock checks, immutable configuration hash match, checkpoint identity match, checkpointed artifact path/content hashes match, and Git HEAD plus managed-path hashes match; on mismatch preserve evidence, block with `WORKSPACE_DRIFT`, and require explicit verified recovery without overwriting in `internal/workflow/`
 - [x] T035 [US4] Implement append-only convergence task validation and final-review return loop, with tests proving remediation/retries preserve the same product specification path and never create a replacement spec, in `internal/speckit/` and `internal/workflow/`
-- [ ] T036 [US4] Add recovery and secret-leak end-to-end scenarios; verify exhaustion at 3 analyze remediation rounds, 4 test repair attempts, and 5 convergence rounds, plus no-progress termination, in `internal/workflow/` and `internal/api/`
+- [x] T036 [US4] Add recovery and secret-leak end-to-end scenarios; verify exhaustion at 3 analyze remediation rounds, 4 test repair attempts, and 5 convergence rounds, plus no-progress termination, in `internal/workflow/` and `internal/api/`
 - [x] T049 [US4] Add a 20-run deterministic simulated lifecycle acceptance test proving SC-002 in `internal/workflow/`
 
 ## Phase 7: User Story 5 — Local installation and validation (P2)

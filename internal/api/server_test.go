@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func testServer(t *testing.T) *Server {
@@ -118,6 +119,119 @@ func TestCreateRun(t *testing.T) {
 		t.Fatalf("key mismatch status=%d body=%s", w.Code, w.Body.String())
 	}
 	_ = context.Background()
+}
+
+func TestSecretPromptIsRedactedAcrossRunAPIReportAndSSE(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	server := testServer(t)
+	project := t.TempDir()
+	secret := "synthetic-api-token-1234567890"
+	prompt := "Build a status page with api_key=" + secret
+	body, err := json.Marshal(map[string]string{"project": project, "prompt": prompt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs", strings.NewReader(string(body)))
+	request.Host = "127.0.0.1"
+	request.Header.Set("X-SpecTide-CSRF", server.CSRF)
+	request.Header.Set("Idempotency-Key", "secret-prompt-123")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("create status=%d body=%s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), secret) || !strings.Contains(response.Body.String(), "[REDACTED]") {
+		t.Fatalf("create response leaked or failed to redact prompt secret: %s", response.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err = json.Unmarshal(response.Body.Bytes(), &created); err != nil || created.ID == "" {
+		t.Fatalf("created run=%+v err=%v", created, err)
+	}
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		run, getErr := server.Store.GetRun(context.Background(), created.ID)
+		if getErr == nil && run.State == model.Completed {
+			break
+		}
+		if getErr == nil && (run.State == model.Blocked || run.State == model.Failed) {
+			t.Fatalf("offline API run did not complete: %+v", run)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	run, err := server.Store.GetRun(context.Background(), created.ID)
+	if err != nil || run.State != model.Completed || strings.Contains(run.Prompt, secret) || !strings.Contains(run.Prompt, "[REDACTED]") {
+		t.Fatalf("persisted run=%+v err=%v", run, err)
+	}
+	reportRequest := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/v1/runs/"+created.ID+"/report", nil)
+	reportRequest.Host = "127.0.0.1"
+	reportResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(reportResponse, reportRequest)
+	if reportResponse.Code != http.StatusOK || strings.Contains(reportResponse.Body.String(), secret) {
+		t.Fatalf("report status=%d body=%s", reportResponse.Code, reportResponse.Body.String())
+	}
+	streamContext, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	streamRequest := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/v1/runs/"+created.ID+"/events?after=0", nil).WithContext(streamContext)
+	streamRequest.Host = "127.0.0.1"
+	streamResponse := httptest.NewRecorder()
+	server.Handler().ServeHTTP(streamResponse, streamRequest)
+	if streamResponse.Code != http.StatusOK || strings.Contains(streamResponse.Body.String(), secret) {
+		t.Fatalf("event stream status=%d body=%s", streamResponse.Code, streamResponse.Body.String())
+	}
+	var rawPrompt string
+	if err = server.Store.DB.QueryRowContext(context.Background(), `SELECT prompt FROM runs WHERE id=?`, created.ID).Scan(&rawPrompt); err != nil || strings.Contains(rawPrompt, secret) {
+		t.Fatalf("database prompt leaked secret %q err=%v", rawPrompt, err)
+	}
+}
+
+func TestRestartResumeDriftIsBlockedThroughAPI(t *testing.T) {
+	server := testServer(t)
+	project, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspaceFile := filepath.Join(project, "preserve.txt")
+	if err = os.WriteFile(workspaceFile, []byte("keep this evidence\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run, err := server.Store.CreateRun(context.Background(), project, "interrupted API recovery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = server.Store.AcquireWorkspaceLockOwned(context.Background(), project, run.ID, "expired-api-owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err = server.Store.SetRunState(context.Background(), run.ID, model.Running); err != nil {
+		t.Fatal(err)
+	}
+	if err = server.Store.SetRunState(context.Background(), run.ID, model.Paused); err != nil {
+		t.Fatal(err)
+	}
+	if err = server.Store.Event(context.Background(), run.ID, "constitution", "run.paused", "info", map[string]any{"stage": "constitution"}); err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().UTC().Add(-store.RunOwnerLease - time.Second).Format(time.RFC3339Nano)
+	if _, err = server.Store.DB.ExecContext(context.Background(), `UPDATE run_owners SET heartbeat_at=? WHERE run_id=?`, stale, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs/"+run.ID+"/resume", nil)
+	request.Host = "127.0.0.1"
+	request.Header.Set("X-SpecTide-CSRF", server.CSRF)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "WORKSPACE_DRIFT") {
+		t.Fatalf("restart API status=%d body=%s", response.Code, response.Body.String())
+	}
+	got, err := server.Store.GetRun(context.Background(), run.ID)
+	if err != nil || got.State != model.Blocked {
+		t.Fatalf("run=%+v err=%v", got, err)
+	}
+	content, err := os.ReadFile(workspaceFile)
+	if err != nil || string(content) != "keep this evidence\n" {
+		t.Fatalf("API recovery overwrote workspace %q err=%v", content, err)
+	}
 }
 
 func TestDryRunPreviewsConfiguredRoutesWithoutCreatingRun(t *testing.T) {

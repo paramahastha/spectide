@@ -13,7 +13,7 @@
 - Architecture: arm64
 - Build command: `make build` (`go build -o bin/spectide ./cmd/spectide`)
 - Startup/health command: `make smoke` (`scripts/smoke.sh` starts `spectide serve --port 0`, then requests `/healthz`)
-- Measurement: latest `make verify` run measured 29.799 ms from the monotonic timestamp immediately before `Popen` through the first HTTP 200 from `/healthz`; acceptance limit is 2,000 ms. Earlier measurements are retained in the implementation checkpoint history.
+- Measurement: latest `make verify` run measured 19.849 ms from the monotonic timestamp immediately before `Popen` through the first HTTP 200 from `/healthz`; acceptance limit is 2,000 ms. Earlier measurements are retained in the implementation checkpoint history.
 - The same smoke run completed the offline demo and reported `SIMULATED`.
 
 ## Other verification executed
@@ -33,6 +33,7 @@
 | Workspace path/scope enforcement | PASS | Focused `go test ./internal/workflow ./internal/api ./internal/workspace`; missing paths and disallowed roots rejected before run creation, canonical symlink path accepted within scope |
 | Process policy and event/checkpoint sanitization | PASS | Focused `go test ./internal/security ./internal/events ./internal/runner ./internal/store`; runner validates process policy before launch and payload sanitization covers nested map/slice credential variants |
 | Persisted stage cursors and verified restart recovery | PASS | `go test ./internal/workflow ./internal/store -count=1` and `make verify`; restart resume validates canonical identity, lock ownership, immutable config/checkpoint/cursor, artifact hashes, Git HEAD/index, managed-path hashes, and loop counters. Drift is blocked without overwriting workspace evidence; see [recovery guide](recovery.md). |
+| Cross-layer recovery, secret-leak, and bounded-loop acceptance | PASS | Focused workflow/API/store tests and `make verify`; API checks cover stale resume blocking, prompt redaction through create response, SQLite, report, and SSE replay, and idempotency distinguishes raw secret-bearing requests. Workflow checks assert exact 3/4/5 exhaustion and no-progress termination; restart recovery preserves evidence on drift. |
 | Bounded workflow convergence and final review | PASS, fixture-backed implementation | `make verify`; live fixture routes execute bounded append-only convergence, implement only appended tasks, rerun tests, and return final-review findings through fix/test/converge under a shared per-run budget. Official provider authentication/convergence remains T045. |
 | Scoped route preview | PASS | Full `make verify`; API preview rejects workspace scope escapes without run creation |
 | Live route profile boundaries | PASS | Focused routing/workflow/API tests and full `make verify`; profile existence, provider match, and canonical allowed scope are required before preview or run creation; live invocation remains blocked |
@@ -47,6 +48,6 @@
 ## Not run or incomplete
 
 - Official Spec-Kit/provider execution and convergence against a real authenticated account: NOT_RUN. The verified workflow path is covered by a fixture adapter; `doctor` reports the installed provider CLIs as not authenticated. T014 implementation is complete; T045 remains open.
-- Mixed live workflow final acceptance: BLOCKED at `simulated_e2e`; T016/T035 loop wiring and T034 restart recovery are complete, but the full end-to-end failure/secret-leak/exhaustion matrix remains T036.
+- Mixed live workflow final acceptance: BLOCKED at `simulated_e2e`; T016/T034/T035 implementation and T036 fixture-backed failure/recovery/secret-leak/exhaustion scenarios pass, but no authenticated provider run is available.
 - Browser E2E, actual 200% zoom, rendered keyboard/focus/contrast and reduced-motion checks, and screenshots: NOT_RUN. No Chromium/Chrome/Edge executable is installed and the prior localhost browser inspection was denied by the browser access gate; T031/T046 remain open. Component-level Axe and stylesheet contrast checks are recorded separately.
-- Full release acceptance: INCOMPLETE. T031 browser evidence, T036 cross-layer recovery/secret-leak/exhaustion coverage, T045 official convergence, and T046 screenshots/release report remain open. See [the acceptance ledger](acceptance-ledger.md) and [the implementation task ledger](../specs/001-build-spectide/tasks.md).
+- Full release acceptance: INCOMPLETE. T031 browser evidence, T045 official convergence, and T046 screenshots/release report remain open. See [the acceptance ledger](acceptance-ledger.md) and [the implementation task ledger](../specs/001-build-spectide/tasks.md).
