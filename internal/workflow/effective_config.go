@@ -12,11 +12,12 @@ import (
 )
 
 type effectiveRunConfiguration struct {
-	SchemaVersion  int                        `json:"schema_version"`
-	Stages         []effectiveStage           `json:"stages"`
-	Execution      config.ExecutionSettings   `json:"execution"`
-	Profiles       []approvedProfileReference `json:"profiles"`
-	RequiredChecks []requiredCheckReference   `json:"required_checks"`
+	SchemaVersion          int                        `json:"schema_version"`
+	Stages                 []effectiveStage           `json:"stages"`
+	Execution              config.ExecutionSettings   `json:"execution"`
+	Profiles               []approvedProfileReference `json:"profiles"`
+	RequiredChecks         []requiredCheckReference   `json:"required_checks"`
+	QualitySelectionPolicy string                     `json:"quality_selection_policy,omitempty"`
 }
 
 type effectiveStage struct {
@@ -104,6 +105,11 @@ func buildEffectiveRunConfiguration(cfg config.Config, decisions map[string]conf
 			RequireEmptyOut: check.RequireEmptyOut, TimeoutSeconds: int(check.Timeout / time.Second), UnavailableReason: check.UnavailableReason,
 		})
 	}
+	if len(effective.RequiredChecks) == 1 && effective.RequiredChecks[0].Key == "project_quality" && effective.RequiredChecks[0].UnavailableReason != "" {
+		effective.QualitySelectionPolicy = "DISCOVER_AFTER_IMPLEMENTATION"
+	} else {
+		effective.QualitySelectionPolicy = "FROZEN_AT_START"
+	}
 	return effective
 }
 
@@ -135,6 +141,9 @@ func parseEffectiveRunConfiguration(encoded string) (effectiveRunConfiguration, 
 }
 
 func validateEffectiveRunConfiguration(effective effectiveRunConfiguration) error {
+	if effective.QualitySelectionPolicy != "" && effective.QualitySelectionPolicy != "FROZEN_AT_START" && effective.QualitySelectionPolicy != "DISCOVER_AFTER_IMPLEMENTATION" {
+		return fmt.Errorf("WORKSPACE_DRIFT: immutable quality selection policy is invalid")
+	}
 	if effective.Execution.DefaultStageTimeoutSeconds < config.MinStageTimeoutSeconds || effective.Execution.DefaultStageTimeoutSeconds > config.MaxStageTimeoutSeconds {
 		return fmt.Errorf("WORKSPACE_DRIFT: immutable stage timeout is invalid")
 	}

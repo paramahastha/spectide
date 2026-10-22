@@ -516,7 +516,10 @@ func Root() *cobra.Command {
 		if st, e := os.Stat(abs); e != nil || !st.IsDir() {
 			return fmt.Errorf("project path must be an existing directory")
 		}
-		registry := quality.DefaultRegistry(nil)
+		registry, e := quality.Discover(abs, nil)
+		if e != nil {
+			return e
+		}
 		results := registry.Run(c.Context(), abs)
 		if e = writeJSON(c.OutOrStdout(), results); e != nil {
 			return e

@@ -105,6 +105,30 @@ func TestEffectiveRunConfigurationFreezesDiscoveredProjectQualityChecks(t *testi
 	}
 }
 
+func TestEffectiveRunConfigurationFreezesDeferredDiscoveryPolicyForFreshProject(t *testing.T) {
+	root := t.TempDir()
+	registry, err := quality.Discover(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decisions := map[string]config.Decision{}
+	for _, stage := range stages {
+		decisions[stage] = config.Decision{Stage: stage, Route: config.Route{Provider: "fake", Profile: "demo"}, Mode: "manual"}
+	}
+	effective := buildEffectiveRunConfiguration(config.Default(), decisions, nil, registry)
+	if effective.QualitySelectionPolicy != "DISCOVER_AFTER_IMPLEMENTATION" {
+		t.Fatalf("fresh project quality policy=%q checks=%+v", effective.QualitySelectionPolicy, effective.RequiredChecks)
+	}
+	encoded, err := json.Marshal(effective)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := parseEffectiveRunConfiguration(string(encoded))
+	if err != nil || restored.QualitySelectionPolicy != "DISCOVER_AFTER_IMPLEMENTATION" {
+		t.Fatalf("fresh project policy did not survive restart snapshot: %+v err=%v", restored, err)
+	}
+}
+
 func TestLegacyRunConfigurationUsesProductDefaults(t *testing.T) {
 	effective, err := parseEffectiveRunConfiguration(`[]`)
 	if err != nil {

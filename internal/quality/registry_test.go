@@ -98,6 +98,33 @@ func TestDiscoverUsesNodeProjectScriptsAndNoGoCommands(t *testing.T) {
 	}
 }
 
+func TestDiscoverReevaluatesFreshGoAndNodeProjectManifests(t *testing.T) {
+	goRoot := t.TempDir()
+	initial, err := Discover(goRoot, nil)
+	if err != nil || len(initial.Checks()) != 1 || initial.Checks()[0].Key != "project_quality" {
+		t.Fatalf("initial empty project checks=%+v err=%v", initial, err)
+	}
+	if err = os.WriteFile(filepath.Join(goRoot, "go.mod"), []byte("module example.test/fresh\ngo 1.27.2\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	derivedGo, err := Discover(goRoot, nil)
+	if err != nil || len(derivedGo.Checks()) != 4 || derivedGo.Checks()[0].Key != "gofmt" {
+		t.Fatalf("derived Go checks=%+v err=%v", derivedGo.Checks(), err)
+	}
+
+	nodeRoot := t.TempDir()
+	if err = os.WriteFile(filepath.Join(nodeRoot, "package.json"), []byte(`{"scripts":{"test":"vitest run","build":"vite build"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(nodeRoot, "pnpm-lock.yaml"), []byte("lockfileVersion: '9.0'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	derivedNode, err := Discover(nodeRoot, nil)
+	if err != nil || len(derivedNode.Checks()) != 2 || derivedNode.Checks()[0].Binary != "pnpm" || derivedNode.Checks()[1].Binary != "pnpm" {
+		t.Fatalf("derived Node checks=%+v err=%v", derivedNode.Checks(), err)
+	}
+}
+
 func TestDiscoverUsesPythonPytestMarker(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "pyproject.toml"), []byte("[project]\nname='fixture'\n"), 0o600); err != nil {

@@ -37,7 +37,7 @@ func (e *Engine) runTestRepairLoop(ctx context.Context, run model.Run, phase str
 			if err != nil {
 				return nil, err
 			}
-			registry, err := effectiveConfiguration.qualityRegistry()
+			registry, err := e.qualityRegistryForRun(ctx, run, effectiveConfiguration)
 			if err != nil {
 				return nil, err
 			}

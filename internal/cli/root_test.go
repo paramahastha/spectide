@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -37,6 +39,21 @@ func TestCLIJSONPresentationRedactsNestedSecretValues(t *testing.T) {
 	var decoded map[string]any
 	if err := json.Unmarshal(output.Bytes(), &decoded); err != nil {
 		t.Fatalf("redacted CLI output is invalid JSON: %v", err)
+	}
+}
+
+func TestVerifyUsesProjectSpecificQualityDiscovery(t *testing.T) {
+	if _, err := exec.LookPath("npm"); err != nil {
+		t.Skip("npm is unavailable")
+	}
+	project := t.TempDir()
+	packageJSON := []byte(`{"scripts":{"test":"echo project-check"}}`)
+	if err := os.WriteFile(filepath.Join(project, "package.json"), packageJSON, 0600); err != nil {
+		t.Fatal(err)
+	}
+	output, err := executeCLI(t, filepath.Join(t.TempDir(), "cli.db"), "verify", "--project", project)
+	if err != nil || !strings.Contains(output, `"key":"node_tests"`) || strings.Contains(output, `"key":"unit_tests"`) {
+		t.Fatalf("verify did not use target project checks: output=%s err=%v", output, err)
 	}
 }
 
