@@ -40,6 +40,30 @@ func TestRunNeedsCSRF(t *testing.T) {
 		t.Fatalf("status=%d", w.Code)
 	}
 }
+
+func TestRejectsLookalikeOrigin(t *testing.T) {
+	s := testServer(t)
+	r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/profiles", strings.NewReader(`{}`))
+	r.Host = "127.0.0.1"
+	r.Header.Set("Origin", "http://127.0.0.1.attacker.example")
+	r.Header.Set("X-SpecTide-CSRF", s.CSRF)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestRejectsInvalidEventCursor(t *testing.T) {
+	s := testServer(t)
+	r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/v1/runs/not-a-run/events?after=-1", nil)
+	r.Host = "127.0.0.1"
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d", w.Code)
+	}
+}
 func TestCreateRun(t *testing.T) {
 	s := testServer(t)
 	r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs", strings.NewReader(`{"project":"demo","prompt":"test"}`))

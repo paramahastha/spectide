@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRunnerDoesNotUseShellAndRedacts(t *testing.T) {
@@ -19,5 +20,20 @@ func TestRunnerRejectsRelativeDir(t *testing.T) {
 	_, e := Run(context.Background(), Invocation{Binary: "echo", Dir: "."})
 	if e == nil {
 		t.Fatal("expected rejection")
+	}
+}
+
+func TestRunnerBoundsOutputAndHonorsCancellation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	r, err := Run(ctx, Invocation{Binary: "/usr/bin/yes", Args: []string{"x"}})
+	if err == nil {
+		t.Fatal("expected cancellation")
+	}
+	if len(r.Stdout) > maxOutputBytes+128 {
+		t.Fatalf("stdout exceeded cap: %d", len(r.Stdout))
+	}
+	if !strings.Contains(r.Stdout, "output truncated") {
+		t.Fatal("truncation marker missing")
 	}
 }

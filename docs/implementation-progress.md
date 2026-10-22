@@ -22,7 +22,23 @@
 
 **Commit status**
 
-- This checkout did not contain Git metadata. Repository initialization and the first verified checkpoint commit are pending.
+- Git was initialized and the first verified checkpoint is `a2e49dc` (`Harden local persistence and dashboard controls`).
+
+### Phase checkpoint — configuration and CLI readiness
+
+**Verified in this checkpoint**
+
+- Added versioned project JSON configuration with schema checks, atomic replacement, and mode `0600` writes. Missing project configuration resolves to documented hybrid/fake defaults.
+- Implemented `spectide init`, `config`/`config validate`, provider profile registration/listing, provider readiness diagnostics, run history/status/report/logs, offline demo, dashboard URL, and explicit safe-resume refusal when no verified checkpoint exists.
+- The `run` help and output identify the current runner as simulated; live workflows are not claimed as implemented.
+- Added API tests for lookalike origins and invalid SSE cursors, plus runner output-limit/cancellation, config permissions/validation, state-transition/restart recovery, and nested-secret redaction coverage.
+- `go test ./...`, `go vet ./...`, `make build`, `spectide --help`, and `spectide config validate` passed.
+
+**Remaining in this phase family**
+
+- Global/project configuration precedence, route-to-profile validation, persistent project registry and workspace locks are incomplete.
+- The CLI does not yet execute real Spec-Kit/provider stages. `resume` is deliberately blocked without safe checkpoints.
+- The configuration and CLI checkpoint is ready for commit after this verification.
 
 ### Earlier checkpoint summary
 
