@@ -19,7 +19,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-type Store struct{ DB *sql.DB }
+type Store struct {
+	DB   *sql.DB
+	path string
+}
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -36,7 +39,12 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	s := &Store{DB: db}
+	absPath, absErr := filepath.Abs(path)
+	if absErr != nil {
+		db.Close()
+		return nil, absErr
+	}
+	s := &Store{DB: db, path: absPath}
 	return s, s.migrate()
 }
 
@@ -88,6 +96,15 @@ func (s *Store) migrate() error {
 		if _, err = tx.Exec(`INSERT INTO schema_migrations(version,applied_at) VALUES(4,?)`, now().Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
+		version = 4
+	}
+	if version < 5 {
+		if _, err = tx.Exec(schemaV5); err != nil {
+			return fmt.Errorf("apply schema migration 5: %w", err)
+		}
+		if _, err = tx.Exec(`INSERT INTO schema_migrations(version,applied_at) VALUES(5,?)`, now().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -103,6 +120,9 @@ var schemaV3 string
 
 //go:embed migrations/004_run_configuration.sql
 var schemaV4 string
+
+//go:embed migrations/005_retention.sql
+var schemaV5 string
 
 func now() time.Time { return time.Now().UTC().Round(0) }
 func parse(v string) *time.Time {
@@ -163,7 +183,10 @@ func (s *Store) CreateRunWithConfiguration(ctx context.Context, key, project, pr
 			return model.Run{}, false, err
 		}
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO runs VALUES(?,?,?,?,?,?,?)`, r.ID, r.Project, r.Prompt, r.State, t.Format(time.RFC3339Nano), nil, nil)
+	if err = reserveRunDetailSlot(ctx, tx, t); err != nil {
+		return model.Run{}, false, err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO runs(id,project,prompt,state,created_at,started_at,ended_at) VALUES(?,?,?,?,?,?,?)`, r.ID, r.Project, r.Prompt, r.State, t.Format(time.RFC3339Nano), nil, nil)
 	if err != nil {
 		return r, false, err
 	}

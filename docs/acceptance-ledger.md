@@ -30,7 +30,7 @@ This ledger maps every functional requirement in the single master specification
 | FR-024 persisted-state dashboard | Partial | [dashboard source](../web/src/App.tsx); screenshot/browser acceptance is open (T031, T046) |
 | FR-025 route preview and truthful states | Partial | [config preview command](../internal/cli/root.go), [dashboard](../web/src/App.tsx); complete dry-run intent and browser acceptance remain open (T031) |
 | FR-026 accessible desktop monitoring | Partial | [dashboard stylesheet](../web/src/style.css), [domain tests](../web/src/domain.test.ts); T031 records the run-list/detail, route-preview, profile-readiness and empty/error/disconnected matrix plus scan results in `docs/accessibility-audit.md` |
-| FR-027 migrations, recovery, retention, export | Partial | [migration tests](../internal/store/profiles_test.go), [report API](../internal/api/server.go); default 90-day/1,000-run retention, backup, and restore are assigned to T051 |
+| FR-027 migrations, recovery, retention, export | Partial | [migration tests](../internal/store/profiles_test.go), [backup/retention tests](../internal/store/retention_test.go); private integrity-checked backup/restore, 90-day detail expiration, 1,000-run terminal-first pruning, and active-cap rejection pass; sanitized export formatting and recovery integration remain open |
 | FR-028 documented offline verification commands | Partial | [Makefile](../Makefile), [smoke scripts](../scripts); CI/security/E2E coverage is incomplete (T003, T043) |
 | FR-029 automated cross-layer coverage | Partial | [Go and frontend test suites](../internal); browser E2E, restart recovery, convergence failure injection, and SSE load evidence remain open (T031, T036, T043a) |
 | FR-030 local-first verified documentation | Partial | [README](../README.md), [architecture](architecture.md), [security model](security-model.md); provider, recovery, API, troubleshooting, and release documentation remains incomplete (T040) |
@@ -39,7 +39,7 @@ This ledger maps every functional requirement in the single master specification
 
 | Criterion | Current evidence/status |
 |---|---|
-| SC-001 | Pass on recorded host: macOS 15.1, Apple M4, 16 GiB, arm64; latest `make verify` smoke measured 0.152 ms monotonic process-start-to-first-HTTP-200 at `/healthz`. See [verification evidence](final-verification.md). |
+| SC-001 | Pass on recorded host: macOS 15.1, Apple M4, 16 GiB, arm64; latest corrected same-process monotonic `make verify` measured 18.830 ms process-start-to-first-HTTP-200 at `/healthz`. See [verification evidence](final-verification.md). |
 | SC-002 | Pass: 20 deterministic runs passed in `TestTwentyDeterministicRunsCompleteWithRequiredEvidence`. |
 | SC-003 | Partial: quality verdict types exist; terminal simulated reports pass; live blocked/not-run behavior needs end-to-end acceptance. |
 | SC-004 | Partial: persisted replay and cursor tests pass; two independent browser clients are not yet covered. |

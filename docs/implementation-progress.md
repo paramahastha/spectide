@@ -297,8 +297,21 @@
 
 - Added `make format-check`, `make security`, and `make verify`. The unified target runs formatting, Go vet/tests, dashboard typecheck/tests/build, Go binary build, tracked-file private-key/provider-token pattern scan, and the offline smoke path.
 - Updated GitHub Actions to use Go from `go.mod`, Node 22, read-only repository permissions, and `make verify`. Updated contributor and changelog documentation.
-- `make verify` passed end to end, including loopback startup and simulated demo. Latest SC-001 measurement was 0.152 ms on macOS 15.1 / Apple M4 / 16 GiB / arm64. T003, T041, and T043 are complete.
+- `make verify` passed end to end, including loopback startup and simulated demo; its first recorded timing used separate monotonic origins and was later corrected below. T003, T041, and T043 are complete.
 - Browser E2E/accessibility scans and SC-006 SSE load measurement remain separate, unrun acceptance work (T031, T043a).
+
+### SC-001 measurement correction — 2026-10-22
+
+- The first monotonic measurement implementation launched a separate Python process for each timestamp. On this host those processes reported process-relative monotonic origins, so the resulting 0.295 ms, 0.152 ms, and later negative measurement were invalid.
+- Reworked `scripts/smoke.sh` so one Python process starts the server, requests `/healthz`, measures both points using one monotonic clock, and terminates the server. Corrected measurements: 26.624 ms (`make smoke`), then 18.830 ms (`make verify`). The full `make verify` target passed with the corrected check. Earlier values are explicitly superseded in `docs/final-verification.md`.
+
+### Phase checkpoint — backup, restore, and evidence retention
+
+- Added schema migration 5 for the detailed-history pruning marker.
+- `Store.Backup` uses SQLite `VACUUM INTO`, private mode `0600`, an atomic no-overwrite destination, and same-database rejection. `RestoreBackup` checks SQLite integrity and supported schema version before atomically creating a new private file, then applies supported forward migrations; it never overwrites an existing target.
+- Retention expires event/checkpoint detail older than 90 days for terminal runs. At creation, when 1,000 detailed runs already exist, the oldest terminal details are pruned first. Event cursors/types, run summaries, stage outcomes, routes, gates, approvals, and report metadata remain. If no terminal slot is available, run creation fails with `RETENTION_CAP_ACTIVE`.
+- Tests cover private backup permissions, round-trip restore, refusing overwrite/newer schema, 90-day expiration with active-run protection, terminal-first pruning, preserved verdicts, and all-active cap rejection.
+- `go test ./internal/store -count=1` passed. T051 is complete.
 
 ### Historical baseline (superseded by the checkpoints above)
 
