@@ -3,8 +3,10 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
@@ -13,16 +15,26 @@ import (
 	"github.com/spectide/spectide/internal/speckit"
 )
 
-func (e *Engine) runTestRepairLoop(ctx context.Context, run model.Run, decisions map[string]config.Decision, installation speckit.Installation, featureDir string, budget *LoopBudget) (map[string]string, error) {
+func (e *Engine) runTestRepairLoop(ctx context.Context, run model.Run, phase string, decisions map[string]config.Decision, installation speckit.Installation, featureDir string, budget *LoopBudget) (map[string]string, error) {
 	latest := map[string]string{}
 	hooks := TestRepairHooks{
 		Test: func(ctx context.Context) (map[string]string, error) {
 			registry := quality.DefaultRegistry(nil)
+			startedAt := time.Now().UTC()
 			evidence := registry.Run(ctx, run.Project)
+			finishedAt := time.Now().UTC()
+			persisted := model.QualityExecution{RunID: run.ID, Phase: phase, ProcessID: os.Getpid(), StartedAt: startedAt, FinishedAt: finishedAt}
 			verdicts := make(map[string]string, len(evidence))
 			for _, item := range evidence {
 				verdict := string(item.Verdict)
 				verdicts[item.Key] = verdict
+				persisted.Results = append(persisted.Results, model.QualityResult{Key: item.Key, Verdict: verdict, Command: append([]string(nil), item.Command...), ProcessID: item.ProcessID, ExitCode: item.ExitCode, Duration: item.Duration, Summary: item.Summary, StartedAt: item.StartedAt})
+			}
+			if _, err := e.store.SaveQualityExecution(ctx, persisted); err != nil {
+				return nil, err
+			}
+			for _, item := range evidence {
+				verdict := string(item.Verdict)
 				summary := security.Redact(item.Summary)
 				if err := e.store.Gate(ctx, run.ID, "live_test_"+item.Key, verdict, summary); err != nil {
 					return nil, err
@@ -46,7 +58,7 @@ func (e *Engine) runTestRepairLoop(ctx context.Context, run model.Run, decisions
 			for _, key := range keys {
 				fmt.Fprintf(&prompt, "- %s: %s\n", key, failed[key])
 			}
-			if _, _, err := e.runLiveStageWithControl(ctx, run, "implement", decision.Route, prompt.String(), installation, featureDir); err != nil {
+			if _, _, err := e.runLiveStageWithControlPhase(ctx, run, "implement", phase+"_repair", decision.Route, prompt.String(), installation, featureDir); err != nil {
 				return err
 			}
 			return nil

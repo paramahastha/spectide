@@ -763,7 +763,7 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 				e.failPersistence(r.ID)
 				return
 			}
-			verdicts, testErr := e.runTestRepairLoop(ctx, r, decisions, installation, featureDir, loopBudget)
+			verdicts, testErr := e.runTestRepairLoop(ctx, r, "tests", decisions, installation, featureDir, loopBudget)
 			if persistErr := persistTestVerdicts(ctx, e.store, r.ID, verdicts); persistErr != nil {
 				_ = e.store.SetRunState(context.Background(), r.ID, model.Failed)
 				e.finish(r.ID)

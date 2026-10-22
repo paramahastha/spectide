@@ -162,6 +162,31 @@ func TestEngineExecutesVerifiedLiveStageAndBlocksSimulatedQualityCompletion(t *t
 	if requiredTests != "PASS" {
 		t.Fatalf("registered local checks did not pass: %+v", report.Gates)
 	}
+	if len(report.Attempts) < 5 || len(report.QualityExecutions) < 1 {
+		t.Fatalf("provider and test histories were not included in the report: attempts=%d quality=%d", len(report.Attempts), len(report.QualityExecutions))
+	}
+	phases := map[string]bool{}
+	for _, attempt := range report.Attempts {
+		if attempt.Result != "SUCCEEDED" || attempt.ProcessID < 1 || attempt.FinishedAt == nil || attempt.StdoutSHA256 == "" {
+			t.Fatalf("incomplete provider attempt evidence: %+v", attempt)
+		}
+		phases[attempt.Phase] = true
+	}
+	for _, phase := range []string{"analyze", "convergence", "final_review"} {
+		if !phases[phase] {
+			t.Errorf("missing provider invocation phase %q in %+v", phase, phases)
+		}
+	}
+	for _, execution := range report.QualityExecutions {
+		if execution.ProcessID < 1 || execution.FinishedAt.Before(execution.StartedAt) || len(execution.Results) == 0 {
+			t.Fatalf("incomplete quality execution evidence: %+v", execution)
+		}
+		for _, result := range execution.Results {
+			if result.ProcessID < 1 {
+				t.Fatalf("quality result omitted subprocess identity: %+v", result)
+			}
+		}
+	}
 	if converged != "PASS" || finalReview != "PASS" || blockedFinalReview {
 		t.Fatalf("live convergence/final review did not pass: %+v", report.Gates)
 	}
@@ -234,13 +259,20 @@ func TestRunLiveStageUsesVerifiedCommandAndPersistsSanitizedEvidence(t *testing.
 	if evidence["provider"] != "codex" || evidence["event_count"] != 1 || evidence["execution"] != nil {
 		t.Fatalf("unexpected stage evidence: %#v", evidence)
 	}
+	if _, err = engine.runLiveStage(ctx, run, "plan", config.Route{Provider: "codex", Profile: "fixture"}, installation, feature); err != nil {
+		t.Fatal(err)
+	}
 	events, err := state.Events(ctx, run.ID, 0)
-	if err != nil || len(events) != 2 {
+	if err != nil || len(events) != 7 {
 		t.Fatalf("events=%+v err=%v", events, err)
 	}
-	providerEvent := events[1]
+	providerEvent := events[2]
 	if providerEvent.Type != "provider.codex.message" || providerEvent.Payload["execution"] != "LIVE" {
 		t.Fatalf("unexpected persisted provider event: %+v", providerEvent)
+	}
+	attempts, err := state.ExecutionAttempts(ctx, run.ID)
+	if err != nil || len(attempts) != 2 || attempts[0].Result != "SUCCEEDED" || attempts[0].Iteration != 1 || attempts[0].ProcessID < 1 || attempts[0].StdoutSHA256 == "" || attempts[1].Iteration != 2 {
+		t.Fatalf("provider invocation history=%+v err=%v", attempts, err)
 	}
 	if _, err = state.SaveProfile(ctx, model.Profile{Name: "fixture", Provider: "codex", Executable: "codex", AllowedScopes: []string{project}}); err != nil {
 		t.Fatal(err)

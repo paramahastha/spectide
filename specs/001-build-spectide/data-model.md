@@ -7,6 +7,8 @@
 | Project | id, canonical path, boundary | Canonical path is unique and must stay inside allowed workspace roots. |
 | Run | id, project, prompt, frozen configuration, state, timestamps | Intent/configuration are immutable; terminal states have a reason and evidence. |
 | StageAttempt | id, run, key, iteration, attempt, route, state, timing | Historical attempts are never overwritten; state transitions are centrally validated. |
+| ExecutionAttempt | id, run, stage, phase, iteration, route, process id, timing, result, output hashes, event sequence links | Every provider stage/repair/review/convergence invocation has a separate immutable identity; only its initial `RUNNING` record may be finalized once. Start/completion event sequence IDs link to the ordered event stream. Raw provider output is not stored. |
+| QualityExecution/Result | run, phase, iteration, process identity, check, command, verdict, timing, summary, completion event sequence | Each local quality pass and each check result is appended and exposed in reports; evidence is redacted and prior results are never overwritten. |
 | Event | run, monotonically increasing sequence, timestamp, type, redacted payload | Append-only and written in the same transaction as its state transition. |
 | Profile | id, provider, executable reference, config reference, authorization scope | Credentials are never persisted. |
 | QualityGate | run, key, verdict, evidence | Required gate must be `PASS` for real completion; `NOT_RUN` remains visible. |

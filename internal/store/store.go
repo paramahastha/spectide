@@ -134,6 +134,14 @@ func (s *Store) migrate() error {
 			return err
 		}
 	}
+	if version < 9 {
+		if _, err = tx.Exec(schemaV9); err != nil {
+			return fmt.Errorf("apply schema migration 9: %w", err)
+		}
+		if _, err = tx.Exec(`INSERT INTO schema_migrations(version,applied_at) VALUES(9,?)`, now().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 
@@ -160,6 +168,9 @@ var schemaV7 string
 
 //go:embed migrations/008_stage_running_state.sql
 var schemaV8 string
+
+//go:embed migrations/009_execution_attempts.sql
+var schemaV9 string
 
 func now() time.Time { return time.Now().UTC().Round(0) }
 func parse(v string) *time.Time {
@@ -816,6 +827,14 @@ func (s *Store) Report(ctx context.Context, id string) (model.Report, error) {
 	if e != nil {
 		return model.Report{}, e
 	}
+	attempts, e := s.ExecutionAttempts(ctx, id)
+	if e != nil {
+		return model.Report{}, e
+	}
+	qualityExecutions, e := s.QualityExecutions(ctx, id)
+	if e != nil {
+		return model.Report{}, e
+	}
 	var configuration *model.RunConfiguration
 	c, configErr := s.RunConfiguration(ctx, id)
 	if configErr == nil {
@@ -823,5 +842,5 @@ func (s *Store) Report(ctx context.Context, id string) (model.Report, error) {
 	} else if configErr != sql.ErrNoRows {
 		return model.Report{}, configErr
 	}
-	return model.Report{Run: r, Configuration: configuration, Stages: st, Decisions: d, Gates: g, Artifacts: a, Checkpoints: cp, Approvals: ap}, nil
+	return model.Report{Run: r, Configuration: configuration, Stages: st, Attempts: attempts, QualityExecutions: qualityExecutions, Decisions: d, Gates: g, Artifacts: a, Checkpoints: cp, Approvals: ap}, nil
 }

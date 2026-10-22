@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spectide/spectide/internal/model"
 )
@@ -272,6 +273,107 @@ func TestStateMutationsRollbackWhenTheirOrderedEventCannotBeWritten(t *testing.T
 	for index, event := range events {
 		if event.Seq != int64(index+1) {
 			t.Fatalf("event sequence is not contiguous: index=%d event=%+v", index, event)
+		}
+	}
+}
+
+func TestProviderAndQualityAttemptHistoriesAreAppendOnlyAndReported(t *testing.T) {
+	ctx := context.Background()
+	s, run := evidenceStore(t)
+	first, err := s.StartExecutionAttempt(ctx, model.ExecutionAttempt{RunID: run.ID, Stage: "analyze", Phase: "analyze", Provider: "codex", Profile: "local", Model: "model-v1"})
+	if err != nil || first.Iteration != 1 || first.Result != "RUNNING" || first.StartEventSeq < 1 {
+		t.Fatalf("first attempt=%+v err=%v", first, err)
+	}
+	first.Result = "SUCCEEDED"
+	first.ProcessID = 4101
+	first.DurationMillis = 321
+	first.ExitCode = 0
+	first.StdoutSHA256 = strings.Repeat("a", 64)
+	first.EvidenceJSON = `{"summary":"token=attempt-synthetic-secret-123456"}`
+	if err = s.CompleteExecutionAttempt(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	firstAttempts, err := s.ExecutionAttempts(ctx, run.ID)
+	if err != nil || len(firstAttempts) != 1 || firstAttempts[0].CompletionEventSeq <= firstAttempts[0].StartEventSeq {
+		t.Fatalf("attempt event links=%+v err=%v", firstAttempts, err)
+	}
+	second, err := s.StartExecutionAttempt(ctx, model.ExecutionAttempt{RunID: run.ID, Stage: "analyze", Phase: "analyze", Provider: "codex", Profile: "local", Model: "model-v1"})
+	if err != nil || second.Iteration != 2 {
+		t.Fatalf("second attempt=%+v err=%v", second, err)
+	}
+	if _, err = s.DB.Exec(`CREATE TRIGGER reject_attempt_completion BEFORE INSERT ON events WHEN NEW.type='execution.attempt_completed' BEGIN SELECT RAISE(ABORT,'injected attempt event failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	second.Result = "FAILED"
+	second.ProcessID = 4102
+	second.ExitCode = 1
+	second.Error = "password=attempt-error-secret-987654"
+	if err = s.CompleteExecutionAttempt(ctx, second); err == nil {
+		t.Fatal("execution attempt finished without its completion event")
+	}
+	if _, err = s.DB.Exec(`DROP TRIGGER reject_attempt_completion`); err != nil {
+		t.Fatal(err)
+	}
+	attempts, err := s.ExecutionAttempts(ctx, run.ID)
+	if err != nil || len(attempts) != 2 || attempts[1].Result != "RUNNING" || attempts[1].FinishedAt != nil {
+		t.Fatalf("failed completion was not rolled back: attempts=%+v err=%v", attempts, err)
+	}
+	if err = s.CompleteExecutionAttempt(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.DB.Exec(`UPDATE execution_attempts SET phase='changed' WHERE id=?`, first.ID); err == nil {
+		t.Fatal("execution attempt identity was mutable")
+	}
+	if _, err = s.DB.Exec(`DELETE FROM execution_attempts WHERE id=?`, first.ID); err == nil {
+		t.Fatal("execution attempt history was deletable")
+	}
+
+	quality := model.QualityExecution{RunID: run.ID, Phase: "tests", ProcessID: 4201, Results: []model.QualityResult{{Key: "unit_tests", Verdict: "FAIL", Command: []string{"go", "test", "./..."}, ExitCode: 1, Duration: time.Second, Summary: "token=quality-synthetic-secret-abcdef", StartedAt: time.Now().UTC()}}}
+	firstQuality, err := s.SaveQualityExecution(ctx, quality)
+	if err != nil || firstQuality.Iteration != 1 || firstQuality.Verdict != "FAIL" || firstQuality.CompletionEventSeq < 1 {
+		t.Fatalf("first quality execution=%+v err=%v", firstQuality, err)
+	}
+	quality.ProcessID++
+	quality.Results[0].Verdict = "PASS"
+	quality.Results[0].Summary = "all checks passed"
+	secondQuality, err := s.SaveQualityExecution(ctx, quality)
+	if err != nil || secondQuality.Iteration != 2 || secondQuality.Verdict != "PASS" {
+		t.Fatalf("second quality execution=%+v err=%v", secondQuality, err)
+	}
+	if _, err = s.DB.Exec(`UPDATE quality_executions SET verdict='FAIL' WHERE id=?`, firstQuality.ID); err == nil {
+		t.Fatal("quality execution history was mutable")
+	}
+	if _, err = s.DB.Exec(`UPDATE quality_results SET summary='changed' WHERE execution_id=?`, firstQuality.ID); err == nil {
+		t.Fatal("quality result history was mutable")
+	}
+	if _, err = s.DB.Exec(`DELETE FROM quality_executions WHERE id=?`, firstQuality.ID); err == nil {
+		t.Fatal("quality execution history was deletable")
+	}
+	if _, err = s.DB.Exec(`DELETE FROM quality_results WHERE execution_id=?`, firstQuality.ID); err == nil {
+		t.Fatal("quality result history was deletable")
+	}
+	var leaked string
+	if err = s.DB.QueryRow(`SELECT summary FROM quality_results WHERE execution_id=?`, firstQuality.ID).Scan(&leaked); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(leaked, "quality-synthetic-secret") {
+		t.Fatalf("quality evidence leaked a synthetic secret: %q", leaked)
+	}
+	report, err := s.Report(ctx, run.ID)
+	if err != nil || len(report.Attempts) != 2 || len(report.QualityExecutions) != 2 || len(report.QualityExecutions[0].Results) != 1 {
+		t.Fatalf("report omitted attempt histories: report=%+v err=%v", report, err)
+	}
+	events, err := s.Events(ctx, run.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, event := range events {
+		seen[event.Type] = true
+	}
+	for _, eventType := range []string{"execution.attempt_started", "execution.attempt_completed", "quality.execution_completed"} {
+		if !seen[eventType] {
+			t.Errorf("missing ordered event %q", eventType)
 		}
 	}
 }

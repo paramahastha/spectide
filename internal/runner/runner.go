@@ -24,6 +24,9 @@ type Invocation struct {
 type Result struct {
 	Stdout, Stderr string
 	ExitCode       int
+	ProcessID      int
+	StartedAt      time.Time
+	FinishedAt     time.Time
 	Duration       time.Duration
 }
 
@@ -106,7 +109,11 @@ func Run(ctx context.Context, in Invocation) (Result, error) {
 	cmd.Stderr = errOut
 	err := cmd.Run()
 	close(stopEscalation)
-	res := Result{Stdout: security.Redact(out.String()), Stderr: security.Redact(errOut.String()), Duration: time.Since(start)}
+	finished := time.Now()
+	res := Result{Stdout: security.Redact(out.String()), Stderr: security.Redact(errOut.String()), StartedAt: start.UTC(), FinishedAt: finished.UTC(), Duration: finished.Sub(start)}
+	if cmd.Process != nil {
+		res.ProcessID = cmd.Process.Pid
+	}
 	if ctx.Err() != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) && parentCtx.Err() == nil {
 			return res, fmt.Errorf("STAGE_TIMEOUT: provider stage exceeded %s", timeout)

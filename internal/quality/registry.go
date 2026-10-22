@@ -33,6 +33,7 @@ type Evidence struct {
 	Key       string        `json:"key"`
 	Verdict   Verdict       `json:"verdict"`
 	Command   []string      `json:"command"`
+	ProcessID int           `json:"process_id"`
 	ExitCode  int           `json:"exit_code"`
 	Duration  time.Duration `json:"duration_ns"`
 	Summary   string        `json:"summary"`
@@ -125,7 +126,7 @@ func (r *Registry) Run(ctx context.Context, root string) []Evidence {
 		contextErr := checkCtx.Err()
 		cancel()
 		cleanup()
-		evidence := Evidence{Key: check.Key, Verdict: Pass, Command: append([]string{check.Binary}, args...), ExitCode: result.ExitCode, Duration: result.Duration, StartedAt: started}
+		evidence := Evidence{Key: check.Key, Verdict: Pass, Command: append([]string{check.Binary}, args...), ProcessID: result.ProcessID, ExitCode: result.ExitCode, Duration: result.Duration, StartedAt: started}
 		summary := strings.TrimSpace(strings.Join([]string{result.Stdout, result.Stderr}, "\n"))
 		if len(summary) > 500 {
 			summary = summary[:500] + "…"

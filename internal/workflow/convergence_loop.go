@@ -13,7 +13,7 @@ import (
 	"github.com/spectide/spectide/internal/speckit"
 )
 
-func (e *Engine) liveConvergenceHooks(run model.Run, decisions map[string]config.Decision, installation speckit.Installation, featureDir string, gateVerdicts map[string]string, budget *LoopBudget) ConvergenceHooks {
+func (e *Engine) liveConvergenceHooks(run model.Run, phase string, decisions map[string]config.Decision, installation speckit.Installation, featureDir string, gateVerdicts map[string]string, budget *LoopBudget) ConvergenceHooks {
 	implementRoute := decisions["implement"].Route
 	convergeRoute := decisions["converge"].Route
 	hooks := ConvergenceHooks{
@@ -29,7 +29,11 @@ func (e *Engine) liveConvergenceHooks(run model.Run, decisions map[string]config
 			return ConvergenceSnapshot{SpecificationPath: filepath.Clean(path), TaskLedger: string(content), GateVerdicts: cloneVerdicts(gateVerdicts)}, nil
 		},
 		Converge: func(ctx context.Context) (string, error) {
-			evidence, cancelled, err := e.runLiveStageWithControl(ctx, run, "converge", convergeRoute, run.Prompt, installation, featureDir)
+			stagePhase := "convergence"
+			if phase == "final_review" {
+				stagePhase = "final_review_convergence"
+			}
+			evidence, cancelled, err := e.runLiveStageWithControlPhase(ctx, run, "converge", stagePhase, convergeRoute, run.Prompt, installation, featureDir)
 			if err != nil {
 				if cancelled {
 					return "", context.Canceled
@@ -51,14 +55,14 @@ func (e *Engine) liveConvergenceHooks(run model.Run, decisions map[string]config
 			for _, task := range tasks {
 				prompt += "- " + security.Redact(task) + "\n"
 			}
-			_, cancelled, err := e.runLiveStageWithControl(ctx, run, "implement", implementRoute, prompt, installation, featureDir)
+			_, cancelled, err := e.runLiveStageWithControlPhase(ctx, run, "implement", phase+"_implementation", implementRoute, prompt, installation, featureDir)
 			if cancelled {
 				return context.Canceled
 			}
 			return err
 		},
 		Test: func(ctx context.Context) (map[string]string, error) {
-			verdicts, err := e.runTestRepairLoop(ctx, run, decisions, installation, featureDir, budget)
+			verdicts, err := e.runTestRepairLoop(ctx, run, phase, decisions, installation, featureDir, budget)
 			if persistErr := persistTestVerdicts(ctx, e.store, run.ID, verdicts); persistErr != nil {
 				return verdicts, persistErr
 			}
@@ -80,7 +84,7 @@ func (e *Engine) runLiveConvergenceLoop(ctx context.Context, run model.Run, deci
 	if decisions["converge"].Route.Provider == "fake" || decisions["implement"].Route.Provider == "fake" {
 		return fmt.Errorf("CONVERGENCE_ADAPTER_UNAVAILABLE")
 	}
-	converged, err := RunConvergenceWithBudget(ctx, e.liveConvergenceHooks(run, decisions, installation, featureDir, gateVerdicts, budget), budget, DefaultLoopLimits())
+	converged, err := RunConvergenceWithBudget(ctx, e.liveConvergenceHooks(run, "convergence", decisions, installation, featureDir, gateVerdicts, budget), budget, DefaultLoopLimits())
 	if err != nil {
 		return err
 	}
@@ -94,12 +98,12 @@ func (e *Engine) runLiveFinalReviewLoop(ctx context.Context, run model.Run, deci
 	if decisions["final_review"].Route.Provider == "fake" || decisions["implement"].Route.Provider == "fake" || decisions["converge"].Route.Provider == "fake" {
 		return fmt.Errorf("FINAL_REVIEW_ADAPTER_UNAVAILABLE")
 	}
-	convergence := e.liveConvergenceHooks(run, decisions, installation, featureDir, gateVerdicts, budget)
+	convergence := e.liveConvergenceHooks(run, "final_review", decisions, installation, featureDir, gateVerdicts, budget)
 	hooks := FinalReviewHooks{
 		Convergence: convergence,
 		Review: func(ctx context.Context) ([]string, error) {
 			prompt := run.Prompt + "\n\nPerform a read-only final review of implementation against the canonical specification, plan, task ledger, and required quality gates. Return findings in the Spec-Kit Specification Analysis Report format. Do not edit files."
-			evidence, cancelled, err := e.runLiveStageWithControl(ctx, run, "analyze", decisions["final_review"].Route, prompt, installation, featureDir)
+			evidence, cancelled, err := e.runLiveStageWithControlPhase(ctx, run, "analyze", "final_review", decisions["final_review"].Route, prompt, installation, featureDir)
 			if cancelled {
 				return nil, context.Canceled
 			}
@@ -128,7 +132,7 @@ func (e *Engine) runLiveFinalReviewLoop(ctx context.Context, run model.Run, deci
 				prompt.WriteString(security.Redact(finding))
 				prompt.WriteByte('\n')
 			}
-			_, cancelled, err := e.runLiveStageWithControl(ctx, run, "implement", decisions["implement"].Route, prompt.String(), installation, featureDir)
+			_, cancelled, err := e.runLiveStageWithControlPhase(ctx, run, "implement", "final_review_fix", decisions["implement"].Route, prompt.String(), installation, featureDir)
 			if cancelled {
 				return context.Canceled
 			}

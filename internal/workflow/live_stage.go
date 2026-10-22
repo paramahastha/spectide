@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,6 +21,10 @@ import (
 )
 
 func (e *Engine) runLiveStageWithControl(ctx context.Context, run model.Run, stage string, route config.Route, prompt string, installation speckit.Installation, featureDir string) (map[string]any, bool, error) {
+	return e.runLiveStageWithControlPhase(ctx, run, stage, stage, route, prompt, installation, featureDir)
+}
+
+func (e *Engine) runLiveStageWithControlPhase(ctx context.Context, run model.Run, stage, phase string, route config.Route, prompt string, installation speckit.Installation, featureDir string) (map[string]any, bool, error) {
 	child, cancel := context.WithCancel(ctx)
 	defer cancel()
 	stop := make(chan struct{})
@@ -43,7 +48,7 @@ func (e *Engine) runLiveStageWithControl(ctx context.Context, run model.Run, sta
 			}
 		}
 	}()
-	evidence, err := e.runLiveStagePrompt(child, run, stage, route, prompt, installation, featureDir)
+	evidence, err := e.runLiveStagePromptPhase(child, run, stage, phase, route, prompt, installation, featureDir)
 	close(stop)
 	<-done
 	if err != nil {
@@ -62,6 +67,10 @@ func (e *Engine) runLiveStage(ctx context.Context, run model.Run, stage string, 
 }
 
 func (e *Engine) runLiveStagePrompt(ctx context.Context, run model.Run, stage string, route config.Route, prompt string, installation speckit.Installation, featureDir string) (map[string]any, error) {
+	return e.runLiveStagePromptPhase(ctx, run, stage, stage, route, prompt, installation, featureDir)
+}
+
+func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, stage, phase string, route config.Route, prompt string, installation speckit.Installation, featureDir string) (map[string]any, error) {
 	adapter := e.adapters[adapters.ProviderName(route.Provider)]
 	if adapter == nil {
 		return nil, fmt.Errorf("PROVIDER_ADAPTER_UNAVAILABLE: %s", route.Provider)
@@ -116,14 +125,49 @@ func (e *Engine) runLiveStagePrompt(ctx context.Context, run model.Run, stage st
 		request.InheritedFiles = []*os.File{processLock.File()}
 	}
 	e.mu.Unlock()
-	result, err := speckit.ExecuteStage(ctx, installation, adapter, request, stage, prompt)
+	attempt, err := e.store.StartExecutionAttempt(ctx, model.ExecutionAttempt{RunID: run.ID, Stage: stage, Phase: phase, Provider: route.Provider, Profile: route.Profile, Model: route.Model, Effort: route.Effort})
 	if err != nil {
 		return nil, err
 	}
-	for _, event := range result.Events {
-		if err := e.store.Event(ctx, run.ID, stage, "provider."+safeProviderEventType(event.Type), "info", map[string]any{"summary": security.Redact(event.Summary), "execution": "LIVE"}); err != nil {
-			return nil, err
+	result, runErr := speckit.ExecuteStage(ctx, installation, adapter, request, stage, prompt)
+	status := "SUCCEEDED"
+	if runErr != nil {
+		status = "FAILED"
+		if ctx.Err() != nil {
+			status = "CANCELLED"
 		}
+	}
+	stdoutHash, stderrHash := hashString(result.Process.Stdout), hashString(result.Process.Stderr)
+	eventTypes := make([]string, 0, len(result.Events))
+	for _, event := range result.Events {
+		eventTypes = append(eventTypes, safeProviderEventType(event.Type))
+		if err := e.store.Event(ctx, run.ID, stage, "provider."+safeProviderEventType(event.Type), "info", map[string]any{"summary": security.Redact(event.Summary), "execution": "LIVE"}); err != nil {
+			runErr = err
+			status = "FAILED"
+			break
+		}
+	}
+	attempt.ProcessID = result.Process.ProcessID
+	attempt.DurationMillis = result.Process.Duration.Milliseconds()
+	attempt.ExitCode = result.Process.ExitCode
+	finishedAt := result.Process.FinishedAt
+	if finishedAt.IsZero() {
+		finishedAt = time.Now().UTC()
+	}
+	attempt.FinishedAt = &finishedAt
+	attempt.Result = status
+	attempt.StdoutSHA256 = stdoutHash
+	attempt.StderrSHA256 = stderrHash
+	if runErr != nil {
+		attempt.Error = safeStageError(runErr)
+	}
+	evidenceJSON, _ := json.Marshal(map[string]any{"event_types": eventTypes, "event_count": len(result.Events), "stdout_sha256": stdoutHash, "stderr_sha256": stderrHash})
+	attempt.EvidenceJSON = string(evidenceJSON)
+	if err = e.store.CompleteExecutionAttempt(context.Background(), attempt); err != nil {
+		return nil, err
+	}
+	if runErr != nil {
+		return nil, runErr
 	}
 	evidence := map[string]any{"provider": route.Provider, "profile": route.Profile, "event_count": len(result.Events), "duration_ms": result.Process.Duration.Milliseconds()}
 	switch stage {
@@ -164,6 +208,14 @@ func (e *Engine) runLiveStagePrompt(ctx context.Context, run model.Run, stage st
 	}
 	evidence["_stage_output"] = result.Process.Stdout
 	return evidence, nil
+}
+
+func hashString(value string) string {
+	if value == "" {
+		return ""
+	}
+	digest := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(digest[:])
 }
 
 func fingerprintArtifacts(featureDir string) (string, error) {

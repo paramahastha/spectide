@@ -65,14 +65,67 @@ type Event struct {
 }
 
 type Report struct {
-	Run           Run               `json:"run"`
-	Configuration *RunConfiguration `json:"configuration,omitempty"`
-	Stages        []Stage           `json:"stages"`
-	Decisions     []RoutingDecision `json:"routing_decisions"`
-	Gates         []Gate            `json:"gates"`
-	Artifacts     []Artifact        `json:"artifacts"`
-	Checkpoints   []Checkpoint      `json:"checkpoints"`
-	Approvals     []Approval        `json:"approvals"`
+	Run               Run                `json:"run"`
+	Configuration     *RunConfiguration  `json:"configuration,omitempty"`
+	Stages            []Stage            `json:"stages"`
+	Attempts          []ExecutionAttempt `json:"execution_attempts"`
+	QualityExecutions []QualityExecution `json:"quality_executions"`
+	Decisions         []RoutingDecision  `json:"routing_decisions"`
+	Gates             []Gate             `json:"gates"`
+	Artifacts         []Artifact         `json:"artifacts"`
+	Checkpoints       []Checkpoint       `json:"checkpoints"`
+	Approvals         []Approval         `json:"approvals"`
+}
+
+// ExecutionAttempt records one actual or attempted provider invocation. Its
+// identity/route are fixed at creation; only the RUNNING result is finalized.
+type ExecutionAttempt struct {
+	ID                 string     `json:"id"`
+	RunID              string     `json:"run_id"`
+	Stage              string     `json:"stage"`
+	Phase              string     `json:"phase"`
+	Iteration          int        `json:"iteration"`
+	Provider           string     `json:"provider"`
+	Profile            string     `json:"profile"`
+	Model              string     `json:"model"`
+	Effort             string     `json:"effort,omitempty"`
+	StartedAt          time.Time  `json:"started_at"`
+	FinishedAt         *time.Time `json:"finished_at,omitempty"`
+	StartEventSeq      int64      `json:"start_event_seq"`
+	CompletionEventSeq int64      `json:"completion_event_seq,omitempty"`
+	ProcessID          int        `json:"process_id,omitempty"`
+	DurationMillis     int64      `json:"duration_ms"`
+	ExitCode           int        `json:"exit_code"`
+	Result             string     `json:"result"`
+	Error              string     `json:"error,omitempty"`
+	StdoutSHA256       string     `json:"stdout_sha256,omitempty"`
+	StderrSHA256       string     `json:"stderr_sha256,omitempty"`
+	EvidenceJSON       string     `json:"evidence_json"`
+	ArtifactIDs        []string   `json:"artifact_ids,omitempty"`
+}
+
+type QualityExecution struct {
+	ID                 string          `json:"id"`
+	RunID              string          `json:"run_id"`
+	Phase              string          `json:"phase"`
+	Iteration          int             `json:"iteration"`
+	ProcessID          int             `json:"process_id"`
+	StartedAt          time.Time       `json:"started_at"`
+	FinishedAt         time.Time       `json:"finished_at"`
+	CompletionEventSeq int64           `json:"completion_event_seq"`
+	Verdict            string          `json:"verdict"`
+	Results            []QualityResult `json:"results"`
+}
+
+type QualityResult struct {
+	Key       string        `json:"key"`
+	Verdict   string        `json:"verdict"`
+	Command   []string      `json:"command"`
+	ProcessID int           `json:"process_id"`
+	ExitCode  int           `json:"exit_code"`
+	Duration  time.Duration `json:"duration_ns"`
+	Summary   string        `json:"summary"`
+	StartedAt time.Time     `json:"started_at"`
 }
 
 type RoutingDecision struct {

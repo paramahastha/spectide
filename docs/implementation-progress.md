@@ -491,6 +491,12 @@
 - Workflow persistence callers check stage, routing, quality, and event writes; a failed quality-event write cannot produce a completed simulated run. Test verdict persistence is deterministic by check key and propagates errors through test and convergence loops.
 - SQLite trigger-based fault injection verifies rollback for each target mutation when its event insert fails; replay tests verify contiguous sequence numbers. Focused store/workflow acceptance tests and full `make verify` passed, including Go vet/tests, dashboard typecheck/tests/build, binary build, secret scan, and offline smoke. Latest SC-001: 22.043 ms; smoke remained `SIMULATED`. T057 is complete; T058 is next. T031, T045, and T046 remain open.
 
+### Phase checkpoint — durable invocation and quality histories (T058)
+
+- Added schema 9 for provider execution attempts and append-only quality execution/check results. Each live invocation has a start record, then one terminal update and completion event in a shared transaction. Records distinguish canonical stage from loop phase and iteration, retain provider/profile/model/effort, process ID, timestamps, duration, exit/result, safe error, redacted evidence JSON, stdout/stderr hashes, and reserved artifact links. Raw provider output is not persisted.
+- The live quality loop records each check pass with check key, sanitized command, subprocess PID, exit code, duration, verdict, and redacted summary. Test repairs, convergence tests, and final-review tests get separate phase histories. Reports expose both provider attempts and quality histories. Retention/restore schema support was updated to version 9.
+- Tests cover attempt iteration, completion-event rollback, immutable/delete guards, quality result redaction and history, event-sequence links, and report exposure for a fixture-backed live workflow. Focused store/workflow/runner/API tests and full `make verify` passed, including static analysis, all Go suites, dashboard typecheck/tests/build, binary build, secret scan, and offline smoke. Latest SC-001: 21.473 ms; smoke remained `SIMULATED`. T058 is complete; T059 is next. T031, T045, and T046 remain open.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified
