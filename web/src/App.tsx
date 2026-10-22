@@ -136,6 +136,17 @@ export function App() {
     }
   }
 
+  async function runControl(action: 'pause' | 'resume') {
+    if (!selected) return
+    try {
+      await api(`/api/v1/runs/${encodeURIComponent(selected)}/${action}`, { method: 'POST' })
+      setMessage(`${action === 'pause' ? 'Pause' : 'Resume'} requested`)
+      await refresh()
+    } catch (error) {
+      setMessage(`Unable to ${action} run: ${String(error)}`)
+    }
+  }
+
   return (
     <div className="layout">
       <aside className="rail">
@@ -178,7 +189,7 @@ export function App() {
             </section>
 
             <section className="panel detail-panel" aria-live="polite">
-              <div className="panel-head"><div><div className="eyebrow">OBSERVED WORKFLOW</div><h2>{selectedRun ? <>Run <code>{selectedRun.id.slice(0, 8)}</code></> : 'Run detail'}</h2></div>{selectedRun && <div className="detail-actions"><span className={`state-pill ${runTone(selectedRun.state)}`}>{selectedRun.state}</span>{['RUNNING', 'PAUSED'].includes(selectedRun.state) && <button className="button button-danger" onClick={() => void cancelRun()}>Cancel run</button>}</div>}</div>
+              <div className="panel-head"><div><div className="eyebrow">OBSERVED WORKFLOW</div><h2>{selectedRun ? <>Run <code>{selectedRun.id.slice(0, 8)}</code></> : 'Run detail'}</h2></div>{selectedRun && <div className="detail-actions"><span className={`state-pill ${runTone(selectedRun.state)}`}>{selectedRun.state}</span>{selectedRun.state === 'RUNNING' && <button className="button button-secondary control-button" onClick={() => void runControl('pause')}>Pause</button>}{selectedRun.state === 'PAUSED' && <button className="button button-secondary control-button" onClick={() => void runControl('resume')}>Resume</button>}{['RUNNING', 'PAUSED'].includes(selectedRun.state) && <button className="button button-danger" onClick={() => void cancelRun()}>Cancel run</button>}</div>}</div>
               {!report ? <div className="empty-inline">Select a run to inspect its stages, routes, and evidence.</div> : <>
                 <div className="run-context"><span className="context-label">TASK</span><span>{report.run.prompt}</span><span className="context-label">PROJECT</span><code>{report.run.project}</code></div>
                 <div className="stage-list">{report.stages.map((stage, index) => <div className="stage-row" key={stage.id}><span className={stage.state === 'SUCCEEDED' ? 'stage-index complete' : 'stage-index'}>{stage.state === 'SUCCEEDED' ? '✓' : String(index + 1).padStart(2, '0')}</span><strong>{stage.key.replaceAll('_', ' ')}</strong><span className="stage-route">{stage.provider} <i>/</i> {stage.profile} <i>·</i> {stage.model || 'default'} <i>·</i> attempt {stage.attempt}</span><span className={`stage-state ${stage.state === 'SUCCEEDED' ? 'good' : ''}`}>{stage.state}</span></div>)}</div>

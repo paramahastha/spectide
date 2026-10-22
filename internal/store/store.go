@@ -71,6 +71,15 @@ func (s *Store) migrate() error {
 		if _, err = tx.Exec(`INSERT INTO schema_migrations(version,applied_at) VALUES(2,?)`, now().Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
+		version = 2
+	}
+	if version < 3 {
+		if _, err = tx.Exec(schemaV3); err != nil {
+			return fmt.Errorf("apply schema migration 3: %w", err)
+		}
+		if _, err = tx.Exec(`INSERT INTO schema_migrations(version,applied_at) VALUES(3,?)`, now().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -80,6 +89,9 @@ var schemaV1 string
 
 //go:embed migrations/002_idempotency.sql
 var schemaV2 string
+
+//go:embed migrations/003_run_controls.sql
+var schemaV3 string
 
 func now() time.Time { return time.Now().UTC().Round(0) }
 func parse(v string) *time.Time {

@@ -15,10 +15,11 @@
 - Dashboard now displays persisted run routes, stage progress, quality gates, activity events, and cancel control. All displayed run data comes from the local API.
 - `go test ./...` and `make build` passed after these changes.
 
-**Spec-Kit gate status**
+**Spec-Kit gate status at this checkpoint**
 
 - Existing Spec-Kit 1.2.2.dev0 and integration command artifacts are present. `specify check` reports Claude Code, Codex CLI, and OpenCode available.
-- The OpenCode invocation attempt could not start because its log path is outside the writable workspace (`EPERM`); no model/provider run was started. The analyze/converge agent commands still need to be executed in a compatible agent runtime. Do not mark this gate passed.
+- The initial OpenCode invocation could not start because its log path is outside the writable workspace (`EPERM`). Later, OpenCode returned an upstream 503 for analyze; the installed Codex CLI executed the exact Spec-Kit analyze instruction in read-only mode and recorded its report in `specs/001-build-spectide/analysis.md`.
+- T044 is complete in commit `57642cd`. Converge remains an end-of-implementation quality gate.
 
 **Commit status**
 
@@ -146,11 +147,26 @@
 
 - Config write/update endpoints, API action idempotency beyond run creation, and a real socket slow-reader throughput measurement remain open. Full recovery and live provider workflow execution remain unavailable.
 
-### Earlier checkpoint summary
+### Phase checkpoint — cross-process run controls
+
+**Verified in this checkpoint**
+
+- Added migration 3 for durable run control requests.
+- The workflow now supports pause/resume at stage boundaries and during a stage wait, while preserving remaining simulated stage time. Control requests from a separate CLI process are polled from SQLite; cancellation is also observed cross-process.
+- Added `spectide pause RUN_ID`, active-run `spectide resume RUN_ID`, and local API pause/resume routes. Resume still refuses runs without an active worker and verified checkpoint; restart recovery is not claimed.
+- Added a cross-engine test that pauses, resumes, then cancels runs through a separate workflow controller. `go test ./internal/workflow ./internal/store ./internal/api ./internal/cli` passed.
+
+**Remaining**
+
+- Recovery after owner-process termination, checkpoint fingerprint drift checks, and safe resume after restart remain incomplete.
+- Full Go validation, lint, frontend tests/build, production Go build, and `git diff --check` passed for this checkpoint.
+- T034 remains open because process reconciliation, safe restart resume, and checkpoint drift detection are not implemented.
+
+### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified
 
-- One master feature specification, plan, data model, contract, task ledger, and checklist are present under `specs/001-build-spectide/`. A formal Spec-Kit analyze report has not been produced yet.
+- One master feature specification, plan, data model, contract, task ledger, checklist, and analyze report are present under `specs/001-build-spectide/`.
 - Go module, Cobra binary, SQLite WAL-backed run/stage/event/gate persistence, deterministic simulated lifecycle, baseline loopback API, SSE replay, embedded dashboard shell, and API security baseline are implemented.
 - `go test ./...`, `make build`, and the foreground offline demo completed successfully in this environment.
 
@@ -160,7 +176,7 @@
 - The earlier doctor run discovered Codex and OpenCode executables but did not authenticate or execute them. `specify check` later reported Claude Code, Codex CLI, and OpenCode available.
 - The first aborted demo run was correctly retained as `CREATED`; no false completion was recorded. Foreground demo behavior was then corrected and produces a completed, evidenced simulated run.
 
-### Immediate next work
+### Initial implementation sequence (historical)
 
 1. Implement profile/configuration, routing, authorization, and workspace lock foundations.
 2. Implement provider adapter interface, sanitized runner, synthetic fixtures, and real capability-gated invocation builders.

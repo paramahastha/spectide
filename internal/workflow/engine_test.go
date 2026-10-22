@@ -146,3 +146,52 @@ func TestEngineDoesNotSilentlySimulateLiveRoute(t *testing.T) {
 		t.Fatalf("live configuration created a run that it cannot execute: %+v", runs)
 	}
 }
+
+func TestRunCanPauseResumeAndCancelFromAnotherEngine(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	owner := New(s)
+	control := New(s) // Models a separate CLI process sharing the durable store.
+	run, err := owner.Start(context.Background(), t.TempDir(), "pause and resume")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForState := func(id string, state model.RunState) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			got, getErr := s.GetRun(context.Background(), id)
+			if getErr == nil && got.State == state {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		got, _ := s.GetRun(context.Background(), id)
+		t.Fatalf("run %s state=%s, expected %s", id, got.State, state)
+	}
+	waitForState(run.ID, model.Running)
+	if err = control.Pause(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitForState(run.ID, model.Paused)
+	if err = control.Resume(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitForState(run.ID, model.Running)
+
+	toCancel, err := owner.Start(context.Background(), t.TempDir(), "cross process cancellation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForState(toCancel.ID, model.Running)
+	if err = control.Cancel(context.Background(), toCancel.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitForState(toCancel.ID, model.Cancelled)
+	if _, err = owner.Wait(context.Background(), run.ID); err != nil {
+		t.Fatal(err)
+	}
+}

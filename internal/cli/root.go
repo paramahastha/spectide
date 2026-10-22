@@ -135,8 +135,21 @@ func Root() *cobra.Command {
 		defer a.Close()
 		return a.Engine.Cancel(context.Background(), args[0])
 	}})
+	root.AddCommand(&cobra.Command{Use: "pause RUN_ID", Args: cobra.ExactArgs(1), Short: "Pause an active run at a safe stage boundary", RunE: func(c *cobra.Command, args []string) error {
+		a, e := open()
+		if e != nil {
+			return e
+		}
+		defer a.Close()
+		return a.Engine.Pause(args[0])
+	}})
 	root.AddCommand(&cobra.Command{Use: "resume RUN_ID", Args: cobra.ExactArgs(1), Short: "Resume a safely checkpointed run", RunE: func(c *cobra.Command, args []string) error {
-		return fmt.Errorf("RESUME_UNAVAILABLE: run %s has no verified safe checkpoint", args[0])
+		a, e := open()
+		if e != nil {
+			return e
+		}
+		defer a.Close()
+		return a.Engine.Resume(args[0])
 	}})
 	root.AddCommand(&cobra.Command{Use: "dashboard", Short: "Print the local dashboard URL", Run: func(c *cobra.Command, _ []string) {
 		fmt.Fprintln(c.OutOrStdout(), "Start `spectide serve` then open http://127.0.0.1:4747")

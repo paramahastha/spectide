@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -283,8 +282,27 @@ func (s *Server) run(w http.ResponseWriter, r *http.Request) {
 			apiError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 			return
 		}
-		_ = s.Engine.Cancel(context.Background(), id)
+		if err := s.Engine.Cancel(r.Context(), id); err != nil {
+			apiError(w, http.StatusConflict, "RUN_CONTROL_REJECTED", err.Error())
+			return
+		}
 		jsonOut(w, 202, map[string]string{"status": "cancellation requested"})
+	case "pause", "resume":
+		if r.Method != http.MethodPost {
+			apiError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+			return
+		}
+		var err error
+		if parts[1] == "pause" {
+			err = s.Engine.Pause(id)
+		} else {
+			err = s.Engine.Resume(id)
+		}
+		if err != nil {
+			apiError(w, http.StatusConflict, "RUN_CONTROL_REJECTED", err.Error())
+			return
+		}
+		jsonOut(w, http.StatusAccepted, map[string]string{"status": parts[1] + " requested"})
 	case "report":
 		rep, e := s.Store.Report(r.Context(), id)
 		if e != nil {
