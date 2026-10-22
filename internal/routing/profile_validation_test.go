@@ -32,3 +32,32 @@ func TestValidateProfileRoutesChecksExistenceProviderAndScope(t *testing.T) {
 		t.Fatalf("outside-scope profile error=%v", err)
 	}
 }
+
+func TestValidateProfileCapabilitiesRequiresVerifiedAuthorization(t *testing.T) {
+	project := t.TempDir()
+	cfg := config.Default()
+	cfg.DefaultRoute = config.Route{Provider: "codex", Profile: "local-codex"}
+	profile := model.Profile{Name: "local-codex", Provider: "codex", AllowedScopes: []string{project}}
+	if err := ValidateProfileCapabilities(cfg, []model.Profile{profile}); err == nil || !strings.Contains(err.Error(), "PROFILE_CAPABILITY_NOT_PROBED") {
+		t.Fatalf("missing capability error=%v", err)
+	}
+	profile.Capability = &model.ProfileCapability{Provider: "codex", ExecutableFound: true, Version: "1.2.3", Authenticated: "NOT_PROBED", ReadOnlyExecution: true, WorkspaceWrite: true}
+	if err := ValidateProfileCapabilities(cfg, []model.Profile{profile}); err == nil || !strings.Contains(err.Error(), "PROFILE_AUTHENTICATION_NOT_VERIFIED") {
+		t.Fatalf("unprobed authentication error=%v", err)
+	}
+	profile.Capability.Authenticated = "AUTHENTICATED"
+	if err := ValidateProfileCapabilities(cfg, []model.Profile{profile}); err != nil {
+		t.Fatalf("complete capability rejected: %v", err)
+	}
+
+	cfg.StageRoutes = map[string]config.Route{"analyze": {Provider: "codex", Profile: "local-codex", Effort: "high"}}
+	profile.Capability.EffortOverride = "unsupported"
+	if err := ValidateProfileCapabilities(cfg, []model.Profile{profile}); err == nil || !strings.Contains(err.Error(), "EFFORT_OVERRIDE_UNSUPPORTED") {
+		t.Fatalf("unsupported effort error=%v", err)
+	}
+	profile.Capability.EffortOverride = "verified"
+	profile.Capability.ReadOnlyExecution = false
+	if err := ValidateProfileCapabilities(cfg, []model.Profile{profile}); err == nil || !strings.Contains(err.Error(), "READ_ONLY_EXECUTION_UNVERIFIED") {
+		t.Fatalf("unverified read-only error=%v", err)
+	}
+}

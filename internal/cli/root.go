@@ -21,6 +21,16 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func persistedCapability(c adapters.Capability) model.ProfileCapability {
+	return model.ProfileCapability{
+		Provider: string(c.Provider), ExecutableFound: c.ExecutableFound, Version: c.Version,
+		Authenticated: c.Authenticated, StreamingEvents: c.StreamingEvents,
+		ModelOverride: c.ModelOverride, EffortOverride: c.EffortOverride,
+		ReadOnlyExecution: c.ReadOnlyExecution, WorkspaceWrite: c.WorkspaceWrite,
+		Warnings: c.Warnings,
+	}
+}
+
 func Root() *cobra.Command {
 	var db string
 	root := &cobra.Command{Use: "spectide", Short: "Local, evidence-backed Spec-Kit orchestration", SilenceUsage: true}
@@ -319,6 +329,9 @@ func Root() *cobra.Command {
 			if probeErr != nil {
 				return probeErr
 			}
+			if _, probeErr = a.Store.SaveProfileCapability(c.Context(), profile.Name, persistedCapability(capability)); probeErr != nil {
+				return probeErr
+			}
 			return json.NewEncoder(c.OutOrStdout()).Encode(capability)
 		}
 		return fmt.Errorf("PROFILE_NOT_FOUND: %s", args[0])
@@ -352,6 +365,9 @@ func Root() *cobra.Command {
 			}
 			capability, probeErr := adapters.ProbeBinary(adapters.Profile{Provider: adapters.ProviderName(profile.Provider), Executable: profile.Executable})
 			if probeErr != nil {
+				return probeErr
+			}
+			if _, probeErr = a.Store.SaveProfileCapability(c.Context(), profile.Name, persistedCapability(capability)); probeErr != nil {
 				return probeErr
 			}
 			return json.NewEncoder(c.OutOrStdout()).Encode(map[string]any{"profile": profile.Name, "executable_version": capability.Version, "authentication": "NOT_PROBED", "model_catalog": "NOT_PROBED"})

@@ -37,3 +37,54 @@ func ValidateProfileRoutes(cfg config.Config, project string, profiles []model.P
 	}
 	return nil
 }
+
+// ValidateProfileCapabilities denies live routes unless persisted probe
+// evidence authorizes the requested model, effort, and execution mode.
+func ValidateProfileCapabilities(cfg config.Config, profiles []model.Profile) error {
+	byName := make(map[string]model.Profile, len(profiles))
+	for _, profile := range profiles {
+		byName[profile.Name] = profile
+	}
+	for _, stage := range config.StageKeys {
+		decision, err := cfg.Resolve(stage, "")
+		if err != nil {
+			return err
+		}
+		if decision.Route.Provider == "fake" {
+			continue
+		}
+		profile, ok := byName[decision.Route.Profile]
+		if !ok {
+			return fmt.Errorf("PROFILE_NOT_FOUND: %s for %s", decision.Route.Profile, stage)
+		}
+		capability := profile.Capability
+		if capability == nil {
+			return fmt.Errorf("PROFILE_CAPABILITY_NOT_PROBED: %s", profile.Name)
+		}
+		if capability.Provider != decision.Route.Provider || capability.Provider != profile.Provider {
+			return fmt.Errorf("CAPABILITY_PROVIDER_MISMATCH: %s", profile.Name)
+		}
+		if !capability.ExecutableFound || capability.Version == "" {
+			return fmt.Errorf("CAPABILITY_NOT_VERIFIED: %s", profile.Name)
+		}
+		if capability.Authenticated != "AUTHENTICATED" {
+			if capability.Authenticated == "UNAUTHENTICATED" {
+				return fmt.Errorf("PROFILE_UNAUTHENTICATED: %s", profile.Name)
+			}
+			return fmt.Errorf("PROFILE_AUTHENTICATION_NOT_VERIFIED: %s", profile.Name)
+		}
+		if decision.Route.Model != "" && !capability.ModelOverride {
+			return fmt.Errorf("MODEL_OVERRIDE_UNSUPPORTED: %s", profile.Name)
+		}
+		if decision.Route.Effort != "" && capability.EffortOverride != "verified" {
+			return fmt.Errorf("EFFORT_OVERRIDE_UNSUPPORTED: %s", profile.Name)
+		}
+		if stage == "analyze" && !capability.ReadOnlyExecution {
+			return fmt.Errorf("READ_ONLY_EXECUTION_UNVERIFIED: %s", profile.Name)
+		}
+		if stage == "implement" && !capability.WorkspaceWrite {
+			return fmt.Errorf("WORKSPACE_WRITE_UNVERIFIED: %s", profile.Name)
+		}
+	}
+	return nil
+}

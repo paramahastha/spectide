@@ -1488,6 +1488,22 @@ Implement scope as a deny-first policy. Explicit exceptions must be documented a
 
 **How to use these phases:** The coding agent creates **one overarching `spec.md`** from this document and one dependency-ordered `tasks.md` containing all P0 deliverables. The phases below are the implementation schedule within that **single specification**. Every phase produces executable, testable artifacts. **Do not stop after a phase unless the agent is blocked or the tool context/runtime requires a safe checkpoint; resume from the same spec.**
 
+**Execution checklist authority (reviewed 22 October 2026):** The detailed, task-by-task checklist is [the existing master ledger](specs/001-build-spectide/tasks.md); it is the source of truth and is not regenerated here. The checklist in §23 is a high-level acceptance mirror. A checked item means all of that item’s stated acceptance is verified, not merely that its foundation exists. The current checkpoint and evidence are in [implementation progress](docs/implementation-progress.md) and [the acceptance ledger](docs/acceptance-ledger.md).
+
+### Current execution checklist — 22 October 2026
+
+- [x] One master product specification, plan, and dependency-ordered task ledger are maintained under `specs/001-build-spectide/`; implementation continues against that feature.
+- [x] The Go and dashboard source build, lint/typecheck, unit tests, secret scan, and offline smoke pass through `make verify`.
+- [x] The offline fake-provider demo is labeled `SIMULATED`; provider probes do not claim authentication or live execution.
+- [x] Profile capability snapshots persist with redaction and profile-edit invalidation; route preview and launch deny unverified live profiles before creating a run.
+- [ ] Complete T024 fallback authorization and full routing-policy acceptance.
+- [ ] Integrate official Spec-Kit/provider stages and bounded analyze, test-repair, and convergence loops into persisted run outcomes (T014, T016, T035).
+- [ ] Complete verified restart recovery and cross-layer failure/secret-leak acceptance (T034, T036).
+- [ ] Complete browser page/state and accessibility evidence, screenshots, and the final release report (T031, T046).
+- [ ] Run official Spec-Kit convergence and resolve any appended tasks (T045); no official converge result is claimed yet.
+
+The detailed phase checklists below remain the full blueprint. Their original bootstrap steps are not re-executed; use the canonical ledger for current task completion and resume at the next unchecked dependency.
+
 ### Phase 0 — Constitution, requirements, and repository setup
 
 **Objective:** Establish stable product boundaries and verified execution baseline.
@@ -2037,7 +2053,7 @@ Verify the dashboard at `http://127.0.0.1:4747` and check whether it displays ac
 
 ### Spec-Kit workflows
 
-- [ ] One master product specification drives development, without separate product re-specifications.
+- [x] One master product specification drives development, without separate product re-specifications.
 - [ ] Full canonical stage support implemented; stage skipping follows explicit policy.
 - [ ] Analyze remediation routes to correct earlier artifacts and verifies no mutations during analyze.
 - [ ] Converge appends tasks and loops back to implementation/tests.
@@ -2054,13 +2070,13 @@ Verify the dashboard at `http://127.0.0.1:4747` and check whether it displays ac
 
 ### Engineering quality
 
-- [ ] Go and frontend build cleanly.
+- [x] Go and frontend build cleanly.
 - [ ] Required backend/frontend/e2e suites pass.
 - [ ] State-machine, SSE and recovery scenarios pass.
 - [ ] Loopback API security and redaction scenarios pass.
 - [ ] CI passes primary supported platform matrix.
-- [ ] README commands actually work and offline demo needs no subscription.
-- [ ] Security docs and honest provider limitations exist.
+- [x] README documents the offline fake-provider demo, which runs without provider authentication.
+- [x] Security docs and honest provider limitations exist.
 - [ ] Cross-profile sample and screenshot available.
 
 ### Final acceptance report (required format)

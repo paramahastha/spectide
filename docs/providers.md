@@ -1,6 +1,6 @@
 # Provider readiness
 
-SpecTide includes a deterministic fake provider and fixture-backed contracts for Claude Code, Codex, and OpenCode adapters. The current workflow executor only runs the simulated route. Configured live routes are checked for a stored profile, provider match, and project scope, then recorded as `BLOCKED` with `NOT_RUN` evidence until verified authenticated execution is integrated.
+SpecTide includes a deterministic fake provider and fixture-backed contracts for Claude Code, Codex, and OpenCode adapters. Version-only profile probes persist a non-secret capability snapshot; editing a profile invalidates that snapshot. Route preview and run launch require a matching executable/version, an explicit authenticated state, and the requested model, effort, read-only, and write capabilities. Current probes leave authentication as `NOT_PROBED` and do not verify read-only/write behavior, so those live routes are denied before run creation. The current workflow executor still only runs the simulated route.
 
 Check local tool discovery with `spectide doctor`. Inspect or add a profile with `spectide profiles` and `spectide profiles add NAME --provider PROVIDER --executable EXECUTABLE --scope PATH`. Probe an executable with `spectide profiles probe NAME` or `spectide models probe NAME`. These probes run the executable's version command through SpecTide's bounded runner. They do not inspect credential stores, establish authentication, or discover model catalogs; output keeps those states as `NOT_PROBED`.
 

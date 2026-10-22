@@ -410,6 +410,14 @@
 - Cross-process pause/resume still works with a fresh owner. Resume after owner expiry returns `WORKSPACE_DRIFT` and does not restart work. Automatic restart resume remains unavailable until checkpoint identity, immutable config, artifact hashes, Git HEAD, and managed-path fingerprints are verified.
 - Tests cover migration 6 and stale paused-run recovery/lock release; `go test ./internal/store ./internal/workflow -count=1` passed. T034 remains open for safe checkpoint validation and resume.
 
+### Phase checkpoint — persisted profile capabilities and fail-closed routing
+
+- Added schema migration 7 and persisted versioned profile capability snapshots. Profile edits invalidate stale snapshots; warnings are redacted; provider mismatch and invalid authentication states are rejected. Version-only `profiles probe`/`models probe` results persist as `NOT_PROBED` for authentication and do not claim read-only or workspace-write verification.
+- Route preview and run start now validate persisted executable/version, authentication, model/effort override, and stage execution-mode evidence. Unverified live profiles are rejected before run creation; tests cover denial, persistence, redaction, profile-edit invalidation, and a verified capability fixture. The CLI probe remains intentionally unable to assert authentication.
+- Focused `go test ./internal/store ./internal/routing ./internal/workflow ./internal/api ./internal/cli -count=1` passed. Full `make verify` passed, including Go tests/vet, dashboard typecheck/tests/build, binary build, secret scan, and offline smoke. Latest SC-001 measurement: 19.635 ms on the reference host.
+- T024 remains open: fallback authorization and full policy/audit behavior are not complete, and live provider stage execution remains unavailable. T014, T016, T031, T034–T036, T045, and T046 also remain open as recorded in [the canonical task ledger](../specs/001-build-spectide/tasks.md).
+- Updated [the acceptance ledger](acceptance-ledger.md) and the blueprint’s current-status checklist to match this evidence. No official Spec-Kit analyze or converge result is claimed.
+
 ### Historical baseline (superseded by the checkpoints above)
 
 ### Completed and verified

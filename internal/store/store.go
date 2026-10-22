@@ -115,6 +115,15 @@ func (s *Store) migrate() error {
 		if _, err = tx.Exec(`INSERT INTO schema_migrations(version,applied_at) VALUES(6,?)`, now().Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
+		version = 6
+	}
+	if version < 7 {
+		if _, err = tx.Exec(schemaV7); err != nil {
+			return fmt.Errorf("apply schema migration 7: %w", err)
+		}
+		if _, err = tx.Exec(`INSERT INTO schema_migrations(version,applied_at) VALUES(7,?)`, now().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -136,6 +145,9 @@ var schemaV5 string
 
 //go:embed migrations/006_run_owners.sql
 var schemaV6 string
+
+//go:embed migrations/007_profile_capabilities.sql
+var schemaV7 string
 
 func now() time.Time { return time.Now().UTC().Round(0) }
 func parse(v string) *time.Time {
@@ -611,11 +623,23 @@ func (s *Store) SaveProfile(ctx context.Context, p model.Profile) (model.Profile
 	if e != nil {
 		return p, e
 	}
-	_, e = s.DB.ExecContext(ctx, `INSERT INTO profiles(id,name,provider,executable,config_directory,allowed_scopes_json) VALUES(?,?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET provider=excluded.provider,executable=excluded.executable,config_directory=excluded.config_directory,allowed_scopes_json=excluded.allowed_scopes_json`, p.ID, p.Name, p.Provider, p.Executable, p.ConfigDirectory, string(scopes))
-	return p, e
+	tx, e := s.DB.BeginTx(ctx, nil)
+	if e != nil {
+		return p, e
+	}
+	defer tx.Rollback()
+	_, e = tx.ExecContext(ctx, `INSERT INTO profiles(id,name,provider,executable,config_directory,allowed_scopes_json) VALUES(?,?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET provider=excluded.provider,executable=excluded.executable,config_directory=excluded.config_directory,allowed_scopes_json=excluded.allowed_scopes_json`, p.ID, p.Name, p.Provider, p.Executable, p.ConfigDirectory, string(scopes))
+	if e != nil {
+		return p, e
+	}
+	// Any profile edit invalidates its prior executable and policy observation.
+	if _, e = tx.ExecContext(ctx, `DELETE FROM profile_capabilities WHERE profile_name=?`, p.Name); e != nil {
+		return p, e
+	}
+	return p, tx.Commit()
 }
 func (s *Store) Profiles(ctx context.Context) ([]model.Profile, error) {
-	rows, e := s.DB.QueryContext(ctx, `SELECT id,name,provider,executable,config_directory,allowed_scopes_json FROM profiles ORDER BY name`)
+	rows, e := s.DB.QueryContext(ctx, `SELECT p.id,p.name,p.provider,p.executable,p.config_directory,p.allowed_scopes_json,COALESCE(c.capability_json,''),COALESCE(c.observed_at,'') FROM profiles p LEFT JOIN profile_capabilities c ON c.profile_name=p.name ORDER BY p.name`)
 	if e != nil {
 		return nil, e
 	}
@@ -623,16 +647,64 @@ func (s *Store) Profiles(ctx context.Context) ([]model.Profile, error) {
 	var out []model.Profile
 	for rows.Next() {
 		var p model.Profile
-		var scopes string
-		if e = rows.Scan(&p.ID, &p.Name, &p.Provider, &p.Executable, &p.ConfigDirectory, &scopes); e != nil {
+		var scopes, capabilityJSON, observedAt string
+		if e = rows.Scan(&p.ID, &p.Name, &p.Provider, &p.Executable, &p.ConfigDirectory, &scopes, &capabilityJSON, &observedAt); e != nil {
 			return nil, e
 		}
 		if e = json.Unmarshal([]byte(scopes), &p.AllowedScopes); e != nil {
 			return nil, e
 		}
+		if capabilityJSON != "" {
+			var capability model.ProfileCapability
+			if e = json.Unmarshal([]byte(capabilityJSON), &capability); e != nil {
+				return nil, fmt.Errorf("PROFILE_CAPABILITY_INVALID: %w", e)
+			}
+			capability.ObservedAt, _ = time.Parse(time.RFC3339Nano, observedAt)
+			p.Capability = &capability
+		}
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) SaveProfileCapability(ctx context.Context, name string, capability model.ProfileCapability) (model.ProfileCapability, error) {
+	if name == "" || capability.Provider == "" || capability.Authenticated == "" {
+		return capability, fmt.Errorf("PROFILE_CAPABILITY_FIELDS_REQUIRED")
+	}
+	switch capability.Authenticated {
+	case "NOT_PROBED", "AUTHENTICATED", "UNAUTHENTICATED", "UNKNOWN":
+	default:
+		return capability, fmt.Errorf("PROFILE_AUTH_STATE_INVALID")
+	}
+	if len(capability.Version) > 512 || len(capability.Warnings) > 16 {
+		return capability, fmt.Errorf("PROFILE_CAPABILITY_LIMIT_EXCEEDED")
+	}
+	for _, warning := range capability.Warnings {
+		if len(warning) > 512 {
+			return capability, fmt.Errorf("PROFILE_CAPABILITY_LIMIT_EXCEEDED")
+		}
+	}
+	var provider string
+	if err := s.DB.QueryRowContext(ctx, `SELECT provider FROM profiles WHERE name=?`, name).Scan(&provider); err != nil {
+		if err == sql.ErrNoRows {
+			return capability, fmt.Errorf("PROFILE_NOT_FOUND: %s", name)
+		}
+		return capability, err
+	}
+	if capability.Provider != provider {
+		return capability, fmt.Errorf("PROFILE_PROVIDER_MISMATCH: %s", name)
+	}
+	capability.Warnings = append([]string(nil), capability.Warnings...)
+	for i, warning := range capability.Warnings {
+		capability.Warnings[i] = security.Redact(warning)
+	}
+	capability.ObservedAt = now()
+	encoded, err := json.Marshal(capability)
+	if err != nil {
+		return capability, err
+	}
+	_, err = s.DB.ExecContext(ctx, `INSERT INTO profile_capabilities(profile_name,capability_json,observed_at) VALUES(?,?,?) ON CONFLICT(profile_name) DO UPDATE SET capability_json=excluded.capability_json,observed_at=excluded.observed_at`, name, string(encoded), capability.ObservedAt.Format(time.RFC3339Nano))
+	return capability, err
 }
 func (s *Store) Report(ctx context.Context, id string) (model.Report, error) {
 	r, e := s.GetRun(ctx, id)

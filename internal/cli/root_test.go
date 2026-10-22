@@ -48,7 +48,7 @@ func TestRunStateExitCodesAreStable(t *testing.T) {
 	}
 }
 
-func TestUnavailableLiveRouteExitsAsBlocked(t *testing.T) {
+func TestUnprobedLiveRouteIsDeniedBeforeRun(t *testing.T) {
 	project := t.TempDir()
 	cfg := config.Default()
 	cfg.DefaultRoute.Provider = "codex"
@@ -69,11 +69,19 @@ func TestUnavailableLiveRouteExitsAsBlocked(t *testing.T) {
 		t.Fatal(err)
 	}
 	output, err := executeCLI(t, db, "run", "--project", project, "inspect this project")
-	if got := ExitCode(err); got != ExitBlocked {
-		t.Fatalf("live route error=%v exit code=%d, want %d", err, got, ExitBlocked)
+	if got := ExitCode(err); got != ExitCommand || !strings.Contains(err.Error(), "PROFILE_CAPABILITY_NOT_PROBED") {
+		t.Fatalf("unprobed live route error=%v exit code=%d", err, got)
 	}
-	if !strings.Contains(output, "BLOCKED run:") || strings.Contains(output, "SIMULATED run") {
-		t.Fatalf("blocked live route was mislabeled: %s", output)
+	if !strings.Contains(output, "PROFILE_CAPABILITY_NOT_PROBED") {
+		t.Fatalf("unprobed live route did not report capability denial: %s", output)
+	}
+	state, err = store.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	if runs, e := state.Runs(context.Background()); e != nil || len(runs) != 0 {
+		t.Fatalf("denied route created runs=%d err=%v", len(runs), e)
 	}
 }
 
@@ -156,5 +164,14 @@ func TestProfileAndModelProbeDoNotClaimAuthentication(t *testing.T) {
 	output, err = executeCLI(t, db, "models", "probe", "offline-echo")
 	if err != nil || !strings.Contains(output, `"authentication":"NOT_PROBED"`) || !strings.Contains(output, `"model_catalog":"NOT_PROBED"`) {
 		t.Fatalf("model probe=%q err=%v", output, err)
+	}
+	s, err = store.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	profiles, err := s.Profiles(context.Background())
+	if err != nil || len(profiles) != 1 || profiles[0].Capability == nil || profiles[0].Capability.Authenticated != "NOT_PROBED" {
+		t.Fatalf("persisted probe capability=%+v err=%v", profiles, err)
 	}
 }

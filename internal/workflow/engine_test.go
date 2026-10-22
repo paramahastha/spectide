@@ -267,6 +267,9 @@ func TestEngineDoesNotSilentlySimulateLiveRoute(t *testing.T) {
 	if _, err = s.SaveProfile(context.Background(), model.Profile{Name: "work", Provider: "codex", Executable: "codex", AllowedScopes: []string{project}}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err = s.SaveProfileCapability(context.Background(), "work", model.ProfileCapability{Provider: "codex", ExecutableFound: true, Version: "1.2.3", Authenticated: "AUTHENTICATED", ModelOverride: true, EffortOverride: "verified", ReadOnlyExecution: true, WorkspaceWrite: true}); err != nil {
+		t.Fatal(err)
+	}
 	run, err := New(s).Start(context.Background(), project, "task")
 	if err != nil {
 		t.Fatal(err)

@@ -95,15 +95,50 @@ func TestVersionedSchemaContainsRecoveryEntities(t *testing.T) {
 	if err = s.DB.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 6 {
+	if version != 7 {
 		t.Fatalf("schema version=%d", version)
 	}
-	for _, table := range []string{"projects", "routing_decisions", "artifacts", "checkpoints", "approvals", "workspace_locks", "idempotency_keys", "run_controls", "run_configurations", "run_owners"} {
+	for _, table := range []string{"projects", "routing_decisions", "artifacts", "checkpoints", "approvals", "workspace_locks", "idempotency_keys", "run_controls", "run_configurations", "run_owners", "profile_capabilities"} {
 		var found string
 		err = s.DB.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&found)
 		if err != nil {
 			t.Fatalf("missing table %s: %v", table, err)
 		}
+	}
+}
+
+func TestProfileCapabilityPersistenceAndInvalidation(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	profile := model.Profile{Name: "local", Provider: "codex", Executable: "codex", AllowedScopes: []string{"/workspace"}}
+	if _, err = s.SaveProfile(ctx, profile); err != nil {
+		t.Fatal(err)
+	}
+	capability := model.ProfileCapability{Provider: "codex", ExecutableFound: true, Version: "1.2.3", Authenticated: "NOT_PROBED", Warnings: []string{"token=supersecret123456"}}
+	if _, err = s.SaveProfileCapability(ctx, profile.Name, capability); err != nil {
+		t.Fatal(err)
+	}
+	profiles, err := s.Profiles(ctx)
+	if err != nil || len(profiles) != 1 || profiles[0].Capability == nil {
+		t.Fatalf("profiles=%+v err=%v", profiles, err)
+	}
+	if profiles[0].Capability.Authenticated != "NOT_PROBED" || strings.Contains(strings.Join(profiles[0].Capability.Warnings, " "), "supersecret") {
+		t.Fatalf("capability was not safely persisted: %+v", profiles[0].Capability)
+	}
+	if _, err = s.SaveProfile(ctx, profile); err != nil {
+		t.Fatal(err)
+	}
+	profiles, err = s.Profiles(ctx)
+	if err != nil || profiles[0].Capability != nil {
+		t.Fatalf("edited profile retained stale capability: profiles=%+v err=%v", profiles, err)
+	}
+	capability.Provider = "claude"
+	if _, err = s.SaveProfileCapability(ctx, profile.Name, capability); err == nil {
+		t.Fatal("provider-mismatched capability accepted")
 	}
 }
 

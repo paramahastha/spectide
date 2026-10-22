@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/spectide/spectide/internal/config"
+	"github.com/spectide/spectide/internal/model"
 	"github.com/spectide/spectide/internal/store"
 	"github.com/spectide/spectide/internal/workflow"
 	"net/http"
@@ -207,6 +208,35 @@ func TestDryRunBlocksLiveRouteWithoutAuthorizedStoredProfile(t *testing.T) {
 	s.Handler().ServeHTTP(w, r)
 	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "PROFILE_NOT_FOUND") {
 		t.Fatalf("unauthorized route preview status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestDryRunRejectsLiveProfileWithoutPersistedCapability(t *testing.T) {
+	s := testServer(t)
+	project := t.TempDir()
+	cfg := config.Default()
+	cfg.DefaultRoute = config.Route{Provider: "codex", Profile: "local-codex"}
+	if err := config.Save(config.ProjectPath(project), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Store.SaveProfile(context.Background(), model.Profile{Name: "local-codex", Provider: "codex", Executable: "codex", AllowedScopes: []string{project}}); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(map[string]any{"project": project, "prompt": "inspect", "dry_run": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs", strings.NewReader(string(body)))
+	r.Host = "127.0.0.1"
+	r.Header.Set("X-SpecTide-CSRF", s.CSRF)
+	r.Header.Set("Idempotency-Key", "preview-capability-123")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "PROFILE_CAPABILITY_NOT_PROBED") {
+		t.Fatalf("preview status=%d body=%s", w.Code, w.Body.String())
+	}
+	if runs, err := s.Store.Runs(context.Background()); err != nil || len(runs) != 0 {
+		t.Fatalf("capability-rejected preview created runs=%d err=%v", len(runs), err)
 	}
 }
 

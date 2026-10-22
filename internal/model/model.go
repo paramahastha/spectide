@@ -126,12 +126,29 @@ const (
 )
 
 type Profile struct {
-	ID              string   `json:"id"`
-	Name            string   `json:"name"`
-	Provider        string   `json:"provider"`
-	Executable      string   `json:"executable"`
-	ConfigDirectory string   `json:"config_directory,omitempty"`
-	AllowedScopes   []string `json:"allowed_scopes"`
+	ID              string             `json:"id"`
+	Name            string             `json:"name"`
+	Provider        string             `json:"provider"`
+	Executable      string             `json:"executable"`
+	ConfigDirectory string             `json:"config_directory,omitempty"`
+	AllowedScopes   []string           `json:"allowed_scopes"`
+	Capability      *ProfileCapability `json:"capability,omitempty"`
+}
+
+// ProfileCapability contains non-secret, observed provider readiness. It is
+// deliberately separate from profile configuration and never stores tokens.
+type ProfileCapability struct {
+	Provider          string    `json:"provider"`
+	ExecutableFound   bool      `json:"executable_found"`
+	Version           string    `json:"version"`
+	Authenticated     string    `json:"authenticated"`
+	StreamingEvents   bool      `json:"streaming_events"`
+	ModelOverride     bool      `json:"model_override"`
+	EffortOverride    string    `json:"effort_override"`
+	ReadOnlyExecution bool      `json:"read_only_execution"`
+	WorkspaceWrite    bool      `json:"workspace_write"`
+	Warnings          []string  `json:"warnings,omitempty"`
+	ObservedAt        time.Time `json:"observed_at"`
 }
 
 type Project struct {

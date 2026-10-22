@@ -70,6 +70,9 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 	if err = routing.ValidateProfileRoutes(cfg, workspace, profiles); err != nil {
 		return model.Run{}, false, err
 	}
+	if err = routing.ValidateProfileCapabilities(cfg, profiles); err != nil {
+		return model.Run{}, false, err
+	}
 	decisions := make(map[string]config.Decision, len(stages))
 	blockedStage, blockedReason := "", ""
 	for _, stage := range stages {

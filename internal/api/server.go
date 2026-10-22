@@ -277,6 +277,10 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 				apiError(w, http.StatusUnprocessableEntity, "ROUTE_PREVIEW_BLOCKED", err.Error())
 				return
 			}
+			if err = routing.ValidateProfileCapabilities(cfg, profiles); err != nil {
+				apiError(w, http.StatusUnprocessableEntity, "ROUTE_PREVIEW_BLOCKED", err.Error())
+				return
+			}
 			decisions := make([]config.Decision, 0, len(config.StageKeys))
 			for _, stage := range config.StageKeys {
 				decision, resolveErr := cfg.Resolve(stage, in.Prompt)
