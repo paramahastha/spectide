@@ -360,6 +360,11 @@
 - Added an explicit portable fake route to the example workspace and checked-in scripted scenarios for success, typed failure, rate limit, and cancellation. Adapter tests load and execute each scenario fixture so future changes are checked against deterministic contract behavior.
 - `go test ./internal/adapters/fake` and full `make verify` passed. T038 is complete. Latest SC-001 measurement is 20.874 ms on the reference host.
 
+### Phase checkpoint — user and contributor documentation
+
+- Added verified local usage, configuration precedence, provider readiness, safe recovery, troubleshooting, and API documentation with an OpenAPI 3.1 contract. Corrected existing quickstart references to match implemented CLI flags and clearly stated that restart resume and CLI backup/restore are unavailable.
+- Linked the guides from the root README. `docs/openapi.yaml` parses as YAML, CLI examples were checked against the implemented command flags, and full `make verify` passed. T040 is complete. Latest SC-001 measurement is 19.188 ms on the reference host.
+
 ### Phase checkpoint — durable run-owner leases
 
 - Added migration 6 and per-run heartbeat leases. The workflow writes its owner lease atomically with the workspace lock, refreshes it while the worker is alive, and removes it at finish.

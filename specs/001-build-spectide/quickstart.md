@@ -5,6 +5,6 @@
 3. Start `./bin/spectide serve --host 127.0.0.1 --port 4747`.
 4. In another terminal run `./bin/spectide demo --project ./examples/fake-provider-demo`.
 5. Open `http://127.0.0.1:4747`, select the created run, and verify every stage says `SIMULATED`/fake where appropriate.
-6. Run `./bin/spectide report <run-id> --format json` and verify required simulated quality gates are present.
+6. Run `./bin/spectide report <run-id>` and verify required simulated quality gates are present.
 
 Live provider checks require externally authenticated authorized profiles and must remain `NOT_RUN` if unavailable.

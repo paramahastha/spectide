@@ -13,7 +13,7 @@
 - Architecture: arm64
 - Build command: `make build` (`go build -o bin/spectide ./cmd/spectide`)
 - Startup/health command: `make smoke` (`scripts/smoke.sh` starts `spectide serve --port 0`, then requests `/healthz`)
-- Measurement: latest corrected `make verify` run measured 20.874 ms from the monotonic timestamp immediately before `Popen` through the first HTTP 200 from `/healthz` (prior same-process run: 17.535 ms); acceptance limit is 2,000 ms. An earlier attempt measured timestamps in separate Python processes, which use different monotonic origins in this host environment; those earlier values (0.152 ms and 0.295 ms) and the negative result are invalid and superseded.
+- Measurement: latest corrected `make verify` run measured 19.188 ms from the monotonic timestamp immediately before `Popen` through the first HTTP 200 from `/healthz` (prior same-process run: 20.874 ms); acceptance limit is 2,000 ms. An earlier attempt measured timestamps in separate Python processes, which use different monotonic origins in this host environment; those earlier values (0.152 ms and 0.295 ms) and the negative result are invalid and superseded.
 - The same smoke run completed the offline demo and reported `SIMULATED`.
 
 ## Other verification executed
@@ -35,6 +35,7 @@
 | Scoped route preview | PASS | Full `make verify`; API preview rejects workspace scope escapes without run creation |
 | Live route profile boundaries | PASS | Focused routing/workflow/API tests and full `make verify`; profile existence, provider match, and canonical allowed scope are required before preview or run creation; live invocation remains blocked |
 | Durable blocked live-stage outcome | PASS | Focused workflow/CLI/API/Spec-Kit tests and full `make verify`; authorized but unavailable live routes persist a `BLOCKED` run, skipped first stage, `NOT_RUN` event, and blocked gate |
+| Local documentation contract | PASS | Full `make verify`; `ruby -e 'require "yaml"; YAML.load_file("docs/openapi.yaml")'`; CLI examples checked against implemented command flags |
 | Spec-Kit analyze consistency gate | PASS, read-only equivalent | `specs/001-build-spectide/analysis.md`; installed Codex CLI executed the repository instructions after OpenCode returned HTTP 503; no official Spec-Kit invocation is claimed |
 
 ## Not run or incomplete

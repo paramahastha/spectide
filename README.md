@@ -16,6 +16,8 @@ make build
 
 Open <http://127.0.0.1:4747>. The demo is visibly **SIMULATED** and does not use provider credentials.
 
+Read the [local user guide](docs/user-guide.md), [configuration reference](docs/configuration.md), [provider readiness](docs/providers.md), [recovery guidance](docs/recovery.md), and [local API contract](docs/api.md).
+
 ## Security status
 
 The server only accepts loopback hosts and requires a local anti-CSRF header for mutations. The current development token is intentionally local and bootstrap-only; production session handling, authorization, and real provider process execution remain tracked in `specs/001-build-spectide/tasks.md`.

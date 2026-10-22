@@ -33,13 +33,13 @@ This ledger maps every functional requirement in the single master specification
 | FR-027 migrations, recovery, retention, export | Partial | [migration tests](../internal/store/profiles_test.go), [backup/retention tests](../internal/store/retention_test.go); private integrity-checked backup/restore, 90-day detail expiration, 1,000-run terminal-first pruning, and active-cap rejection pass; sanitized export formatting and recovery integration remain open |
 | FR-028 documented offline verification commands | Partial | [Makefile](../Makefile), [smoke scripts](../scripts); CI/security/E2E coverage is incomplete (T003, T043) |
 | FR-029 automated cross-layer coverage | Partial | [Go and frontend test suites](../internal); browser E2E, restart recovery, convergence failure injection, and SSE load evidence remain open (T031, T036, T043a) |
-| FR-030 local-first verified documentation | Partial | [README](../README.md), [architecture](architecture.md), [security model](security-model.md); provider, recovery, API, troubleshooting, and release documentation remains incomplete (T040) |
+| FR-030 local-first verified documentation | Partial | [README](../README.md), [user guide](user-guide.md), [architecture](architecture.md), [configuration](configuration.md), [provider readiness](providers.md), [security model](security-model.md), [recovery](recovery.md), [troubleshooting](troubleshooting.md), and [API/OpenAPI](api.md); release-readiness and remaining acceptance evidence are still incomplete (T046) |
 
 ## Buildable success criteria
 
 | Criterion | Current evidence/status |
 |---|---|
-| SC-001 | Pass on recorded host: macOS 15.1, Apple M4, 16 GiB, arm64; latest same-process monotonic `make verify` measured 20.874 ms process-start-to-first-HTTP-200 at `/healthz`. See [verification evidence](final-verification.md). |
+| SC-001 | Pass on recorded host: macOS 15.1, Apple M4, 16 GiB, arm64; latest same-process monotonic `make verify` measured 19.188 ms process-start-to-first-HTTP-200 at `/healthz`. See [verification evidence](final-verification.md). |
 | SC-002 | Pass: 20 deterministic runs passed in `TestTwentyDeterministicRunsCompleteWithRequiredEvidence`. |
 | SC-003 | Partial: quality verdict types exist; terminal simulated reports pass; live blocked/not-run behavior needs end-to-end acceptance. |
 | SC-004 | Partial: persisted replay and cursor tests pass; two independent browser clients are not yet covered. |
