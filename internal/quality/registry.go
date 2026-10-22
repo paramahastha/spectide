@@ -167,7 +167,7 @@ func (r *Registry) Run(ctx context.Context, root string) []Evidence {
 // RunControlled checks durable run controls between commands and while a
 // registered command is active. Pause waits for the caller's boundary hook
 // after the current result is persisted; cancel stops the process promptly.
-func (r *Registry) RunControlled(ctx context.Context, root string, control func(context.Context) (string, error), after func(context.Context, Evidence) error) ([]Evidence, error) {
+func (r *Registry) RunControlled(ctx context.Context, root string, control func(context.Context) (string, error), after func(context.Context, Evidence) error, inheritedFiles ...*os.File) ([]Evidence, error) {
 	results := make([]Evidence, 0, len(r.checks))
 	for _, check := range r.checks {
 		command := append([]string{check.Binary}, check.Args...)
@@ -247,7 +247,7 @@ func (r *Registry) RunControlled(ctx context.Context, root string, control func(
 				args[2] = buildPath
 			}
 		}
-		result, err := r.executor.Run(checkCtx, runner.Invocation{Binary: check.Binary, Args: args, Dir: root})
+		result, err := r.executor.Run(checkCtx, runner.Invocation{Binary: check.Binary, Args: args, Dir: root, ExtraFiles: inheritedFiles})
 		contextErr := checkCtx.Err()
 		cancel()
 		<-monitorDone

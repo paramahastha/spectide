@@ -41,6 +41,12 @@ func (e *Engine) runTestRepairLoop(ctx context.Context, run model.Run, phase str
 			if err != nil {
 				return nil, err
 			}
+			var inheritedFiles []*os.File
+			e.mu.Lock()
+			if processLock := e.processLocks[run.ID]; processLock != nil && processLock.File() != nil {
+				inheritedFiles = append(inheritedFiles, processLock.File())
+			}
+			e.mu.Unlock()
 			evidence, runErr := registry.RunControlled(ctx, run.Project, func(ctx context.Context) (string, error) {
 				return e.store.RunControl(ctx, run.ID)
 			}, func(ctx context.Context, item quality.Evidence) error {
@@ -58,7 +64,7 @@ func (e *Engine) runTestRepairLoop(ctx context.Context, run model.Run, phase str
 					return err
 				}
 				return e.loopControlBoundary(ctx, run, workflowStage, featureDir, budget)
-			})
+			}, inheritedFiles...)
 			verdicts := make(map[string]string, len(evidence))
 			for _, item := range evidence {
 				verdict := string(item.Verdict)

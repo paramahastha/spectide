@@ -676,3 +676,9 @@
 - Runner cancellation no longer closes the escalation window when `cmd.Run` returns. It retains SIGKILL escalation for the full two-second grace period and reasserts process-group termination after a canceled or `exec.ErrWaitDelay` result, including when the direct child exited before a TERM-resistant descendant holding inherited pipes.
 - Added a regression fixture with an early-exiting shell parent and a TERM-resistant child that continuously writes a marker. The runner waits for bounded cleanup and no later writes occur. The test passed three consecutive runs; existing process-group cleanup and graceful-TERM tests passed. `go vet ./internal/runner` passed.
 - T082 is complete; T083 is next.
+
+### T083 — Workspace lock inheritance for local quality checks — 2026-10-23
+
+- `quality.Registry.RunControlled` accepts inherited descriptors and passes them into every registered check invocation. Workflow quality execution retrieves the active process-lock file under the engine mutex and supplies it to the registry.
+- Live shell check tests close the controller descriptor and exit a separate lock-owner helper while the child remains active. In both cases the kernel lock stays held, another process cannot acquire it, and the lease releases after the check exits.
+- `go test ./internal/quality ./internal/workflow -count=1`, the owner-process-exit focused test, `go vet ./internal/quality ./internal/workflow`, and `git diff --check` passed. T083 is complete; T084 is next.

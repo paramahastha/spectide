@@ -3,6 +3,7 @@ package quality
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/spectide/spectide/internal/model"
 	"github.com/spectide/spectide/internal/store"
+	"github.com/spectide/spectide/internal/workspace"
 )
 
 func TestRunControlledCancelsRegisteredCheckFromSecondController(t *testing.T) {
@@ -80,4 +82,141 @@ cancel:
 	case <-time.After(4 * time.Second):
 		t.Fatal("local check process did not stop after cross-controller cancellation")
 	}
+}
+
+func TestRegisteredCheckRetainsWorkspaceLockAfterOwnerDescriptorCloses(t *testing.T) {
+	project := t.TempDir()
+	lock, err := workspace.AcquireProcessLock(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := filepath.Join(t.TempDir(), "quality-child-started")
+	registry := NewRegistry(nil)
+	if err := registry.Register(Check{Key: "lock_child", Binary: "/bin/sh", Args: []string{"-c", "touch " + strconv.Quote(started) + "; sleep 1"}, Required: true, Timeout: 5 * time.Second}); err != nil {
+		_ = lock.Close()
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, runErr := registry.RunControlled(context.Background(), project, nil, nil, lock.File())
+		result <- runErr
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := os.Stat(started); err != nil {
+		_ = lock.Close()
+		t.Fatal("registered check did not start")
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	held, err := workspace.ProcessLockHeld(project)
+	if err != nil || !held {
+		t.Fatalf("local quality child did not retain workspace lock: held=%v err=%v", held, err)
+	}
+	if _, err := workspace.AcquireProcessLock(project); err == nil {
+		t.Fatal("second process acquired workspace while local quality child was still running")
+	}
+	select {
+	case runErr := <-result:
+		if runErr != nil {
+			t.Fatalf("quality run err=%v", runErr)
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("local quality child did not exit within bound")
+	}
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		held, err = workspace.ProcessLockHeld(project)
+		if err == nil && !held {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("workspace lock remained held after local quality child exited")
+}
+
+func TestQualityCheckChildKeepsWorkspaceLockAfterControllerExits(t *testing.T) {
+	if os.Getenv("SPECTIDE_QUALITY_LOCK_OWNER_HELPER") == "1" {
+		project := os.Getenv("SPECTIDE_QUALITY_LOCK_PROJECT")
+		started := os.Getenv("SPECTIDE_QUALITY_LOCK_STARTED")
+		finished := os.Getenv("SPECTIDE_QUALITY_LOCK_FINISHED")
+		lock, err := workspace.AcquireProcessLock(project)
+		if err != nil {
+			os.Exit(2)
+		}
+		registry := NewRegistry(nil)
+		if err = registry.Register(Check{Key: "detached_check", Binary: "/bin/sh", Args: []string{"-c", "touch " + strconv.Quote(started) + "; sleep 1; touch " + strconv.Quote(finished)}, Required: true, Timeout: 5 * time.Second}); err != nil {
+			os.Exit(3)
+		}
+		go func() {
+			_, _ = registry.RunControlled(context.Background(), project, nil, nil, lock.File())
+		}()
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err = os.Stat(started); err == nil {
+				os.Exit(0)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		os.Exit(4)
+	}
+
+	project := t.TempDir()
+	markers := t.TempDir()
+	started, finished := filepath.Join(markers, "started"), filepath.Join(markers, "finished")
+	command := exec.Command(os.Args[0], "-test.run=^TestQualityCheckChildKeepsWorkspaceLockAfterControllerExits$")
+	command.Env = append(os.Environ(), "SPECTIDE_QUALITY_LOCK_OWNER_HELPER=1", "SPECTIDE_QUALITY_LOCK_PROJECT="+project, "SPECTIDE_QUALITY_LOCK_STARTED="+started, "SPECTIDE_QUALITY_LOCK_FINISHED="+finished)
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if command.ProcessState != nil {
+			t.Fatal("lock-owner helper exited before starting its quality child")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := os.Stat(started); err != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		t.Fatal("quality child did not start")
+	}
+	if err := command.Wait(); err != nil {
+		t.Fatalf("lock-owner helper did not exit after starting its child: %v", err)
+	}
+	held, err := workspace.ProcessLockHeld(project)
+	if err != nil || !held {
+		t.Fatalf("quality child did not retain lease after owner process exit: held=%v err=%v", held, err)
+	}
+	if _, err := workspace.AcquireProcessLock(project); err == nil {
+		t.Fatal("second process acquired workspace while the detached quality child was running")
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(finished); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := os.Stat(finished); err != nil {
+		t.Fatal("detached quality child did not finish")
+	}
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		held, err = workspace.ProcessLockHeld(project)
+		if err == nil && !held {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("workspace lease remained after detached quality child exited")
 }
