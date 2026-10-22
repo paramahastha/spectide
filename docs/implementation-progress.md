@@ -651,3 +651,10 @@
 - CI now selects Node 26, and README/user-guide prerequisites document Node.js 26 with npm and Go 1.27. Local Node is v26.12.0.
 - `make verify` passed on Node 26: Go 1.27 vet/tests, dashboard typecheck, 29 tests, production build, binary build, secret scan, and simulated smoke. SC-001: 18.782 ms.
 - T079 is complete.
+
+### Official convergence — 2026-10-23
+
+- After T055–T076 and T079, `/speckit.converge` returned `tasks_appended`, not converged. It appended T080–T106 to the existing Phase 9: 10 critical, 15 high, and 2 medium findings. The official pass verified the preceding 26,772 bytes of `tasks.md` and the product spec, plan, and constitution hashes remained unchanged.
+- Findings include persistence redaction and config symlink containment, runner/process lock lifetime, read-only/owner-only workspace mutation checks, checkpoint/restart cursor semantics, repair-path approvals, final-gate aggregation, local stage routing, selected feature scope, semantic no-op evidence, parser compatibility, live event delivery, stream validation, quality-check discovery, migration compatibility, retention, dashboard evidence projections, CLI/API preview parity, release documentation, and packaging.
+- Fresh review checks: `go vet ./...`, `npm run typecheck`, `npm test -- --run` (29 tests), and targeted race tests passed. `go test -count=1 ./...` failed `TestHeartbeatOwnershipLossCancelsActiveWorker` (observed state `FAILED`); the focused `-count=5` retry failed 2/5. `make load-test-sse` failed in fixture setup with `UNIQUE constraint failed: events.run_id, events.seq` before any latency measurement. See T101/T102; do not replace those outcomes with earlier passes.
+- Official outcome: `tasks_appended`; T045 remains open. T077 remains blocked because the browser-origin policy denies local dashboard access. T080 is next.
