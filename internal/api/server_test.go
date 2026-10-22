@@ -1,12 +1,15 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/spectide/spectide/internal/adapters"
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
+	"github.com/spectide/spectide/internal/runner"
 	"github.com/spectide/spectide/internal/security"
 	"github.com/spectide/spectide/internal/store"
 	"github.com/spectide/spectide/internal/workflow"
@@ -788,5 +791,80 @@ func TestSSEStopsWritingWhenClientDisconnects(t *testing.T) {
 	s.events(w, r, run.ID)
 	if !w.written {
 		t.Fatal("SSE writer did not attempt persisted replay")
+	}
+}
+
+func TestSSEReceivesProviderStreamEventBeforeProcessExits(t *testing.T) {
+	s := testServer(t)
+	run, err := s.Store.CreateRun(context.Background(), t.TempDir(), "stream provider activity")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior, err := s.Store.Events(context.Background(), run.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var after int64
+	for _, event := range prior {
+		if event.Seq > after {
+			after = event.Seq
+		}
+	}
+	server := httptest.NewServer(s.Handler())
+	defer server.Close()
+	response, err := server.Client().Get(fmt.Sprintf("%s/api/v1/runs/%s/events?after=%d", server.URL, run.ID, after))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("SSE status=%d", response.StatusCode)
+	}
+	stream := adapters.NewOutputStream(adapters.Codex)
+	stream.SetEventCallback(func(event adapters.Event) {
+		if eventErr := s.Store.Event(context.Background(), run.ID, "plan", "provider.event", "info", map[string]any{
+			"provider_event_type": event.Type, "attempt_id": "attempt-live", "summary": event.Summary,
+		}); eventErr != nil {
+			t.Errorf("persist provider event: %v", eventErr)
+		}
+	})
+	processDone := make(chan error, 1)
+	go func() {
+		_, runErr := runner.Run(context.Background(), runner.Invocation{
+			Binary: "/bin/sh", Args: []string{"-c", `printf '%s\n' '{"type":"message","text":"early activity"}'; sleep 0.8; printf '%s\n' '{"type":"turn.completed","last_agent_message":"finished"}'`},
+			Dir: t.TempDir(), Timeout: 3 * time.Second, StreamStdout: stream.Feed,
+		})
+		if closeErr := stream.Close(); runErr == nil {
+			runErr = closeErr
+		}
+		processDone <- runErr
+	}()
+	scanner := bufio.NewScanner(response.Body)
+	deadline := time.After(600 * time.Millisecond)
+	var received bool
+	for !received {
+		line := make(chan string, 1)
+		scanDone := make(chan bool, 1)
+		go func() { scanDone <- scanner.Scan(); line <- scanner.Text() }()
+		select {
+		case ok := <-scanDone:
+			if !ok {
+				t.Fatalf("SSE ended before provider event: %v", scanner.Err())
+			}
+			frame := <-line
+			if strings.Contains(frame, `"provider_event_type":"codex.message"`) {
+				received = true
+			}
+		case <-deadline:
+			t.Fatal("SSE client did not receive provider activity while the process was active")
+		}
+	}
+	select {
+	case err = <-processDone:
+		t.Fatalf("provider process exited before its event was observed: %v", err)
+	default:
+	}
+	if err = <-processDone; err != nil {
+		t.Fatal(err)
 	}
 }

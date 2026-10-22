@@ -198,7 +198,17 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 	if templateStage == "" {
 		templateStage = stage
 	}
+	var eventPublisher *providerEventPublisher
+	if _, streaming := adapter.(adapters.StreamingAdapter); streaming {
+		eventPublisher = newProviderEventPublisher(e.store, run.ID, stage, route.Provider, attempt.ID)
+		request.EventCallback = eventPublisher.Publish
+	}
 	result, runErr := speckit.ExecuteStageWithTemplate(ctx, installation, adapter, request, stage, templateStage, prompt)
+	if eventPublisher != nil {
+		if publishErr := eventPublisher.Close(); runErr == nil && publishErr != nil {
+			runErr = publishErr
+		}
+	}
 	status := "SUCCEEDED"
 	if runErr != nil {
 		status = "FAILED"
@@ -244,10 +254,12 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 	eventTypes := make([]string, 0, len(result.Events))
 	for _, event := range result.Events {
 		eventTypes = append(eventTypes, safeProviderEventType(event.Type))
-		if err := e.store.Event(ctx, run.ID, stage, "provider."+safeProviderEventType(event.Type), "info", map[string]any{"summary": security.Redact(event.Summary), "execution": "LIVE"}); err != nil {
-			runErr = err
-			status = "FAILED"
-			break
+		if eventPublisher == nil {
+			if err := e.store.Event(ctx, run.ID, stage, "provider."+safeProviderEventType(event.Type), "info", map[string]any{"summary": security.Redact(event.Summary), "execution": "LIVE"}); err != nil {
+				runErr = err
+				status = "FAILED"
+				break
+			}
 		}
 	}
 	evidence := map[string]any{"provider": route.Provider, "profile": route.Profile, "event_count": len(result.Events), "duration_ms": result.Process.Duration.Milliseconds()}

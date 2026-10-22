@@ -108,6 +108,7 @@ func ExecuteStageWithTemplate(ctx context.Context, installation Installation, ad
 	var stream *adapters.OutputStream
 	if streaming, ok := adapter.(adapters.StreamingAdapter); ok {
 		stream = streaming.NewOutputStream()
+		stream.SetEventCallback(request.EventCallback)
 		invocation.StreamStdout = stream.Feed
 	}
 	process, runErr := runner.Run(ctx, invocation)

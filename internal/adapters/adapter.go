@@ -70,6 +70,7 @@ type Profile struct {
 type Request struct {
 	ProjectRoot, Stage, Prompt, Model, Effort string
 	FeatureDirectory                          string
+	EventCallback                             func(Event)
 	ReadOnly                                  bool
 	Timeout                                   time.Duration
 	InheritedFiles                            []*os.File
@@ -113,6 +114,7 @@ type StreamingAdapter interface{ NewOutputStream() *OutputStream }
 // normalized event metadata plus the final user-visible answer text.
 type OutputStream struct {
 	provider ProviderName
+	onEvent  func(Event)
 	pending  []byte
 	events   []Event
 	terminal strings.Builder
@@ -121,7 +123,8 @@ type OutputStream struct {
 	closed   bool
 }
 
-func NewOutputStream(provider ProviderName) *OutputStream { return &OutputStream{provider: provider} }
+func NewOutputStream(provider ProviderName) *OutputStream     { return &OutputStream{provider: provider} }
+func (s *OutputStream) SetEventCallback(callback func(Event)) { s.onEvent = callback }
 func (s *OutputStream) Feed(chunk []byte) error {
 	if s.closed {
 		return NewProviderError("PROVIDER_STREAM_CLOSED", "provider output arrived after stream close")
@@ -200,7 +203,11 @@ func (s *OutputStream) consume(line []byte) error {
 	if len(s.events) >= maxStreamEvents {
 		return NewProviderError("PROVIDER_EVENT_LIMIT", "provider event count exceeds the stream limit")
 	}
-	s.events = append(s.events, Event{Type: string(s.provider) + "." + typ, Summary: "structured provider event"})
+	event := Event{Type: string(s.provider) + "." + typ, Summary: "structured provider event"}
+	s.events = append(s.events, event)
+	if s.onEvent != nil {
+		s.onEvent(event)
+	}
 	s.extract(typ, record)
 	return nil
 }

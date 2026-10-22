@@ -747,3 +747,9 @@
 - Convergence parsing and append validation recognize the installed command's `plan: ...` trace form. Concrete source-file references are accepted only when named in the canonical plan; workflow convergence snapshots and live provider validation now pass that plan evidence through parsing and exact report/ledger comparison.
 - Clean and findings convergence formats and path traceability have fixtures. The next-numbered-phase rule remains enforced; same-phase runtime append behavior was not added under the explicit scope clarification.
 - `go test ./internal/speckit ./internal/workflow -count=1`, package vet, and `git diff --check` passed. T093 is complete; T094 is next. T087/T088 remain partial.
+
+### T094 — Publish provider events during execution — 2026-10-23
+
+- The incremental provider JSONL parser now calls a normalized event callback while frames are consumed. Live workflow attempts send those events through a bounded 128-item queue that never blocks the stdout reader on persistence or viewer speed.
+- Persisted event payloads include safe provider event type, attempt ID, and order index, with generic redacted summaries and no raw bodies. Queue saturation is summarized as a dropped-event count; queued events drain before the attempt is finalized, and post-return events are not duplicated.
+- The API/SSE test runs a delayed provider subprocess and asserts the client receives its first provider event before the process exits. Adapter callback and workflow publisher tests cover incremental delivery and attempt linkage. `go test ./internal/adapters ./internal/speckit ./internal/workflow ./internal/api -count=1`, package vet, and diff checks passed. T094 is complete; T095 is next. T087/T088 remain partial.

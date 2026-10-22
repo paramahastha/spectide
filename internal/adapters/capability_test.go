@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCapabilityParsersKeepOnlyVerifiedAnonymizedValues(t *testing.T) {
@@ -120,5 +121,25 @@ func TestProviderOutputStreamRejectsOversizedPartialFrame(t *testing.T) {
 	stream := NewOutputStream(Claude)
 	if err := stream.Feed([]byte(strings.Repeat("x", maxEventLine+1))); err == nil || !strings.Contains(err.Error(), "PROVIDER_STREAM_LIMIT") {
 		t.Fatalf("oversized stream error=%v", err)
+	}
+}
+
+func TestProviderOutputStreamPublishesEventsDuringFeed(t *testing.T) {
+	stream := NewOutputStream(Codex)
+	events := make(chan Event, 1)
+	stream.SetEventCallback(func(event Event) { events <- event })
+	if err := stream.Feed([]byte(`{"type":"message","text":"progress"}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case event := <-events:
+		if event.Type != "codex.message" || event.Summary != "structured provider event" {
+			t.Fatalf("stream callback event=%+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("provider event was not published until stream completion")
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
