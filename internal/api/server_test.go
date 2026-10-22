@@ -70,7 +70,12 @@ func TestRejectsInvalidEventCursor(t *testing.T) {
 }
 func TestCreateRun(t *testing.T) {
 	s := testServer(t)
-	r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs", strings.NewReader(`{"project":"demo","prompt":"test"}`))
+	project := t.TempDir()
+	body, err := json.Marshal(map[string]string{"project": project, "prompt": "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs", strings.NewReader(string(body)))
 	r.Host = "127.0.0.1"
 	r.Header.Set("X-SpecTide-CSRF", s.CSRF)
 	r.Header.Set("Idempotency-Key", "request-key-123")
@@ -85,7 +90,7 @@ func TestCreateRun(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &first); err != nil {
 		t.Fatal(err)
 	}
-	r = httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs", strings.NewReader(`{"project":"demo","prompt":"test"}`))
+	r = httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs", strings.NewReader(string(body)))
 	r.Host = "127.0.0.1"
 	r.Header.Set("X-SpecTide-CSRF", s.CSRF)
 	r.Header.Set("Idempotency-Key", "request-key-123")
@@ -98,7 +103,11 @@ func TestCreateRun(t *testing.T) {
 	if w.Code != http.StatusOK || first.ID != second.ID {
 		t.Fatalf("duplicate status=%d ids=%s/%s body=%s", w.Code, first.ID, second.ID, w.Body.String())
 	}
-	r = httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs", strings.NewReader(`{"project":"demo","prompt":"different"}`))
+	differentBody, err := json.Marshal(map[string]string{"project": project, "prompt": "different"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r = httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs", strings.NewReader(string(differentBody)))
 	r.Host = "127.0.0.1"
 	r.Header.Set("X-SpecTide-CSRF", s.CSRF)
 	r.Header.Set("Idempotency-Key", "request-key-123")

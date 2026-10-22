@@ -326,6 +326,11 @@
 - Workflow start, API dry-run and project configuration reads, and CLI config display/validation/preview now use the same effective configuration. API project config reads retain canonical-root and symlink-boundary checks.
 - Tests cover default/global/project precedence and missing-layer defaults. The full `make verify` target passed after wiring the effective config into workflow start, CLI, and API. T008 is complete; corrected SC-001 measurement was 19.318 ms on the reference host.
 
+### Phase checkpoint — canonical workspace and allowed-scope enforcement
+
+- Workflow start now requires an existing directory, resolves symlinks to its canonical path, and applies effective configured allowed scopes before project registration, durable run creation, or provider routing. Rejected or out-of-scope paths create no run.
+- Updated lifecycle fixtures to use real directories and added missing-path, outside-scope, and in-scope symlink coverage. Focused `go test ./internal/workflow ./internal/api ./internal/workspace` and full `make verify` passed. T009 is complete. Latest SC-001 measurement is 20.369 ms on the reference host.
+
 ### Phase checkpoint — durable run-owner leases
 
 - Added migration 6 and per-run heartbeat leases. The workflow writes its owner lease atomically with the workspace lock, refreshes it while the worker is alive, and removes it at finish.

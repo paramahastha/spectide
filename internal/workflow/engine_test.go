@@ -6,6 +6,7 @@ import (
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
 	"github.com/spectide/spectide/internal/store"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,7 +20,7 @@ func TestFakeLifecyclePersistsEvidence(t *testing.T) {
 	}
 	defer s.Close()
 	eng := New(s)
-	r, e := eng.Start(context.Background(), "demo", "Build a test")
+	r, e := eng.Start(context.Background(), t.TempDir(), "Build a test")
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -58,6 +59,9 @@ func TestTwentyDeterministicRunsCompleteWithRequiredEvidence(t *testing.T) {
 	root := t.TempDir()
 	for i := 0; i < 20; i++ {
 		project := filepath.Join(root, fmt.Sprintf("project-%02d", i))
+		if err := os.Mkdir(project, 0o700); err != nil {
+			t.Fatalf("create project %d: %v", i, err)
+		}
 		run, err := eng.Start(context.Background(), project, fmt.Sprintf("deterministic acceptance run %d", i))
 		if err != nil {
 			t.Fatalf("start run %d: %v", i, err)
@@ -91,11 +95,12 @@ func TestOnlyOneActiveWriterPerWorkspace(t *testing.T) {
 	}
 	defer s.Close()
 	eng := New(s)
-	first, e := eng.Start(context.Background(), "same-workspace", "first")
+	project := t.TempDir()
+	first, e := eng.Start(context.Background(), project, "first")
 	if e != nil {
 		t.Fatal(e)
 	}
-	second, e := eng.Start(context.Background(), "same-workspace", "second")
+	second, e := eng.Start(context.Background(), project, "second")
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -112,7 +117,7 @@ func TestOnlyOneActiveWriterPerWorkspace(t *testing.T) {
 	if _, e = eng.Wait(context.Background(), first.ID); e != nil {
 		t.Fatal(e)
 	}
-	third, e := eng.Start(context.Background(), "same-workspace", "third")
+	third, e := eng.Start(context.Background(), project, "third")
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -122,6 +127,67 @@ func TestOnlyOneActiveWriterPerWorkspace(t *testing.T) {
 	}
 	if got.State == model.Blocked {
 		t.Fatal("workspace lock was not released after completion")
+	}
+}
+
+func TestStartRequiresExistingDirectoryAndEnforcesConfiguredScopes(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	engine := New(s)
+
+	missing := filepath.Join(t.TempDir(), "missing")
+	if _, err := engine.Start(context.Background(), missing, "must reject missing path"); err == nil || !strings.Contains(err.Error(), "PROJECT_PATH_UNAVAILABLE") {
+		t.Fatalf("missing project error=%v", err)
+	}
+
+	allowed := t.TempDir()
+	outside := t.TempDir()
+	cfg := config.Default()
+	cfg.AllowedScopes = []string{allowed}
+	if err := config.Save(config.ProjectPath(outside), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.Start(context.Background(), outside, "must reject outside scope"); err == nil || !strings.Contains(err.Error(), "PERMISSION_DENIED") {
+		t.Fatalf("outside-scope error=%v", err)
+	}
+	if runs, err := s.Runs(context.Background()); err != nil || len(runs) != 0 {
+		t.Fatalf("rejected workspace created runs=%d err=%v", len(runs), err)
+	}
+}
+
+func TestStartCanonicalizesSymlinkWithinAllowedScope(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	root := t.TempDir()
+	project := filepath.Join(root, "project")
+	if err := os.Mkdir(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "project-link")
+	if err := os.Symlink(project, link); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.AllowedScopes = []string{root}
+	if err := config.Save(config.ProjectPath(project), cfg); err != nil {
+		t.Fatal(err)
+	}
+	run, err := New(s).Start(context.Background(), link, "canonical path")
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := filepath.EvalSymlinks(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Project != canonical {
+		t.Fatalf("run project=%q, want canonical path %q", run.Project, canonical)
 	}
 }
 

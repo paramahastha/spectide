@@ -13,7 +13,7 @@
 - Architecture: arm64
 - Build command: `make build` (`go build -o bin/spectide ./cmd/spectide`)
 - Startup/health command: `make smoke` (`scripts/smoke.sh` starts `spectide serve --port 0`, then requests `/healthz`)
-- Measurement: latest corrected `make verify` run measured 19.318 ms from the monotonic timestamp immediately before `Popen` through the first HTTP 200 from `/healthz` (prior same-process run: 18.830 ms); acceptance limit is 2,000 ms. An earlier attempt measured timestamps in separate Python processes, which use different monotonic origins in this host environment; those earlier values (0.152 ms and 0.295 ms) and the negative result are invalid and superseded.
+- Measurement: latest corrected `make verify` run measured 20.369 ms from the monotonic timestamp immediately before `Popen` through the first HTTP 200 from `/healthz` (prior same-process run: 19.318 ms); acceptance limit is 2,000 ms. An earlier attempt measured timestamps in separate Python processes, which use different monotonic origins in this host environment; those earlier values (0.152 ms and 0.295 ms) and the negative result are invalid and superseded.
 - The same smoke run completed the offline demo and reported `SIMULATED`.
 
 ## Other verification executed
@@ -29,6 +29,7 @@
 | Unified verification and secret scan | PASS | `make verify` (format, vet, Go tests, dashboard checks/build, binary build, secret scan, and smoke) |
 | Runner timeout/output/cancellation | PASS | `go test ./internal/runner -count=1` |
 | Deterministic repeated lifecycle | PASS | `TestTwentyDeterministicRunsCompleteWithRequiredEvidence` (20 runs) |
+| Workspace path/scope enforcement | PASS | Focused `go test ./internal/workflow ./internal/api ./internal/workspace`; missing paths and disallowed roots rejected before run creation, canonical symlink path accepted within scope |
 | Spec-Kit analyze consistency gate | PASS, read-only equivalent | `specs/001-build-spectide/analysis.md`; installed Codex CLI executed the repository instructions after OpenCode returned HTTP 503; no official Spec-Kit invocation is claimed |
 
 ## Not run or incomplete

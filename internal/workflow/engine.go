@@ -14,6 +14,7 @@ import (
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
 	"github.com/spectide/spectide/internal/store"
+	workspaceguard "github.com/spectide/spectide/internal/workspace"
 )
 
 // Engine is deliberately provider-neutral. The built-in fake route is the offline,
@@ -51,6 +52,12 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 	cfg, err := config.LoadEffective(config.GlobalPath(), config.ProjectPath(workspace))
 	if err != nil {
 		return model.Run{}, false, err
+	}
+	if len(cfg.AllowedScopes) > 0 {
+		workspace, err = workspaceguard.Canonical(workspace, cfg.AllowedScopes)
+		if err != nil {
+			return model.Run{}, false, err
+		}
 	}
 	decisions := make(map[string]config.Decision, len(stages))
 	for _, stage := range stages {
@@ -110,6 +117,9 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 }
 
 func canonicalWorkspace(project string) (string, error) {
+	if project == "" {
+		return "", fmt.Errorf("PROJECT_REQUIRED")
+	}
 	p, err := filepath.Abs(project)
 	if err != nil {
 		return "", err
@@ -117,7 +127,14 @@ func canonicalWorkspace(project string) (string, error) {
 	if resolved, e := filepath.EvalSymlinks(p); e == nil {
 		p = resolved
 	}
-	if st, e := os.Stat(p); e == nil && !st.IsDir() {
+	st, e := os.Stat(p)
+	if os.IsNotExist(e) {
+		return "", fmt.Errorf("PROJECT_PATH_UNAVAILABLE: %s", p)
+	}
+	if e != nil {
+		return "", fmt.Errorf("PROJECT_PATH_UNAVAILABLE: %w", e)
+	}
+	if !st.IsDir() {
 		return "", fmt.Errorf("PROJECT_NOT_DIRECTORY: %s", p)
 	}
 	return filepath.Clean(p), nil
