@@ -13,7 +13,7 @@ func TestRunConvergenceImplementsOnlyAppendedTasksThenRepeatsTests(t *testing.T)
 	convergeCalls, implementCalls, testCalls := 0, 0, 0
 	hooks := ConvergenceHooks{
 		Snapshot: func(context.Context) (ConvergenceSnapshot, error) {
-			return ConvergenceSnapshot{TaskLedger: ledger, GateVerdicts: gates}, nil
+			return ConvergenceSnapshot{SpecificationPath: "specs/001-build-spectide/spec.md", TaskLedger: ledger, GateVerdicts: gates}, nil
 		},
 		Converge: func(context.Context) (string, error) {
 			convergeCalls++
@@ -46,7 +46,7 @@ func TestRunConvergenceRejectsConvergedReportWithFailingRequiredGate(t *testing.
 	ledger := "# Tasks\n\n## Phase 1: Setup\n- [ ] T001 Existing task\n"
 	hooks := ConvergenceHooks{
 		Snapshot: func(context.Context) (ConvergenceSnapshot, error) {
-			return ConvergenceSnapshot{TaskLedger: ledger, GateVerdicts: map[string]string{"tests": "FAIL"}}, nil
+			return ConvergenceSnapshot{SpecificationPath: "specs/001-build-spectide/spec.md", TaskLedger: ledger, GateVerdicts: map[string]string{"tests": "FAIL"}}, nil
 		},
 		Converge:  func(context.Context) (string, error) { return "✅ Converged — required gates pass.", nil },
 		Implement: func(context.Context, []string) error { return nil },
@@ -61,7 +61,7 @@ func TestRunConvergenceRejectsReportedTasksThatDifferFromLedger(t *testing.T) {
 	ledger := "# Tasks\n\n## Phase 1: Setup\n- [ ] T001 Existing task\n"
 	hooks := ConvergenceHooks{
 		Snapshot: func(context.Context) (ConvergenceSnapshot, error) {
-			return ConvergenceSnapshot{TaskLedger: ledger, GateVerdicts: map[string]string{"tests": "FAIL"}}, nil
+			return ConvergenceSnapshot{SpecificationPath: "specs/001-build-spectide/spec.md", TaskLedger: ledger, GateVerdicts: map[string]string{"tests": "FAIL"}}, nil
 		},
 		Converge: func(context.Context) (string, error) {
 			ledger += "\n## Phase 2: Convergence\n- [ ] T002 Persisted task\n"
@@ -78,12 +78,33 @@ func TestRunConvergenceRejectsReportedTasksThatDifferFromLedger(t *testing.T) {
 	}
 }
 
+func TestRunConvergenceRejectsReplacementProductSpecificationPath(t *testing.T) {
+	ledger := "# Tasks\n\n## Phase 1: Setup\n- [ ] T001 Existing task\n"
+	snapshots := 0
+	hooks := ConvergenceHooks{
+		Snapshot: func(context.Context) (ConvergenceSnapshot, error) {
+			snapshots++
+			path := "specs/001-build-spectide/spec.md"
+			if snapshots > 1 {
+				path = "specs/002-replacement/spec.md"
+			}
+			return ConvergenceSnapshot{SpecificationPath: path, TaskLedger: ledger}, nil
+		},
+		Converge:  func(context.Context) (string, error) { return "✅ Converged — required gates pass.", nil },
+		Implement: func(context.Context, []string) error { return nil },
+		Test:      func(context.Context) (map[string]string, error) { return map[string]string{"tests": "PASS"}, nil },
+	}
+	if converged, err := RunConvergence(context.Background(), hooks, DefaultLoopLimits()); converged || err == nil || !strings.Contains(err.Error(), "PRODUCT_SPECIFICATION_PATH_CHANGED") {
+		t.Fatalf("converged=%v err=%v", converged, err)
+	}
+}
+
 func TestRunConvergenceRejectsNoProgressAndTaskRewrite(t *testing.T) {
 	old := "# Tasks\n\n## Phase 1: Setup\n- [ ] T001 Existing task\n"
 	t.Run("no progress", func(t *testing.T) {
 		hooks := ConvergenceHooks{
 			Snapshot: func(context.Context) (ConvergenceSnapshot, error) {
-				return ConvergenceSnapshot{TaskLedger: old, GateVerdicts: map[string]string{"tests": "FAIL"}}, nil
+				return ConvergenceSnapshot{SpecificationPath: "specs/001-build-spectide/spec.md", TaskLedger: old, GateVerdicts: map[string]string{"tests": "FAIL"}}, nil
 			},
 			Converge: func(context.Context) (string, error) {
 				return "## Convergence Findings\nOutcome: tasks_appended\n", nil
@@ -99,7 +120,7 @@ func TestRunConvergenceRejectsNoProgressAndTaskRewrite(t *testing.T) {
 		ledger := old
 		hooks := ConvergenceHooks{
 			Snapshot: func(context.Context) (ConvergenceSnapshot, error) {
-				return ConvergenceSnapshot{TaskLedger: ledger}, nil
+				return ConvergenceSnapshot{SpecificationPath: "specs/001-build-spectide/spec.md", TaskLedger: ledger}, nil
 			},
 			Converge: func(context.Context) (string, error) {
 				ledger = "# Replaced Tasks\n\n## Phase 2: Convergence\n- [ ] T002 New task\n"
@@ -120,7 +141,7 @@ func TestRunConvergenceStopsAfterFiveAppendRounds(t *testing.T) {
 	var phase, task int
 	hooks := ConvergenceHooks{
 		Snapshot: func(context.Context) (ConvergenceSnapshot, error) {
-			return ConvergenceSnapshot{TaskLedger: ledger}, nil
+			return ConvergenceSnapshot{SpecificationPath: "specs/001-build-spectide/spec.md", TaskLedger: ledger}, nil
 		},
 		Converge: func(context.Context) (string, error) {
 			convergeCalls++

@@ -11,8 +11,9 @@ import (
 )
 
 type ConvergenceSnapshot struct {
-	TaskLedger   string
-	GateVerdicts map[string]string
+	SpecificationPath string
+	TaskLedger        string
+	GateVerdicts      map[string]string
 }
 
 type ConvergenceHooks struct {
@@ -41,6 +42,9 @@ func RunConvergence(ctx context.Context, hooks ConvergenceHooks, limits LoopLimi
 		if err != nil {
 			return false, err
 		}
+		if before.SpecificationPath == "" {
+			return false, fmt.Errorf("PRODUCT_SPECIFICATION_PATH_REQUIRED")
+		}
 		output, err := hooks.Converge(ctx)
 		if err != nil {
 			return false, err
@@ -52,6 +56,9 @@ func RunConvergence(ctx context.Context, hooks ConvergenceHooks, limits LoopLimi
 		after, err := hooks.Snapshot(ctx)
 		if err != nil {
 			return false, err
+		}
+		if after.SpecificationPath != before.SpecificationPath {
+			return false, fmt.Errorf("PRODUCT_SPECIFICATION_PATH_CHANGED")
 		}
 		if result.Converged {
 			if before.TaskLedger != after.TaskLedger {
