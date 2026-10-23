@@ -1,5 +1,7 @@
 # Browser screenshot evidence
 
+Related acceptance evidence: [dashboard accessibility audit](../accessibility-audit.md) · [final verification report](../final-verification.md).
+
 Status: PARTIAL — one owner-provided desktop screenshot was observed in the conversation, but no release screenshot artifact is archived here; local browser-origin authorization remains blocked (T077/T078).
 
 The release evidence pass should save screenshots here from an authorized browser session. Capture the actual rendered dashboard at desktop, tablet, and phone widths, plus the run list and selected-run detail in representative empty, running, blocked, failed, simulated, disconnected, and reconnected states. Capture the 200% zoom and reduced-motion states where they change the rendered layout or motion.
