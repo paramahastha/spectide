@@ -2,7 +2,7 @@
 
 This ledger maps every functional requirement in the single master specification to current evidence. `Partial` means some behavior is implemented, but the complete requirement is not accepted. `Open` means required behavior or acceptance evidence is missing. The checked-in demo is simulated and never counts as a live-provider pass.
 
-Two official `speckit.converge` runs have checked the implementation against the master artifacts and constitution. The 22 October 2026 pass appended T055–T079; the 23 October pass appended T080–T106. The latest result is `tasks_appended`, not converged: T087/T088 remain partial, T103 is blocked on the authorized Chrome origin, and T104–T106 are in progress or open as tracked in the [master task ledger](../specs/001-build-spectide/tasks.md). The dated [implementation checkpoints](implementation-progress.md) preserve both passes and their historical evidence.
+Three official `speckit.converge` runs have checked the implementation against the master artifacts and constitution. The 22 October 2026 pass appended T055–T079; the first 23 October pass appended T080–T106; the latest 23 October pass appended no tasks and reported `not converged` because remaining work is already tracked. T087/T088 remain partial and T103 is blocked on authorized Chrome-origin access; T104 reporting is complete, while T045 remains open until the tracked gaps close and convergence returns clean. See the dated [implementation checkpoints](implementation-progress.md) and [master task ledger](../specs/001-build-spectide/tasks.md).
 
 | Requirement | Status | Evidence |
 |---|---|---|
@@ -41,11 +41,11 @@ Two official `speckit.converge` runs have checked the implementation against the
 
 | Criterion | Current evidence/status |
 |---|---|
-| SC-001 | Pass on recorded host: macOS 15.1, Apple M4, 16 GiB, arm64; latest same-process monotonic `make verify` measured 18.782 ms process-start-to-first-HTTP-200 at `/healthz`. See [verification evidence](final-verification.md). |
+| SC-001 | Pass on recorded host: macOS 15.1, Apple M4, 16 GiB, arm64; latest `make verify` measured 22.462 ms from process start to first HTTP 200 at `/healthz` using a monotonic clock. See [verification evidence](final-verification.md). |
 | SC-002 | Pass: 20 deterministic runs passed in `TestTwentyDeterministicRunsCompleteWithRequiredEvidence`. |
 | SC-003 | PASS, fixture-backed: store/workflow terminal matrices cover missing integrations, early failures, cancellation, interruption, successful simulation/live/mixed evidence, and extra required gates. `workflow_execution` participates in acceptance; non-applicable simulation gates are explicit. Authenticated-provider release evidence remains a separate open gate (T045/T046). |
 | SC-004 | Partial: persisted replay/cursor tests and two independent dashboard component viewers pass; actual browser clients and rendered reconnect behavior remain open under T077. |
 | SC-005 | Partial: API/routing/security tests cover secret redaction through persistence and display, and unsafe profile/configuration/routing references are rejected (T055); one unified unauthorized-route attempt suite remains open. |
-| SC-006 | PASS, fresh 2026-10-23 run: `make load-test-sse` used 10 clients, 100 events/s for 100 seconds, and 10,000 persisted backlog rows. All 200,020 non-heartbeat frames arrived with contiguous sequences; all-frame persisted-timestamp-to-receipt p95 was 269.75 ms, and the 100,000 live frames had p95 285.043 ms. The fixture starts from the persisted event high-water mark. |
+| SC-006 | PASS, latest fresh 2026-10-23 run: `make load-test-sse` used 10 clients, 100 events/s for 100 seconds, and 10,000 persisted backlog rows. All 200,020 non-heartbeat frames arrived with contiguous sequences; all-frame persisted-timestamp-to-receipt p95 was 308.912 ms, and the 100,000 live frames had p95 281.681 ms. The fixture starts from the persisted event high-water mark. |
 | SC-007 | Pass: `make smoke` completed with explicit `SIMULATED` output and isolated temporary state. |
 | SC-008 | Open: the spec now defines every FR-001 through FR-030 as required for v1; complete linked evidence remains outstanding. |
