@@ -2214,7 +2214,7 @@ Verify the dashboard at `http://127.0.0.1:4747` and check whether it displays ac
 - [ ] CI passes primary supported platform matrix.
 - [x] README documents the offline fake-provider demo, which runs without provider authentication.
 - [x] Security docs and honest provider limitations exist.
-- [ ] Cross-profile sample and screenshot available.
+- [ ] Cross-profile sample and screenshot set available. Preliminary evidence only: the owner supplied a desktop Workflow control screenshot on 2026-10-23, but it is not archived in `docs/screenshots/`; responsive and FR-026 page/state screenshots remain blocked by the Codex browser origin policy.
 
 ### Final acceptance report (required format)
 

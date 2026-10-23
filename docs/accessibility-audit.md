@@ -1,6 +1,6 @@
 # Dashboard accessibility audit
 
-**Status: PARTIAL — rendered browser acceptance remains open (T031/T077).**
+**Status: PARTIAL — one owner-provided desktop view is visible, but rendered browser acceptance remains open (T031/T077).**
 
 ## Automated state and surface coverage
 
@@ -26,6 +26,8 @@ Keyboard focus has a visible `:focus-visible` outline, and the stylesheet has a 
 - Browser E2E across the full page/state matrix: NOT_RUN.
 - Actual 200% zoom reflow and horizontal overflow: NOT_RUN.
 - Rendered browser contrast, keyboard/focus sequence, and reduced-motion behavior: NOT_RUN.
-- Screenshots at desktop, tablet, and phone widths: NOT_RUN.
+- Archived screenshot set at desktop, tablet, and phone widths: NOT_RUN; one owner-provided desktop view is noted below.
 
-Google Chrome is installed and available, but opening the local dashboard at `http://127.0.0.1:4747` was rejected by the browser origin approval gate. The saved browser permission policy denied local network access and disallowed alternate browser surfaces or indirect access. No alternate access path was used. T031/T077 remain unchecked until the origin is authorized and the rendered checks can run.
+The owner supplied a Chrome screenshot in the conversation on 2026-10-23 showing the Workflow control dashboard with one completed simulated run at a desktop viewport. The image source was 3024×1964 and displayed here downscaled to 1971×1280. This is preliminary visual evidence for that single view only; it is not archived in this repository and does not verify the FR-026 page/state matrix, keyboard behavior, zoom, contrast, or reduced motion.
+
+Although the dashboard is open in the owner's Chrome, the Codex browser integration still rejects inspection of `http://127.0.0.1:4747` because its saved origin approval policy denies access. No alternate browser surface or indirect access path was used. T031/T077 remain unchecked until the integration grants access and the rendered checks can run.
