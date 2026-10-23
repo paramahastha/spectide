@@ -530,6 +530,13 @@ func TestRunLiveStageUsesVerifiedCommandAndPersistsSanitizedEvidence(t *testing.
 		t.Fatal(err)
 	}
 	engine := NewWithAdapters(state, &liveFixtureAdapter{})
+	configuration, err := state.RunConfiguration(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = engine.saveCursorCheckpoint(ctx, run, feature, "tasks", "analyze", configuration.SHA256, "LIVE", LoopLimits{}); err != nil {
+		t.Fatal(err)
+	}
 	evidence, err := engine.runLiveStage(ctx, run, "plan", config.Route{Provider: "codex", Profile: "fixture"}, installation, feature)
 	if err != nil {
 		t.Fatal(err)

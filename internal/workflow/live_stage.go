@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -412,12 +413,12 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 }
 
 func (e *Engine) authorizeSensitiveInvocation(ctx context.Context, run model.Run, stage, phase, projectRoot string, profile model.Profile, prompt string, resume <-chan struct{}) error {
-	stages, err := e.store.Stages(ctx, run.ID)
+	stageRows, err := e.store.Stages(ctx, run.ID)
 	if err != nil {
 		return err
 	}
 	activeStage := model.Stage{}
-	for _, candidate := range stages {
+	for _, candidate := range stageRows {
 		if candidate.State == model.StageRun && (activeStage.ID == "" || candidate.Position > activeStage.Position || candidate.Attempt > activeStage.Attempt) {
 			activeStage = candidate
 		}
@@ -427,6 +428,31 @@ func (e *Engine) authorizeSensitiveInvocation(ctx context.Context, run model.Run
 	}
 	workspaceScope := workspaceIdentityFingerprint(projectRoot)
 	action := sensitiveWriteAction(workspaceScope, stage, phase, profile.Provider, profile.Name, prompt)
+	configuration, configErr := e.store.RunConfiguration(ctx, run.ID)
+	if configErr == nil {
+		_, state, checkpointErr := e.latestCursorCheckpoint(ctx, run.ID)
+		if checkpointErr != nil {
+			return checkpointErr
+		}
+		stageIndex := indexOfStage(activeStage.Key)
+		if stageIndex < 0 || state.NextStage != activeStage.Key {
+			return fmt.Errorf("WORKSPACE_DRIFT: approval stage does not match verified cursor")
+		}
+		completedStage := "starting"
+		if stageIndex > 0 {
+			completedStage = stages[stageIndex-1]
+		}
+		featureDir := ""
+		if state.FeatureDirectory != "" {
+			featureDir = filepath.Join(run.Project, filepath.FromSlash(state.FeatureDirectory))
+		}
+		cursor := checkpointCursor{Phase: phase, Operation: "await_sensitive_approval"}
+		if err = e.saveCursorCheckpoint(ctx, run, featureDir, completedStage, activeStage.Key, configuration.SHA256, "LIVE", state.LoopCounts, cursor); err != nil {
+			return err
+		}
+	} else if configErr != sql.ErrNoRows {
+		return configErr
+	}
 	approval, err := e.store.CreateWorkflowApprovalAndPause(ctx, run.ID, activeStage.Key, action)
 	if err != nil {
 		return err

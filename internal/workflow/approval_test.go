@@ -238,6 +238,80 @@ func TestSensitiveApprovalWaitsAndResolvesAfterStoreRestart(t *testing.T) {
 	}
 }
 
+func TestSensitiveApprovalPersistsExecutableStageCursor(t *testing.T) {
+	ctx := context.Background()
+	project := initCheckpointGitProject(t)
+	state, err := store.Open(filepath.Join(t.TempDir(), "approval-cursor.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	configurationJSON := fakeRunConfiguration(t)
+	run, reused, err := state.CreateRunWithConfiguration(ctx, "", project, "resume an approved write", configurationJSON)
+	if err != nil || reused {
+		t.Fatalf("create run reused=%v err=%v", reused, err)
+	}
+	stage := model.Stage{ID: "active-implement-cursor", RunID: run.ID, Key: "implement", Position: indexOfStage("implement"), State: model.Pending, Provider: "codex", Profile: "fixture", Attempt: 1}
+	if err = state.AddStage(ctx, stage); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.SetStage(ctx, stage.ID, model.StageRun); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.SetRunState(ctx, run.ID, model.Running); err != nil {
+		t.Fatal(err)
+	}
+	configuration, err := state.RunConfiguration(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spent := LoopLimits{AnalyzeRemediations: 1, TestRepairs: 2, ConvergenceRounds: 1}
+	engine := New(state)
+	if err = engine.saveCursorCheckpoint(ctx, run, "", "analyze", "implement", configuration.SHA256, "LIVE", spent); err != nil {
+		t.Fatal(err)
+	}
+	profile := model.Profile{Name: "fixture", Provider: "codex"}
+	result := make(chan error, 1)
+	go func() {
+		result <- engine.authorizeSensitiveInvocation(ctx, run, "implement", "test_repair", project, profile, "Repair the failing local test", nil)
+	}()
+	var approval model.Approval
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		approvals, loadErr := state.Approvals(ctx, run.ID)
+		if loadErr != nil {
+			t.Fatal(loadErr)
+		}
+		if len(approvals) > 0 && approvals[0].Status == model.ApprovalPending {
+			approval = approvals[0]
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if approval.ID == "" {
+		t.Fatal("approval did not become pending")
+	}
+	checkpoints, err := state.Checkpoints(ctx, run.ID)
+	if err != nil || len(checkpoints) < 2 {
+		t.Fatalf("approval cursor checkpoint missing: checkpoints=%d err=%v", len(checkpoints), err)
+	}
+	checkpoint, cursor, err := engine.latestCursorCheckpoint(ctx, run.ID)
+	if err != nil || checkpoint.Stage != "analyze" || cursor.NextStage != "implement" || cursor.PendingPhase != "test_repair" || cursor.PendingOperation != "await_sensitive_approval" || cursor.LoopCounts != spent {
+		t.Fatalf("approval continuation cursor=%+v checkpoint=%+v err=%v", cursor, checkpoint, err)
+	}
+	if err = state.ResolveApprovalForRun(ctx, run.ID, approval.ID, model.ApprovalApproved); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err = <-result:
+		if err != nil {
+			t.Fatalf("approved invocation did not continue: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("approved invocation did not wake")
+	}
+}
+
 func TestDeniedSensitiveApprovalCannotBeBypassedAfterStoreRestart(t *testing.T) {
 	ctx := context.Background()
 	project := t.TempDir()
