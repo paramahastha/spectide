@@ -521,7 +521,7 @@ func TestRunLiveStageUsesVerifiedCommandAndPersistsSanitizedEvidence(t *testing.
 	if err = state.SetRunState(ctx, run.ID, model.Running); err != nil {
 		t.Fatal(err)
 	}
-	writeAction := "Write workspace " + workspaceIdentityFingerprint(project) + " during implement/analyze_remediation via codex/fixture"
+	writeAction := sensitiveWriteAction(workspaceIdentityFingerprint(project), "implement", "analyze_remediation", "codex", "fixture", "Only edit spec.md")
 	writeApproval, err := state.CreateApproval(ctx, model.Approval{RunID: run.ID, Action: writeAction})
 	if err != nil {
 		t.Fatal(err)

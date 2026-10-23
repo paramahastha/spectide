@@ -181,7 +181,7 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 		e.mu.Lock()
 		resume := e.resumes[run.ID]
 		e.mu.Unlock()
-		if err = e.authorizeSensitiveInvocation(ctx, run, stage, phase, installation.ProjectRoot, *profile, resume); err != nil {
+		if err = e.authorizeSensitiveInvocation(ctx, run, stage, phase, installation.ProjectRoot, *profile, prompt, resume); err != nil {
 			return nil, err
 		}
 	}
@@ -411,7 +411,7 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 	return evidence, nil
 }
 
-func (e *Engine) authorizeSensitiveInvocation(ctx context.Context, run model.Run, stage, phase, projectRoot string, profile model.Profile, resume <-chan struct{}) error {
+func (e *Engine) authorizeSensitiveInvocation(ctx context.Context, run model.Run, stage, phase, projectRoot string, profile model.Profile, prompt string, resume <-chan struct{}) error {
 	stages, err := e.store.Stages(ctx, run.ID)
 	if err != nil {
 		return err
@@ -426,7 +426,7 @@ func (e *Engine) authorizeSensitiveInvocation(ctx context.Context, run model.Run
 		return fmt.Errorf("SENSITIVE_WRITE_STAGE_REQUIRED")
 	}
 	workspaceScope := workspaceIdentityFingerprint(projectRoot)
-	action := fmt.Sprintf("Write workspace %s during %s/%s via %s/%s", workspaceScope, stage, phase, profile.Provider, profile.Name)
+	action := sensitiveWriteAction(workspaceScope, stage, phase, profile.Provider, profile.Name, prompt)
 	approval, err := e.store.CreateWorkflowApprovalAndPause(ctx, run.ID, activeStage.Key, action)
 	if err != nil {
 		return err
@@ -457,6 +457,11 @@ func (e *Engine) authorizeSensitiveInvocation(ctx context.Context, run model.Run
 		return fmt.Errorf("SENSITIVE_ACTION_STATUS_INVALID")
 	}
 	return e.store.Event(ctx, run.ID, activeStage.Key, "approval.write_authorized", "info", map[string]any{"approval_id": approval.ID, "stage": stage, "phase": phase, "workspace_scope": workspaceScope, "provider": profile.Provider, "profile": profile.Name, "execution": "LIVE"})
+}
+
+func sensitiveWriteAction(workspaceScope, stage, phase, provider, profile, prompt string) string {
+	intentHash := sha256.Sum256([]byte(prompt))
+	return fmt.Sprintf("Write workspace %s during %s/%s via %s/%s intent %s", workspaceScope, stage, phase, provider, profile, hex.EncodeToString(intentHash[:]))
 }
 
 func (e *Engine) validateProfileReferences(ctx context.Context, runID string, profile model.Profile) (security.ExecutableReference, string, error) {
