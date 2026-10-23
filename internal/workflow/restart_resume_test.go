@@ -121,6 +121,70 @@ func TestRestartResumeRequiresAndRestoresVerifiedCheckpoint(t *testing.T) {
 	t.Fatalf("resumed workflow did not complete, state=%s", resumed.State)
 }
 
+func TestRestartResumeBlocksAndFinalizesAmbiguousWriteAttempt(t *testing.T) {
+	ctx := context.Background()
+	project := initCheckpointGitProject(t)
+	state, err := store.Open(filepath.Join(t.TempDir(), "ambiguous-write.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	configurationJSON := fakeRunConfiguration(t)
+	run, reused, err := state.CreateRunWithConfiguration(ctx, "", project, "do not replay an ambiguous write", configurationJSON)
+	if err != nil || reused {
+		t.Fatalf("create run reused=%v err=%v", reused, err)
+	}
+	configuration, err := state.RunConfiguration(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = state.AcquireWorkspaceLockOwned(ctx, project, run.ID, "expired-owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.SetRunState(ctx, run.ID, model.Running); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.SetRunState(ctx, run.ID, model.Paused); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.Event(ctx, run.ID, "implement", "run.paused", "warning", map[string]any{"stage": "implement"}); err != nil {
+		t.Fatal(err)
+	}
+	stage := model.Stage{ID: "interrupted-implementation", RunID: run.ID, Key: "implement", Position: indexOfStage("implement"), State: model.Pending, Provider: "codex", Profile: "fixture", Attempt: 1}
+	if err = state.AddStage(ctx, stage); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.SetStage(ctx, stage.ID, model.StageRun); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = state.StartExecutionAttempt(ctx, model.ExecutionAttempt{RunID: run.ID, Stage: "implement", Phase: "implementation", Provider: "codex", Profile: "fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	engine := New(state)
+	if err = engine.saveCursorCheckpoint(ctx, run, "", "analyze", "implement", configuration.SHA256, "LIVE", LoopLimits{}, checkpointCursor{Phase: "implement", Operation: "await_sensitive_approval"}); err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().UTC().Add(-store.RunOwnerLease - time.Second).Format(time.RFC3339Nano)
+	if _, err = state.DB.ExecContext(ctx, `UPDATE run_owners SET heartbeat_at=? WHERE run_id=?`, stale, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = engine.Resume(run.ID); err == nil || !strings.Contains(err.Error(), "AMBIGUOUS_WRITE_REQUIRES_REVIEW") {
+		t.Fatalf("ambiguous write restart was not blocked: %v", err)
+	}
+	resumed, err := state.GetRun(ctx, run.ID)
+	if err != nil || resumed.State != model.Blocked {
+		t.Fatalf("ambiguous write run state=%s err=%v", resumed.State, err)
+	}
+	stagesAfter, err := state.Stages(ctx, run.ID)
+	if err != nil || len(stagesAfter) != 1 || stagesAfter[0].State != model.StageFail {
+		t.Fatalf("ambiguous stage was replayed or left active: stages=%+v err=%v", stagesAfter, err)
+	}
+	attempts, err := state.ExecutionAttempts(ctx, run.ID)
+	if err != nil || len(attempts) != 1 || attempts[0].Result != "FAILED" || !strings.Contains(attempts[0].Error, "ambiguous") {
+		t.Fatalf("ambiguous provider attempt was not finalized: attempts=%+v err=%v", attempts, err)
+	}
+}
+
 func TestCheckpointTracksLatestArtifactVersionsAndPreservesHistory(t *testing.T) {
 	ctx := context.Background()
 	project := initCheckpointGitProject(t)

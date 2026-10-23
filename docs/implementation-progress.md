@@ -841,4 +841,4 @@
 ### T087 continuation update — nested convergence checks — 2026-10-23
 
 - Convergence and final-review hooks now forward a restored local-check cursor into the quality runner. The outer loop consumes the `continue_registered_checks` cursor first, restores prior check evidence, and then continues its convergence/review cycle; it does not start a new provider operation before the remaining checks pass.
-- Added coverage for the registered-check continuation operation. Focused cursor tests, `go test ./internal/workflow ./internal/store ./internal/quality -count=1`, package vet, and `git diff --check` passed. T087 stays open for full process-exit integration coverage of each loop.
+- Added coverage for the registered-check continuation operation and a restart test that finalizes an interrupted implementation attempt, blocks the run, and proves no replay attempt is added. `go test ./internal/workflow ./internal/store ./internal/quality -count=1`, package vet, and `git diff --check` passed. T087 stays open for full process-exit integration coverage of approval, analyze remediation, local checks, and appended-task convergence.
