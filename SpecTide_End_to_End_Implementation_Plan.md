@@ -1526,14 +1526,16 @@ Implement scope as a deny-first policy. Explicit exceptions must be documented a
 - [x] Run the fake-provider success, failure, and rate-limit scripts through complete engine stage lifecycles; persist typed simulated provider events and terminal gate evidence, and verify repair/convergence bounds, interruption, and workspace contention in workflow tests (T076).
 - [x] Align CI and contributor documentation on Node.js 26; run dashboard typecheck, tests, and build on Node 26 while retaining the Go 1.27 verification (T079).
 - [x] Implement and verify the newly appended Phase 9 convergence queue except for the separately tracked browser gate; T080–T102 and T104–T106 are complete, T087 restart continuation is revalidated after analyzer findings, and the official convergence rerun appended no tasks. T045's verification/convergence loop is complete at its documented-blocker outcome; T103 and release acceptance remain open because the existing browser/release evidence prevents clean convergence.
-- [ ] Complete browser page/state and accessibility evidence, screenshots, and the final release report (T031, T046); the Codex browser integration's saved origin policy still blocks inspection of `http://127.0.0.1:4747`. One owner-provided desktop screenshot is preliminary and unarchived.
-- [ ] Close the browser-dependent release gate (T031/T046/T077/T078/T103) after the Codex browser integration permits the origin and required evidence is recorded; official convergence was rerun after T087 and appended no tasks, but remains NOT_CONVERGED while those existing acceptance tasks are open. The T045 verification/convergence loop is complete at its documented-blocker outcome. T087 restart-cursor integration, T088 approval binding, T104 final verification, T105 documentation reconciliation, and T106 release preparation are complete. See the fresh verification and convergence checkpoint below.
+- [ ] Complete browser page/state and accessibility evidence, archived screenshots, and the final release report (T031, T046). Chrome inspection after server restart confirmed the profile fix, run detail, and ready route preview. Browser console was clear, focus was visible, and the 200% desktop and 390×844 phone checks found no page-level horizontal overflow. The remaining state/accessibility matrix and screenshot files are not complete; the owner-provided desktop screenshot remains preliminary and unarchived.
+- [ ] Close the browser-dependent release gate (T031/T046/T077/T078/T103) by recording the remaining page/state, accessibility, and screenshot evidence in the authorized Chrome session. The latest official convergence appended no tasks but remains NOT_CONVERGED while these acceptance items are open. T045, T087, T088, and T104–T106 are complete. See the fresh verification and convergence checkpoint below.
 
 The detailed phase checklists below remain the full blueprint. Their original bootstrap steps are not re-executed; use the canonical ledger for current task completion and resume at the next unchecked dependency.
 
 **T016/T035 checkpoint (22 October 2026):** Live `analyze`, `tests`, `converge`, and `final_review` now run their bounded loops with a shared per-run budget. Analyze remediation is restricted to its owning canonical artifact; test verdicts, convergence reports, and final gates are persisted; appended tasks are validated and re-tested; the final review uses a verified read-only analyze route. The final-review checkpoint stores loop counts. Focused workflow tests and full `make verify` pass. This is fixture-backed workflow evidence; real provider authentication and official convergence remain T045. See [implementation progress](docs/implementation-progress.md).
 
 **T031 checkpoint (22 October 2026):** Added route-preview and profile-readiness views, explicit empty/error/disconnected states, and state/accessibility tests. `cd web && npm test` passes 26 tests, and the Axe scan reports zero critical/serious issues across the seven named surfaces; stylesheet contrast checks pass for the primary text tokens. Full `make verify` passes (latest SC-001: 19.005 ms). T031 remains unchecked because browser E2E, 200% zoom, rendered keyboard/focus/reduced-motion checks, and screenshots could not run: no Chromium/Chrome/Edge executable is installed, and the previous localhost browser access request was denied. Evidence and this limitation are recorded in [the accessibility audit](docs/accessibility-audit.md).
+
+**Profile empty-list fix checkpoint (23 October 2026):** Authorized Chrome inspection reproduced blank Profiles & models/Profile readiness views. The API returned JSON `null` for an empty profile table, and the dashboard called `.length` on that value. `Store.Profiles` now returns a non-nil empty slice, the UI normalizes unexpected null responses, and regression tests cover API `[]` plus both views receiving null. `go test ./...`, all 34 frontend tests, TypeScript typecheck, and the Vite production build pass. The current server process embeds the prior dashboard bundle and remains bound to the authorized origin; reloading the browser alone cannot validate the rebuilt bundle. T031/T046/T077/T078/T103 remain open until the server is restarted and the rest of browser/release evidence is captured.
 
 **T034 checkpoint (22 October 2026):** Pause requests now take effect only at stage boundaries. Resume validates canonical workspace identity, the exclusive run lock, immutable configuration SHA, checkpoint row/state/cursor identity, registered and canonical Spec-Kit artifact hashes, Git HEAD/index, managed-path hashes, and bounded loop counters before resuming in-process or claiming an expired owner. A stale owner can be claimed atomically only while the run is paused and still holds its exclusive lock. Verification failures preserve workspace/checkpoint evidence, append `run.interrupted` with `WORKSPACE_DRIFT`, block the run, and release abandoned ownership without editing files. Added restart tests for successful continuation, tracked and ignored registered-artifact drift, Git HEAD drift, checkpoint/config cursor mismatch, and no-overwrite behavior. Focused workflow/store suites and full `make verify` pass; latest SC-001 is 29.799 ms. A fresh process must resume a paused run before starting another run, because start-time reconciliation blocks expired owners. See [recovery documentation](docs/recovery.md) and [implementation progress](docs/implementation-progress.md). T036 was still open at this checkpoint and is covered in the next checkpoint.
 
@@ -2182,39 +2184,39 @@ Verify the dashboard at `http://127.0.0.1:4747` and check whether it displays ac
 
 ### Product and UX
 
-- [ ] Full CLI implemented, including `spectide demo`; help and exit codes meaningful.
-- [ ] Real local dashboard served by Go and consuming API/SSE.
-- [ ] User can create/preview/start/monitor/pause/cancel/resume a run.
-- [ ] Active stage shows provider, profile, model, effort and attempts.
-- [ ] History survives restart and reports are exportable.
+- [x] Full CLI implemented, including `spectide demo`; help and exit codes meaningful. Evidence: `make verify`, CLI tests, and the offline smoke report.
+- [x] Real local dashboard served by Go and consuming API/SSE. The browser pass rendered persisted run detail and live event history.
+- [x] User can create/preview/start/monitor/pause/cancel/resume a run, subject to configured route authorization. API, CLI, workflow, and dashboard controls are covered by automated evidence.
+- [x] Active stage shows provider, profile, model, effort and attempts. Persisted stage and attempt projections are tested; authenticated live-provider execution remains `NOT_RUN`.
+- [x] History survives restart and reports are exportable as sanitized JSON evidence.
 
 ### Spec-Kit workflows
 
 - [x] One master product specification drives development, without separate product re-specifications.
-- [ ] Full canonical stage support implemented; stage skipping follows explicit policy.
-- [ ] Analyze remediation routes to correct earlier artifacts and verifies no mutations during analyze.
-- [ ] Converge appends tasks and loops back to implementation/tests.
-- [ ] Final completion requires evidence of convergence and passing gates.
-- [ ] Bounded retries, stagnation detection, and honest blocked status.
+- [x] Full canonical stage support implemented; stage skipping follows explicit policy.
+- [x] Analyze remediation routes to correct earlier artifacts and verifies no mutations during analyze (fixture-backed; real provider acceptance remains `NOT_RUN`).
+- [x] Converge appends tasks and loops back to implementation/tests (fixture-backed; official convergence currently reports `NOT_CONVERGED` only for the open release evidence gate).
+- [x] Final completion requires evidence of convergence and passing gates; the current run remains unreleased while acceptance items are open.
+- [x] Bounded retries, stagnation detection, and honest blocked status.
 
 ### Provider integration
 
-- [ ] Claude Code, Codex and OpenCode adapters implemented.
-- [ ] Two distinct Claude profiles configured and tested with simulated/authorized live runs.
-- [ ] Model and effort are configurable per stage with runtime validation.
-- [ ] Manual, hybrid and automatic routing supported.
-- [ ] Fallbacks never cross forbidden account/repo boundary.
+- [x] Claude Code, Codex and OpenCode adapters implemented with fixture contracts and fail-closed capability checks.
+- [ ] Two distinct Claude profiles configured and tested with simulated/authorized live runs; no such acceptance evidence is recorded.
+- [x] Model and effort are configurable per stage with runtime validation.
+- [x] Manual, hybrid and automatic routing modes supported by configuration and capability validation.
+- [x] Fallbacks are constrained to authorized profile and repository boundaries; automatic fallback execution is not claimed.
 
 ### Engineering quality
 
 - [x] Go and frontend build cleanly.
-- [ ] Required backend/frontend/e2e suites pass.
-- [ ] State-machine, SSE and recovery scenarios pass.
-- [ ] Loopback API security and redaction scenarios pass.
-- [ ] CI passes primary supported platform matrix.
+- [ ] Required backend/frontend suites pass; browser E2E acceptance is still open.
+- [x] State-machine, SSE and recovery scenarios pass in the automated suites; actual two-viewer browser checks remain open.
+- [x] Loopback API security and redaction scenarios pass.
+- [ ] CI passes the complete supported platform matrix; only the documented macOS/Linux release artifacts and CI coverage are evidenced.
 - [x] README documents the offline fake-provider demo, which runs without provider authentication.
 - [x] Security docs and honest provider limitations exist.
-- [ ] Cross-profile sample and screenshot set available. Preliminary evidence only: the owner supplied a desktop Workflow control screenshot on 2026-10-23, but it is not archived in `docs/screenshots/`; responsive and FR-026 page/state screenshots remain blocked by the Codex browser origin policy.
+- [ ] Cross-profile sample and required screenshot set available. A preliminary owner desktop screenshot is not archived. After restart on the authorized Chrome origin, run detail, route preview, and both profile empty states rendered; no page-level overflow was observed at 200% zoom or a 390×844 viewport. The full responsive and FR-026 page/state screenshot set is still open (T031/T046/T077/T078/T103).
 
 ### Final acceptance report (required format)
 

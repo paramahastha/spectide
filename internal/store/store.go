@@ -962,7 +962,7 @@ func (s *Store) Profiles(ctx context.Context) ([]model.Profile, error) {
 		return nil, e
 	}
 	defer rows.Close()
-	var out []model.Profile
+	out := make([]model.Profile, 0)
 	for rows.Next() {
 		var p model.Profile
 		var scopes, capabilityJSON, observedAt string

@@ -125,6 +125,22 @@ describe('FR-026 dashboard page and state matrix', () => {
     expect(requestBody?.project).toBe('./examples/fake-provider-demo')
   })
 
+  it('keeps profile views usable when the API returns a null empty list', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/version')) return json({ csrf_token: 'csrf-fixture' })
+      if (url.endsWith('/api/v1/profiles')) return json(null)
+      if (url.endsWith('/api/v1/runs')) return json([])
+      return json({}, 404)
+    }))
+    vi.stubGlobal('EventSource', class { close() {} addEventListener() {} })
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: /Profile readiness/ }))
+    expect(await screen.findByText('No profiles to assess')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /Profiles & models/ }))
+    expect(await screen.findByText('No profiles registered')).toBeTruthy()
+  })
+
   it('invalidates a ready route preview when project intent changes', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)

@@ -87,7 +87,7 @@ export function App() {
   useEffect(() => {
     if (!token) return
     void refresh()
-    void api<Profile[]>('/api/v1/profiles').then((items) => { setProfiles(items); setProfileError(''); setConnection('connected') }).catch((error) => { setProfileError(String(error)); setConnection('disconnected') })
+    void api<Profile[]>('/api/v1/profiles').then((items) => { setProfiles(Array.isArray(items) ? items : []); setProfileError(''); setConnection('connected') }).catch((error) => { setProfileError(String(error)); setConnection('disconnected') })
     const timer = window.setInterval(() => void refresh(), 1800)
     return () => window.clearInterval(timer)
   }, [api, refresh, token])

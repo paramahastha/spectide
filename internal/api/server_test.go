@@ -584,10 +584,17 @@ func TestDryRunRejectsFallbackOutsideProjectBoundaryWithoutCreatingRun(t *testin
 
 func TestCreateAndListProfile(t *testing.T) {
 	s := testServer(t)
-	r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/profiles", strings.NewReader(`{"name":"fake","provider":"fake","executable":"fake","allowed_scopes":["personal-public"]}`))
+	r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/v1/profiles", nil)
+	r.Host = "127.0.0.1"
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != "[]" {
+		t.Fatalf("empty profile list=%d: %s", w.Code, w.Body.String())
+	}
+	r = httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/profiles", strings.NewReader(`{"name":"fake","provider":"fake","executable":"fake","allowed_scopes":["personal-public"]}`))
 	r.Host = "127.0.0.1"
 	r.Header.Set("X-SpecTide-CSRF", s.CSRF)
-	w := httptest.NewRecorder()
+	w = httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, r)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create=%d: %s", w.Code, w.Body.String())
