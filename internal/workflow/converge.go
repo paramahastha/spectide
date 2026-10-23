@@ -19,6 +19,7 @@ type ConvergenceSnapshot struct {
 }
 
 type ConvergenceHooks struct {
+	Phase     string
 	Snapshot  func(context.Context) (ConvergenceSnapshot, error)
 	Converge  func(context.Context) (string, error)
 	Implement func(context.Context, []string) error
@@ -141,7 +142,7 @@ func RunFinalReviewWithBudget(ctx context.Context, hooks FinalReviewHooks, budge
 }
 
 func runConvergenceWithBudget(ctx context.Context, hooks ConvergenceHooks, budget *LoopBudget, limits LoopLimits) (bool, error) {
-	if hooks.Resume != nil && hooks.Resume.PendingPhase == "convergence" {
+	if hooks.Resume != nil && hooks.Resume.PendingPhase == hooks.Phase {
 		cursor := hooks.Resume
 		switch cursor.PendingOperation {
 		case "implement_appended_tasks":
@@ -158,6 +159,17 @@ func runConvergenceWithBudget(ctx context.Context, hooks ConvergenceHooks, budge
 			}
 			fallthrough
 		case "continue_convergence", "run_tests_after_task_implementation":
+			gates, err := hooks.Test(ctx)
+			if err != nil {
+				return false, err
+			}
+			if err = requirePassingGates(gates, "REQUIRED_TEST"); err != nil {
+				return false, err
+			}
+		case "continue_registered_checks":
+			if hooks.Phase == "" || cursor.TaskPosition < 1 || cursor.TaskPosition != len(cursor.CompletedQualityExecutionIDs) {
+				return false, fmt.Errorf("WORKSPACE_DRIFT: registered-check continuation cursor is invalid")
+			}
 			gates, err := hooks.Test(ctx)
 			if err != nil {
 				return false, err

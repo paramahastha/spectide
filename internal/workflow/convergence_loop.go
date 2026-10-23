@@ -16,7 +16,12 @@ import (
 func (e *Engine) liveConvergenceHooks(run model.Run, phase string, decisions map[string]config.Decision, installation speckit.Installation, featureDir string, gateVerdicts map[string]string, budget *LoopBudget, restored ...*cursorCheckpointState) ConvergenceHooks {
 	implementRoute := decisions["implement"].Route
 	convergeRoute := decisions["converge"].Route
+	var testResume *cursorCheckpointState
+	if len(restored) > 0 {
+		testResume = restored[0]
+	}
 	hooks := ConvergenceHooks{
+		Phase: phase,
 		Snapshot: func(context.Context) (ConvergenceSnapshot, error) {
 			content, err := os.ReadFile(filepath.Join(featureDir, "tasks.md"))
 			if err != nil {
@@ -83,7 +88,9 @@ func (e *Engine) liveConvergenceHooks(run model.Run, phase string, decisions map
 			return e.loopControlBoundaryAt(ctx, run, workflowStage, featureDir, budget, checkpointCursor{Phase: phase, Operation: operation, Tasks: tasks, Position: position})
 		},
 		Test: func(ctx context.Context) (map[string]string, error) {
-			verdicts, err := e.runTestRepairLoop(ctx, run, phase, decisions, installation, featureDir, budget)
+			currentResume := testResume
+			testResume = nil
+			verdicts, err := e.runTestRepairLoop(ctx, run, phase, decisions, installation, featureDir, budget, currentResume)
 			if persistErr := persistTestVerdicts(ctx, e.store, run.ID, verdicts); persistErr != nil {
 				return verdicts, persistErr
 			}
@@ -118,11 +125,11 @@ func (e *Engine) runLiveConvergenceLoop(ctx context.Context, run model.Run, deci
 	return nil
 }
 
-func (e *Engine) runLiveFinalReviewLoop(ctx context.Context, run model.Run, decisions map[string]config.Decision, installation speckit.Installation, featureDir string, gateVerdicts map[string]string, budget *LoopBudget) error {
+func (e *Engine) runLiveFinalReviewLoop(ctx context.Context, run model.Run, decisions map[string]config.Decision, installation speckit.Installation, featureDir string, gateVerdicts map[string]string, budget *LoopBudget, restored ...*cursorCheckpointState) error {
 	if decisions["final_review"].Route.Provider == "fake" || decisions["implement"].Route.Provider == "fake" || decisions["converge"].Route.Provider == "fake" {
 		return fmt.Errorf("FINAL_REVIEW_ADAPTER_UNAVAILABLE")
 	}
-	convergence := e.liveConvergenceHooks(run, "final_review", decisions, installation, featureDir, gateVerdicts, budget)
+	convergence := e.liveConvergenceHooks(run, "final_review", decisions, installation, featureDir, gateVerdicts, budget, restored...)
 	hooks := FinalReviewHooks{
 		Convergence: convergence,
 		Review: func(ctx context.Context) ([]string, error) {

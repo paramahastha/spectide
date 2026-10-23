@@ -837,3 +837,8 @@
 
 - Before a live sensitive-write approval can pause a run, the workflow now persists `await_sensitive_approval` with the active stage, exact phase, feature scope, and previously spent loop counts. On process restart, the verified cursor points back to that stage; authorization still rechecks the durable approval action before creating any provider attempt.
 - A regression verifies the checkpoint stage/next-stage identity, pending phase/operation, and restored budget counts, then resolves the approval and confirms the waiting invocation continues. `go test ./internal/workflow ./internal/store ./internal/quality -count=1`, `go vet ./internal/workflow ./internal/store ./internal/quality`, `go test -race ./internal/workflow -run 'TestSensitiveApprovalPersistsExecutableStageCursor|TestRunConvergenceRestoresAppendedTaskCursorWithoutReConverging|TestRestoreCompletedQualityResultsFromCheckpointCursor' -count=1`, and `git diff --check` passed. T087 remains open for end-to-end owner-process-exit tests across the remaining cursor paths.
+
+### T087 continuation update — nested convergence checks — 2026-10-23
+
+- Convergence and final-review hooks now forward a restored local-check cursor into the quality runner. The outer loop consumes the `continue_registered_checks` cursor first, restores prior check evidence, and then continues its convergence/review cycle; it does not start a new provider operation before the remaining checks pass.
+- Added coverage for the registered-check continuation operation. Focused cursor tests, `go test ./internal/workflow ./internal/store ./internal/quality -count=1`, package vet, and `git diff --check` passed. T087 stays open for full process-exit integration coverage of each loop.

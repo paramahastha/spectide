@@ -1051,7 +1051,7 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 				e.failPersistence(ctx, r.ID)
 				return
 			}
-			err := e.runLiveFinalReviewLoop(ctx, r, decisions, installation, featureDir, runGateVerdicts, loopBudget)
+			err := e.runLiveFinalReviewLoop(ctx, r, decisions, installation, featureDir, runGateVerdicts, loopBudget, continuation)
 			if err != nil {
 				if persistErr := e.failLiveQualityStage(ctx, r.ID, key, st.ID, "final_review", err, ctx); persistErr != nil {
 					e.failPersistence(ctx, r.ID)

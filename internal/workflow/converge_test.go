@@ -57,7 +57,7 @@ func TestRunConvergenceImplementsOnlyAppendedTasksThenRepeatsTests(t *testing.T)
 }
 
 func TestRunConvergenceRestoresAppendedTaskCursorWithoutReConverging(t *testing.T) {
-	for _, operation := range []string{"implement_appended_tasks", "continue_convergence"} {
+	for _, operation := range []string{"implement_appended_tasks", "continue_convergence", "continue_registered_checks"} {
 		t.Run(operation, func(t *testing.T) {
 			budget, err := NewLoopBudget(DefaultLoopLimits())
 			if err != nil {
@@ -68,7 +68,12 @@ func TestRunConvergenceRestoresAppendedTaskCursorWithoutReConverging(t *testing.
 			}
 			convergeCalls, implementCalls, testCalls := 0, 0, 0
 			cursor := &cursorCheckpointState{PendingPhase: "convergence", PendingOperation: operation, PendingTasks: []string{"T087 finish cursor"}, TaskPosition: 1}
+			if operation == "continue_registered_checks" {
+				cursor.PendingCheck = "format"
+				cursor.CompletedQualityExecutionIDs = []string{"quality-execution-1"}
+			}
 			hooks := ConvergenceHooks{
+				Phase:  "convergence",
 				Resume: cursor,
 				Snapshot: func(context.Context) (ConvergenceSnapshot, error) {
 					return ConvergenceSnapshot{SpecificationPath: "specs/001-build-spectide/spec.md", TaskLedger: "tasks", PlanContent: "plan", GateVerdicts: map[string]string{"tests": "PASS"}}, nil
