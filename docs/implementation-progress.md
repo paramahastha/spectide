@@ -801,3 +801,9 @@
 - The backlog fixture now starts at `EventHighWater+1`, retains its batch-persisted UTC timestamp, and computes buffer/expected counts from the actual persisted high-water mark plus live frames. The reader still rejects missing/duplicate sequences and counts every non-heartbeat frame.
 - Fresh `make load-test-sse` passed: 10 clients; 100 events/s for 100 seconds; 10,000 backlog rows; 200,020 contiguous non-heartbeat frames; all-frame p95 269.75 ms; live-frame p95 285.043 ms. SC-006 is again current PASS evidence, replacing the prior setup failure and older pass.
 - `make load-test-sse`, `go test ./internal/api -count=1`, `go vet ./internal/api`, and `git diff --check` are the phase validation. T102 is complete; T103 is next. T087/T088 remain partial.
+
+### T105 — Reconcile current documentation — 2026-10-23
+
+- Updated the README and provider guide to describe fixture-backed adapters, the supported provider-specific profile probes, `doctor`'s executable-presence scope, fail-closed unavailable capabilities, and the distinction between required offline evidence and optional real-account smoke acceptance.
+- Corrected the acceptance ledger and final-verification report: live/mixed runs do not require the simulation-only E2E gate; T098 retention and sanitized JSON `spectide report RUN_ID` output are documented; both official convergence passes and the current T087/T088/T103–T106 states are visible. No additional export format is implied.
+- Preserved older progress entries as dated historical checkpoints and added this correction as a new dated entry. A repo-wide `rg` scan of current docs found no remaining stale current-tense claims; `git diff --check` passed. T105 is complete; T106 release preparation and T104 final verification remain. T103 remains blocked by Chrome's saved-origin policy; T087/T088 remain partial.

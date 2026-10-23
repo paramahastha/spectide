@@ -2,7 +2,7 @@
 
 **Orchestrate. Implement. Converge.**
 
-SpecTide is a local-first control plane for evidence-backed, profile-aware Spec-Kit workflows. The current bootstrap build provides a durable SQLite event log, simulated full lifecycle, loopback dashboard/API, SSE replay, and a CLI. Claude Code, Codex, and OpenCode are discovered by `doctor`; live orchestration is intentionally not claimed until their fail-closed adapters and fixture contracts are complete.
+SpecTide is a local-first control plane for evidence-backed, profile-aware Spec-Kit workflows. It provides durable SQLite history, a loopback dashboard/API, SSE replay, and a CLI. Claude Code, Codex, and OpenCode have fail-closed adapters and fixture-backed workflow coverage; authenticated execution against real provider accounts and official Spec-Kit convergence remain separate acceptance checks and are not claimed as passed. The offline demo uses a deterministic simulated provider.
 
 ## Offline quickstart
 
