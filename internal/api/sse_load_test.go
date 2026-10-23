@@ -47,6 +47,10 @@ func TestSSEModerateLoadAcceptance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	initialHighWater, err := s.EventHighWater(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	backlogTx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -58,7 +62,8 @@ func TestSSEModerateLoadAcceptance(t *testing.T) {
 			backlogTx.Rollback()
 			t.Fatal(marshalErr)
 		}
-		if _, err = backlogTx.ExecContext(ctx, `INSERT INTO events VALUES(?,?,?,?,?,?,?)`, run.ID, i+2, backlogTimestamp, "", "load.backlog", "info", string(payload)); err != nil {
+		sequence := initialHighWater + int64(i) + 1
+		if _, err = backlogTx.ExecContext(ctx, `INSERT INTO events VALUES(?,?,?,?,?,?,?)`, run.ID, sequence, backlogTimestamp, "", "load.backlog", "info", string(payload)); err != nil {
 			backlogTx.Rollback()
 			t.Fatalf("persist backlog event %d: %v", i, err)
 		}
@@ -75,7 +80,9 @@ func TestSSEModerateLoadAcceptance(t *testing.T) {
 
 	backlogDrained := make(chan int, clients)
 	results := make(chan loadClientResult, clients)
-	latencies := make(chan time.Duration, clients*(backlogEvents+1+eventsPerSec*int(duration/time.Second)))
+	expectedLive := eventsPerSec * int(duration/time.Second)
+	expectedFramesPerClient := int(backlogHighWater) + expectedLive
+	latencies := make(chan time.Duration, clients*expectedFramesPerClient)
 	liveLatencies := make(chan time.Duration, clients*eventsPerSec*int(duration/time.Second))
 	client := &http.Client{Timeout: 2 * time.Minute}
 	for i := 0; i < clients; i++ {
@@ -87,7 +94,7 @@ func TestSSEModerateLoadAcceptance(t *testing.T) {
 			response.Body.Close()
 			t.Fatalf("client %d status=%d", i, response.StatusCode)
 		}
-		go readLoadEvents(response, backlogHighWater, eventsPerSec*int(duration/time.Second), backlogDrained, latencies, liveLatencies, results)
+		go readLoadEvents(response, backlogHighWater, expectedLive, backlogDrained, latencies, liveLatencies, results)
 	}
 	for i := 0; i < clients; i++ {
 		select {
@@ -96,7 +103,7 @@ func TestSSEModerateLoadAcceptance(t *testing.T) {
 			t.Fatal("clients did not drain the 10,000-event persisted backlog")
 		}
 	}
-	t.Logf("all %d clients replayed %d persisted events", clients, backlogEvents)
+	t.Logf("all %d clients drained %d fixture backlog rows (persisted high-water=%d)", clients, backlogEvents, backlogHighWater)
 
 	interval := time.Second / eventsPerSec
 	ticker := time.NewTicker(interval)
@@ -112,15 +119,15 @@ func TestSSEModerateLoadAcceptance(t *testing.T) {
 	if elapsed < duration {
 		t.Fatalf("event producer completed in %s, expected at least %s", elapsed, duration)
 	}
-	values := make([]time.Duration, 0, clients*eventsPerSec*int(duration/time.Second))
-	allValues := make([]time.Duration, 0, clients*(backlogEvents+1+eventsPerSec*int(duration/time.Second)))
+	values := make([]time.Duration, 0, clients*expectedLive)
+	allValues := make([]time.Duration, 0, clients*expectedFramesPerClient)
 	for i := 0; i < clients; i++ {
 		select {
 		case result := <-results:
 			if result.err != nil {
 				t.Fatalf("SSE client failed after %d events: %v", result.count, result.err)
 			}
-			if result.count != eventsPerSec*int(duration/time.Second) {
+			if result.count != expectedLive {
 				t.Fatalf("SSE client received %d live events", result.count)
 			}
 			if result.lastSeq < backlogHighWater+int64(result.count) {
@@ -138,8 +145,8 @@ func TestSSEModerateLoadAcceptance(t *testing.T) {
 	for latency := range liveLatencies {
 		values = append(values, latency)
 	}
-	if len(values) != clients*eventsPerSec*int(duration/time.Second) {
-		t.Fatalf("measured %d delivery latencies, expected %d", len(values), clients*eventsPerSec*int(duration/time.Second))
+	if len(values) != clients*expectedLive {
+		t.Fatalf("measured %d delivery latencies, expected %d", len(values), clients*expectedLive)
 	}
 	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
 	sort.Slice(allValues, func(i, j int) bool { return allValues[i] < allValues[j] })
@@ -148,8 +155,8 @@ func TestSSEModerateLoadAcceptance(t *testing.T) {
 	t.Logf("profile: clients=%d events_per_second=%d duration=%s persisted_backlog=%d", clients, eventsPerSec, elapsed, backlogEvents)
 	t.Logf("all non-heartbeat frames delivered=%d, p95 persisted-timestamp-to-SSE-receipt=%s", len(allValues), allP95)
 	t.Logf("live frames delivered=%d, p95 persisted-timestamp-to-SSE-receipt=%s", len(values), liveP95)
-	if len(allValues) != clients*(backlogEvents+1+eventsPerSec*int(duration/time.Second)) {
-		t.Fatalf("measured %d total frame latencies, expected %d", len(allValues), clients*(backlogEvents+1+eventsPerSec*int(duration/time.Second)))
+	if len(allValues) != clients*expectedFramesPerClient {
+		t.Fatalf("measured %d total frame latencies, expected %d", len(allValues), clients*expectedFramesPerClient)
 	}
 	if allP95 > time.Second {
 		t.Fatalf("SC-006 all-frame p95=%s exceeds 1s", allP95)

@@ -795,3 +795,9 @@
 - Worker contexts now retain cancellation causes. Heartbeat failure is classified as `WORKSPACE_OWNERSHIP_LOST`, and persistence failures caused by canceled worker contexts finalize as `CANCELLED` instead of being misreported as `FAILED`.
 - Cleanup releases the workspace database lease only when the same owner ID still holds it. A replacement owner remains fenced until stale-terminal recovery confirms the lease expired and the process lock is no longer held. The regression test repeats eight scenarios and checks terminal state, ownership cause, process-lock release, retained replacement-owner fence, safe stale recovery, and a stable event count after cancellation.
 - `go test -race ./internal/workflow -run TestHeartbeatOwnershipLossCancelsActiveWorker -count=2`, `go test ./internal/workflow ./internal/store -count=1`, focused repeat after the final process-lock assertion, `go vet ./internal/workflow ./internal/store`, and `git diff --check` passed. T101 is complete; T102 is next. T087/T088 remain partial.
+
+### T102 — Re-run the SC-006 SSE load acceptance profile — 2026-10-23
+
+- The backlog fixture now starts at `EventHighWater+1`, retains its batch-persisted UTC timestamp, and computes buffer/expected counts from the actual persisted high-water mark plus live frames. The reader still rejects missing/duplicate sequences and counts every non-heartbeat frame.
+- Fresh `make load-test-sse` passed: 10 clients; 100 events/s for 100 seconds; 10,000 backlog rows; 200,020 contiguous non-heartbeat frames; all-frame p95 269.75 ms; live-frame p95 285.043 ms. SC-006 is again current PASS evidence, replacing the prior setup failure and older pass.
+- `make load-test-sse`, `go test ./internal/api -count=1`, `go vet ./internal/api`, and `git diff --check` are the phase validation. T102 is complete; T103 is next. T087/T088 remain partial.
