@@ -56,6 +56,51 @@ func TestRunConvergenceImplementsOnlyAppendedTasksThenRepeatsTests(t *testing.T)
 	}
 }
 
+func TestRunConvergenceRestoresAppendedTaskCursorWithoutReConverging(t *testing.T) {
+	for _, operation := range []string{"implement_appended_tasks", "continue_convergence"} {
+		t.Run(operation, func(t *testing.T) {
+			budget, err := NewLoopBudget(DefaultLoopLimits())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = budget.ConvergenceRound("before", "after", map[string]string{"tests": "FAIL"}, map[string]string{"tests": "FAIL"}); err != nil {
+				t.Fatal(err)
+			}
+			convergeCalls, implementCalls, testCalls := 0, 0, 0
+			cursor := &cursorCheckpointState{PendingPhase: "convergence", PendingOperation: operation, PendingTasks: []string{"T087 finish cursor"}, TaskPosition: 1}
+			hooks := ConvergenceHooks{
+				Resume: cursor,
+				Snapshot: func(context.Context) (ConvergenceSnapshot, error) {
+					return ConvergenceSnapshot{SpecificationPath: "specs/001-build-spectide/spec.md", TaskLedger: "tasks", PlanContent: "plan", GateVerdicts: map[string]string{"tests": "PASS"}}, nil
+				},
+				Converge: func(context.Context) (string, error) {
+					convergeCalls++
+					return "✅ Converged — required gates pass.", nil
+				},
+				Implement: func(_ context.Context, tasks []string) error {
+					implementCalls++
+					if len(tasks) != 1 || tasks[0] != "T087 finish cursor" {
+						t.Fatalf("restored tasks=%v", tasks)
+					}
+					return nil
+				},
+				Test: func(context.Context) (map[string]string, error) {
+					testCalls++
+					return map[string]string{"tests": "PASS"}, nil
+				},
+			}
+			converged, runErr := RunConvergenceWithBudget(context.Background(), hooks, budget, budget.Limits())
+			wantImplement := 0
+			if operation == "implement_appended_tasks" {
+				wantImplement = 1
+			}
+			if runErr != nil || !converged || convergeCalls != 1 || implementCalls != wantImplement || testCalls != 1 {
+				t.Fatalf("converged=%v err=%v converge=%d implement=%d tests=%d", converged, runErr, convergeCalls, implementCalls, testCalls)
+			}
+		})
+	}
+}
+
 func TestRunConvergenceRejectsConvergedReportWithFailingRequiredGate(t *testing.T) {
 	ledger := "# Tasks\n\n## Phase 1: Setup\n- [ ] T001 Existing task\n"
 	hooks := ConvergenceHooks{

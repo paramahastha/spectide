@@ -44,22 +44,22 @@ func TestRestartResumeRequiresAndRestoresVerifiedCheckpoint(t *testing.T) {
 	if err = s.SetRunState(ctx, run.ID, model.Paused); err != nil {
 		t.Fatal(err)
 	}
-	if err = s.Event(ctx, run.ID, stages[0], "run.paused", "info", map[string]any{"stage": stages[0]}); err != nil {
+	if err = s.Event(ctx, run.ID, "analyze", "run.paused", "info", map[string]any{"stage": "analyze"}); err != nil {
 		t.Fatal(err)
 	}
 	route := config.Route{Provider: "fake", Profile: "fake-demo"}
-	if err = s.AddStage(ctx, model.Stage{ID: "interrupted-stage-attempt", RunID: run.ID, Key: stages[0], Position: 0, State: model.Pending, Provider: route.Provider, Profile: route.Profile, Attempt: 1}); err != nil {
+	if err = s.AddStage(ctx, model.Stage{ID: "interrupted-stage-attempt", RunID: run.ID, Key: "analyze", Position: 6, State: model.Pending, Provider: route.Provider, Profile: route.Profile, Attempt: 1}); err != nil {
 		t.Fatal(err)
 	}
 	if err = s.SetStage(ctx, "interrupted-stage-attempt", model.StageRun); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.StartExecutionAttempt(ctx, model.ExecutionAttempt{RunID: run.ID, Stage: stages[0], Phase: "approval_check", Provider: route.Provider, Profile: route.Profile}); err != nil {
+	if _, err = s.StartExecutionAttempt(ctx, model.ExecutionAttempt{RunID: run.ID, Stage: "analyze", Phase: "read_only_analysis", Provider: route.Provider, Profile: route.Profile}); err != nil {
 		t.Fatal(err)
 	}
 	spent := LoopLimits{AnalyzeRemediations: 1, TestRepairs: 2, ConvergenceRounds: 3}
-	cursor := checkpointCursor{Phase: "approval", Operation: "continue_after_resolution", Tasks: []string{"T087"}, Check: "unit", Position: 2}
-	if err = owner.saveCursorCheckpoint(ctx, run, "", "starting", stages[0], configuration.SHA256, "SIMULATED", spent, cursor); err != nil {
+	cursor := checkpointCursor{Phase: "analyze", Operation: "evaluate_analysis_report", Tasks: []string{"T087"}, Check: "unit", Position: 2}
+	if err = owner.saveCursorCheckpoint(ctx, run, "", "tasks", "analyze", configuration.SHA256, "SIMULATED", spent, cursor); err != nil {
 		t.Fatal(err)
 	}
 	checkpointRows, err := s.Checkpoints(ctx, run.ID)
@@ -96,10 +96,10 @@ func TestRestartResumeRequiresAndRestoresVerifiedCheckpoint(t *testing.T) {
 					}
 					var prior, replay model.Stage
 					for _, stage := range resumedStages {
-						if stage.Key == stages[0] && stage.Attempt == 1 {
+						if stage.Key == "analyze" && stage.Attempt == 1 {
 							prior = stage
 						}
-						if stage.Key == stages[0] && stage.Attempt == 2 {
+						if stage.Key == "analyze" && stage.Attempt == 2 {
 							replay = stage
 						}
 					}

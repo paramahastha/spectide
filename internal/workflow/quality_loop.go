@@ -15,8 +15,14 @@ import (
 	"github.com/spectide/spectide/internal/speckit"
 )
 
-func (e *Engine) runTestRepairLoop(ctx context.Context, run model.Run, phase string, decisions map[string]config.Decision, installation speckit.Installation, featureDir string, budget *LoopBudget) (map[string]string, error) {
+func (e *Engine) runTestRepairLoop(ctx context.Context, run model.Run, phase string, decisions map[string]config.Decision, installation speckit.Installation, featureDir string, budget *LoopBudget, restored ...*cursorCheckpointState) (map[string]string, error) {
 	latest := map[string]string{}
+	var resumeCursor *cursorCheckpointState
+	completedIDs := []string{}
+	if len(restored) > 0 && restored[0] != nil && restored[0].PendingPhase == phase && restored[0].PendingOperation == "continue_registered_checks" {
+		resumeCursor = restored[0]
+		completedIDs = append(completedIDs, resumeCursor.CompletedQualityExecutionIDs...)
+	}
 	hooks := TestRepairHooks{
 		Test: func(ctx context.Context) (map[string]string, error) {
 			workflowStage := phase
@@ -26,7 +32,11 @@ func (e *Engine) runTestRepairLoop(ctx context.Context, run model.Run, phase str
 			case "final_review":
 				workflowStage = "final_review"
 			}
-			if err := e.loopControlBoundaryAt(ctx, run, workflowStage, featureDir, budget, checkpointCursor{Phase: phase, Operation: "start_registered_checks"}); err != nil {
+			startCursor := checkpointCursor{Phase: phase, Operation: "start_registered_checks"}
+			if resumeCursor != nil {
+				startCursor = checkpointCursor{Phase: phase, Operation: resumeCursor.PendingOperation, Check: resumeCursor.PendingCheck, Position: resumeCursor.TaskPosition, CompletedQualityExecutionIDs: append([]string(nil), resumeCursor.CompletedQualityExecutionIDs...)}
+			}
+			if err := e.loopControlBoundaryAt(ctx, run, workflowStage, featureDir, budget, startCursor); err != nil {
 				return nil, err
 			}
 			runConfiguration, err := e.store.RunConfiguration(ctx, run.ID)
@@ -41,13 +51,25 @@ func (e *Engine) runTestRepairLoop(ctx context.Context, run model.Run, phase str
 			if err != nil {
 				return nil, err
 			}
+			completed := map[string]string{}
+			if resumeCursor != nil {
+				completed, err = restoreCompletedQualityResults(ctx, e.store, run.ID, phase, registry.Checks(), *resumeCursor)
+				if err != nil {
+					return nil, err
+				}
+			}
+			completedKeys := make(map[string]struct{}, len(completed))
+			for key := range completed {
+				completedKeys[key] = struct{}{}
+			}
+			checksToRun := registry.Except(completedKeys)
 			var inheritedFiles []*os.File
 			e.mu.Lock()
 			if processLock := e.processLocks[run.ID]; processLock != nil && processLock.File() != nil {
 				inheritedFiles = append(inheritedFiles, processLock.File())
 			}
 			e.mu.Unlock()
-			evidence, runErr := registry.RunControlled(ctx, run.Project, func(ctx context.Context) (string, error) {
+			evidence, runErr := checksToRun.RunControlled(ctx, run.Project, func(ctx context.Context) (string, error) {
 				return e.store.RunControl(ctx, run.ID)
 			}, func(ctx context.Context, item quality.Evidence) error {
 				startedAt := item.StartedAt
@@ -57,15 +79,20 @@ func (e *Engine) runTestRepairLoop(ctx context.Context, run model.Run, phase str
 				finishedAt := startedAt.Add(item.Duration)
 				persisted := model.QualityExecution{RunID: run.ID, Phase: phase, ProcessID: os.Getpid(), StartedAt: startedAt, FinishedAt: finishedAt}
 				persisted.Results = []model.QualityResult{{Key: item.Key, Verdict: string(item.Verdict), Command: append([]string(nil), item.Command...), ProcessID: item.ProcessID, ExitCode: item.ExitCode, Duration: item.Duration, Summary: item.Summary, StartedAt: startedAt}}
-				if _, err := e.store.SaveQualityExecution(ctx, persisted); err != nil {
+				persisted, err = e.store.SaveQualityExecution(ctx, persisted)
+				if err != nil {
 					return err
 				}
+				completedIDs = append(completedIDs, persisted.ID)
 				if err := e.store.Gate(ctx, run.ID, "live_test_"+item.Key, string(item.Verdict), security.Redact(item.Summary)); err != nil {
 					return err
 				}
-				return e.loopControlBoundaryAt(ctx, run, workflowStage, featureDir, budget, checkpointCursor{Phase: phase, Operation: "continue_registered_checks", Check: item.Key})
+				return e.loopControlBoundaryAt(ctx, run, workflowStage, featureDir, budget, checkpointCursor{Phase: phase, Operation: "continue_registered_checks", Check: item.Key, Position: len(completedIDs), CompletedQualityExecutionIDs: append([]string(nil), completedIDs...)})
 			}, inheritedFiles...)
-			verdicts := make(map[string]string, len(evidence))
+			verdicts := make(map[string]string, len(completed)+len(evidence))
+			for key, verdict := range completed {
+				verdicts[key] = verdict
+			}
 			for _, item := range evidence {
 				verdict := string(item.Verdict)
 				verdicts[item.Key] = verdict
@@ -100,6 +127,51 @@ func (e *Engine) runTestRepairLoop(ctx context.Context, run model.Run, phase str
 	}
 	latest = verdicts
 	return latest, nil
+}
+
+func restoreCompletedQualityResults(ctx context.Context, state interface {
+	Report(context.Context, string) (model.Report, error)
+}, runID, phase string, checks []quality.Check, cursor cursorCheckpointState) (map[string]string, error) {
+	if cursor.TaskPosition < 1 || cursor.TaskPosition != len(cursor.CompletedQualityExecutionIDs) || cursor.TaskPosition > len(checks) {
+		return nil, fmt.Errorf("WORKSPACE_DRIFT: checkpoint quality cursor position is invalid")
+	}
+	seen := make(map[string]struct{}, len(cursor.CompletedQualityExecutionIDs))
+	for _, id := range cursor.CompletedQualityExecutionIDs {
+		if id == "" {
+			return nil, fmt.Errorf("WORKSPACE_DRIFT: checkpoint quality execution identity is missing")
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return nil, fmt.Errorf("WORKSPACE_DRIFT: checkpoint repeats a quality execution identity")
+		}
+		seen[id] = struct{}{}
+	}
+	report, err := state.Report(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]model.QualityExecution, len(report.QualityExecutions))
+	for _, execution := range report.QualityExecutions {
+		byID[execution.ID] = execution
+	}
+	results := make(map[string]string, len(seen))
+	for index, id := range cursor.CompletedQualityExecutionIDs {
+		execution, exists := byID[id]
+		if !exists || execution.Phase != phase || len(execution.Results) != 1 || index >= len(checks) {
+			return nil, fmt.Errorf("WORKSPACE_DRIFT: checkpoint quality evidence is unavailable")
+		}
+		result := execution.Results[0]
+		if result.Key != checks[index].Key {
+			return nil, fmt.Errorf("WORKSPACE_DRIFT: checkpoint quality check order changed")
+		}
+		if result.Verdict != "PASS" && result.Verdict != "FAIL" && result.Verdict != "BLOCKED" && result.Verdict != "NOT_RUN" {
+			return nil, fmt.Errorf("WORKSPACE_DRIFT: checkpoint quality verdict is invalid")
+		}
+		results[result.Key] = result.Verdict
+	}
+	if len(cursor.CompletedQualityExecutionIDs) == 0 || cursor.PendingCheck != checks[len(cursor.CompletedQualityExecutionIDs)-1].Key {
+		return nil, fmt.Errorf("WORKSPACE_DRIFT: checkpoint quality cursor check does not match evidence")
+	}
+	return results, nil
 }
 
 func persistTestVerdicts(ctx context.Context, state interface {

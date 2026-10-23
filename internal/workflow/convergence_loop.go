@@ -13,7 +13,7 @@ import (
 	"github.com/spectide/spectide/internal/speckit"
 )
 
-func (e *Engine) liveConvergenceHooks(run model.Run, phase string, decisions map[string]config.Decision, installation speckit.Installation, featureDir string, gateVerdicts map[string]string, budget *LoopBudget) ConvergenceHooks {
+func (e *Engine) liveConvergenceHooks(run model.Run, phase string, decisions map[string]config.Decision, installation speckit.Installation, featureDir string, gateVerdicts map[string]string, budget *LoopBudget, restored ...*cursorCheckpointState) ConvergenceHooks {
 	implementRoute := decisions["implement"].Route
 	convergeRoute := decisions["converge"].Route
 	hooks := ConvergenceHooks{
@@ -98,14 +98,17 @@ func (e *Engine) liveConvergenceHooks(run model.Run, phase string, decisions map
 			return verdicts, nil
 		},
 	}
+	if len(restored) > 0 {
+		hooks.Resume = restored[0]
+	}
 	return hooks
 }
 
-func (e *Engine) runLiveConvergenceLoop(ctx context.Context, run model.Run, decisions map[string]config.Decision, installation speckit.Installation, featureDir string, gateVerdicts map[string]string, budget *LoopBudget) error {
+func (e *Engine) runLiveConvergenceLoop(ctx context.Context, run model.Run, decisions map[string]config.Decision, installation speckit.Installation, featureDir string, gateVerdicts map[string]string, budget *LoopBudget, restored ...*cursorCheckpointState) error {
 	if decisions["converge"].Route.Provider == "fake" || decisions["implement"].Route.Provider == "fake" {
 		return fmt.Errorf("CONVERGENCE_ADAPTER_UNAVAILABLE")
 	}
-	converged, err := RunConvergenceWithBudget(ctx, e.liveConvergenceHooks(run, "convergence", decisions, installation, featureDir, gateVerdicts, budget), budget, budget.Limits())
+	converged, err := RunConvergenceWithBudget(ctx, e.liveConvergenceHooks(run, "convergence", decisions, installation, featureDir, gateVerdicts, budget, restored...), budget, budget.Limits())
 	if err != nil {
 		return err
 	}

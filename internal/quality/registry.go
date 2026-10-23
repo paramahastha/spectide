@@ -86,6 +86,19 @@ func (r *Registry) Checks() []Check {
 	return append([]Check(nil), r.checks...)
 }
 
+// Except returns the frozen checks excluding keys with already persisted
+// results. It is used only by verified checkpoint continuation.
+func (r *Registry) Except(completed map[string]struct{}) *Registry {
+	filtered := NewRegistry(r.executor)
+	for _, check := range r.checks {
+		if _, skip := completed[check.Key]; !skip {
+			check.Args = append([]string(nil), check.Args...)
+			_ = filtered.Register(check)
+		}
+	}
+	return filtered
+}
+
 func DefaultRegistry(executor Executor) *Registry {
 	r := NewRegistry(executor)
 	for _, check := range []Check{

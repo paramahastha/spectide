@@ -24,6 +24,7 @@ type ConvergenceHooks struct {
 	Implement func(context.Context, []string) error
 	Test      func(context.Context) (map[string]string, error)
 	Boundary  func(context.Context, string, []string, int) error
+	Resume    *cursorCheckpointState
 }
 
 type FinalReviewHooks struct {
@@ -140,6 +141,34 @@ func RunFinalReviewWithBudget(ctx context.Context, hooks FinalReviewHooks, budge
 }
 
 func runConvergenceWithBudget(ctx context.Context, hooks ConvergenceHooks, budget *LoopBudget, limits LoopLimits) (bool, error) {
+	if hooks.Resume != nil && hooks.Resume.PendingPhase == "convergence" {
+		cursor := hooks.Resume
+		switch cursor.PendingOperation {
+		case "implement_appended_tasks":
+			if len(cursor.PendingTasks) == 0 || cursor.TaskPosition < 1 || cursor.TaskPosition != budget.Counts().ConvergenceRounds {
+				return false, fmt.Errorf("WORKSPACE_DRIFT: convergence task cursor is invalid")
+			}
+			if err := hooks.Implement(ctx, append([]string(nil), cursor.PendingTasks...)); err != nil {
+				return false, err
+			}
+			if hooks.Boundary != nil {
+				if err := hooks.Boundary(ctx, "run_tests_after_task_implementation", cursor.PendingTasks, cursor.TaskPosition); err != nil {
+					return false, err
+				}
+			}
+			fallthrough
+		case "continue_convergence", "run_tests_after_task_implementation":
+			gates, err := hooks.Test(ctx)
+			if err != nil {
+				return false, err
+			}
+			if err = requirePassingGates(gates, "REQUIRED_TEST"); err != nil {
+				return false, err
+			}
+		case "complete_convergence":
+			return true, nil
+		}
+	}
 	for {
 		if budget.Counts().ConvergenceRounds >= limits.ConvergenceRounds {
 			return false, fmt.Errorf("CONVERGENCE_EXHAUSTED")
@@ -230,15 +259,22 @@ func runConvergenceWithBudget(ctx context.Context, hooks ConvergenceHooks, budge
 		if err != nil {
 			return false, err
 		}
-		if len(gates) == 0 {
-			return false, fmt.Errorf("REQUIRED_TEST_EVIDENCE_MISSING")
-		}
-		for name, verdict := range gates {
-			if verdict != "PASS" {
-				return false, fmt.Errorf("REQUIRED_TEST_FAILED: %s=%s", name, verdict)
-			}
+		if err = requirePassingGates(gates, "REQUIRED_TEST"); err != nil {
+			return false, err
 		}
 	}
+}
+
+func requirePassingGates(gates map[string]string, prefix string) error {
+	if len(gates) == 0 {
+		return fmt.Errorf("%s_EVIDENCE_MISSING", prefix)
+	}
+	for name, verdict := range gates {
+		if verdict != "PASS" {
+			return fmt.Errorf("%s_FAILED: %s=%s", prefix, name, verdict)
+		}
+	}
+	return nil
 }
 
 func requiredGateImproved(before, after map[string]string) bool {

@@ -390,6 +390,31 @@ func (e *Engine) Resume(id string) error {
 		if _, _, err = e.verifyRestartCheckpoint(context.Background(), run, configuration); err != nil {
 			return e.blockUnverifiedRestart(run, err)
 		}
+		attempts, attemptsErr := e.store.ExecutionAttempts(context.Background(), id)
+		if attemptsErr != nil {
+			return attemptsErr
+		}
+		if ambiguous, found := ambiguousWriteAttempt(attempts); found {
+			if err = e.store.InterruptRunningAttempts(context.Background(), id, "owner process exited during a write-capable provider invocation; outcome is ambiguous and replay requires review"); err != nil {
+				return err
+			}
+			stageRows, stageErr := e.store.Stages(context.Background(), id)
+			if stageErr != nil {
+				return stageErr
+			}
+			for _, stage := range stageRows {
+				if stage.Key == ambiguous.Stage && (stage.State == model.Pending || stage.State == model.StageRun) {
+					if err = e.store.SetStage(context.Background(), stage.ID, model.StageFail); err != nil {
+						return err
+					}
+				}
+			}
+			reason := fmt.Sprintf("AMBIGUOUS_WRITE_REQUIRES_REVIEW: %s/%s", ambiguous.Stage, ambiguous.Phase)
+			if err = e.store.BlockPausedRunForWorkspaceDrift(context.Background(), id, reason); err != nil {
+				return err
+			}
+			return fmt.Errorf("WORKSPACE_DRIFT: %s", reason)
+		}
 		resumeAttempt := 1
 		stages, stageErr := e.store.Stages(context.Background(), id)
 		if stageErr != nil {
@@ -446,7 +471,7 @@ func (e *Engine) Resume(id string) error {
 		e.mu.Unlock()
 		claimed = true
 		go e.heartbeat(child, id, cancelCause)
-		go e.execute(child, run, decisions, installation, featureDir, startAt, budget.Counts(), gateVerdicts, resumeAttempt)
+		go e.execute(child, run, decisions, installation, featureDir, startAt, budget.Counts(), gateVerdicts, resumeAttempt, checkpointState)
 		return nil
 	}
 }
@@ -713,7 +738,12 @@ func (e *Engine) Wait(ctx context.Context, id string) (model.Run, error) {
 	}
 }
 
-func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]config.Decision, installation speckit.Installation, featureDir string, startAt int, restoredCounts LoopLimits, restoredGates map[string]string, firstStageAttempt int) {
+func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]config.Decision, installation speckit.Installation, featureDir string, startAt int, restoredCounts LoopLimits, restoredGates map[string]string, firstStageAttempt int, restoredCursor ...cursorCheckpointState) {
+	var continuation *cursorCheckpointState
+	if len(restoredCursor) > 0 {
+		value := restoredCursor[0]
+		continuation = &value
+	}
 	e.mu.Lock()
 	resume := e.resumes[r.ID]
 	e.mu.Unlock()
@@ -842,7 +872,7 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 				e.failPersistence(ctx, r.ID)
 				return
 			}
-			err := e.runLiveConvergenceLoop(ctx, r, decisions, installation, featureDir, runGateVerdicts, loopBudget)
+			err := e.runLiveConvergenceLoop(ctx, r, decisions, installation, featureDir, runGateVerdicts, loopBudget, continuation)
 			if err != nil {
 				if persistErr := e.failLiveQualityStage(ctx, r.ID, key, st.ID, "converged", err, ctx); persistErr != nil {
 					e.failPersistence(ctx, r.ID)
@@ -924,7 +954,7 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 				e.failPersistence(ctx, r.ID)
 				return
 			}
-			verdicts, testErr := e.runTestRepairLoop(ctx, r, "tests", decisions, installation, featureDir, loopBudget)
+			verdicts, testErr := e.runTestRepairLoop(ctx, r, "tests", decisions, installation, featureDir, loopBudget, continuation)
 			if persistErr := persistTestVerdicts(ctx, e.store, r.ID, verdicts); persistErr != nil {
 				e.failPersistence(ctx, r.ID)
 				return

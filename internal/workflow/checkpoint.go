@@ -20,38 +20,49 @@ import (
 )
 
 type cursorCheckpointState struct {
-	CheckpointID       string            `json:"checkpoint_id"`
-	CompletedStage     string            `json:"completed_stage"`
-	NextStage          string            `json:"next_stage"`
-	ConfigurationSHA   string            `json:"configuration_sha256"`
-	Execution          string            `json:"execution"`
-	CursorOnly         bool              `json:"cursor_only"`
-	WorkspacePath      string            `json:"workspace_path"`
-	FeatureDirectory   string            `json:"feature_directory,omitempty"`
-	WorkspaceIdentity  string            `json:"workspace_identity"`
-	GitHead            string            `json:"git_head"`
-	GitIndex           string            `json:"git_index"`
-	ArtifactPathHashes map[string]string `json:"artifact_path_hashes"`
-	ManagedPathHashes  map[string]string `json:"managed_path_hashes"`
-	LoopCounts         LoopLimits        `json:"loop_counts"`
-	PendingPhase       string            `json:"pending_phase,omitempty"`
-	PendingOperation   string            `json:"pending_operation,omitempty"`
-	PendingTasks       []string          `json:"pending_tasks,omitempty"`
-	PendingCheck       string            `json:"pending_check,omitempty"`
-	TaskPosition       int               `json:"task_position,omitempty"`
+	CheckpointID                 string            `json:"checkpoint_id"`
+	CompletedStage               string            `json:"completed_stage"`
+	NextStage                    string            `json:"next_stage"`
+	ConfigurationSHA             string            `json:"configuration_sha256"`
+	Execution                    string            `json:"execution"`
+	CursorOnly                   bool              `json:"cursor_only"`
+	WorkspacePath                string            `json:"workspace_path"`
+	FeatureDirectory             string            `json:"feature_directory,omitempty"`
+	WorkspaceIdentity            string            `json:"workspace_identity"`
+	GitHead                      string            `json:"git_head"`
+	GitIndex                     string            `json:"git_index"`
+	ArtifactPathHashes           map[string]string `json:"artifact_path_hashes"`
+	ManagedPathHashes            map[string]string `json:"managed_path_hashes"`
+	LoopCounts                   LoopLimits        `json:"loop_counts"`
+	PendingPhase                 string            `json:"pending_phase,omitempty"`
+	PendingOperation             string            `json:"pending_operation,omitempty"`
+	PendingTasks                 []string          `json:"pending_tasks,omitempty"`
+	PendingCheck                 string            `json:"pending_check,omitempty"`
+	TaskPosition                 int               `json:"task_position,omitempty"`
+	CompletedQualityExecutionIDs []string          `json:"completed_quality_execution_ids,omitempty"`
 }
 
 type checkpointCursor struct {
-	Phase     string
-	Operation string
-	Tasks     []string
-	Check     string
-	Position  int
+	Phase                        string
+	Operation                    string
+	Tasks                        []string
+	Check                        string
+	Position                     int
+	CompletedQualityExecutionIDs []string
 }
 
 type storedRunDecision struct {
 	Stage    string          `json:"stage"`
 	Decision config.Decision `json:"decision"`
+}
+
+func ambiguousWriteAttempt(attempts []model.ExecutionAttempt) (model.ExecutionAttempt, bool) {
+	for _, attempt := range attempts {
+		if attempt.Result == "RUNNING" && attempt.Stage != "analyze" {
+			return attempt, true
+		}
+	}
+	return model.ExecutionAttempt{}, false
 }
 
 func parseStoredDecisions(encoded string) (map[string]config.Decision, error) {
@@ -98,6 +109,7 @@ func (e *Engine) saveCursorCheckpoint(ctx context.Context, run model.Run, featur
 		state.PendingTasks = append([]string(nil), cursor.Tasks...)
 		state.PendingCheck = cursor.Check
 		state.TaskPosition = cursor.Position
+		state.CompletedQualityExecutionIDs = append([]string(nil), cursor.CompletedQualityExecutionIDs...)
 	}
 	if featureDir != "" {
 		root, rootErr := filepath.EvalSymlinks(run.Project)
