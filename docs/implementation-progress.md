@@ -852,3 +852,8 @@
 
 - Added a process-restart integration test for the local `tests` stage. It persists a PASS result and cursor for the first registered check, expires the old workspace owner, then resumes with a new Engine. The report contains the original result exactly once and each remaining required check exactly once.
 - The targeted restart test passed. `go test ./internal/workflow -count=1`, `go vet ./internal/workflow`, race tests for local-check/approval/ambiguous-write restart, and `git diff --check` passed. T087 remains open for process-restart integration of analyze remediation and appended-task convergence.
+
+### T087 — Verified restart continuation complete — 2026-10-23
+
+- Added owner-process-exit restart integration for analyze remediation and appended-task convergence. Analyze restart reruns the read-only report after a completed owner-artifact remediation without repeating that remediation invocation. Convergence restart consumes the saved appended task, skips the already completed convergence report, runs required local checks, then issues the next convergence report; the fixture verifies the exact prior/new convergence and implementation attempt counts.
+- The complete restart matrix now covers approval wait/restart/approve, ambiguous write finalization without replay, completed local-check restoration, analyze remediation, and appended-task convergence. `go test ./internal/workflow ./internal/store ./internal/quality -count=1`, package vet, race tests across the restart cases, and `git diff --check` passed. T087 is complete; T103 remains blocked on the saved Chrome origin policy.

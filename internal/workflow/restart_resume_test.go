@@ -505,6 +505,334 @@ func TestRestartResumeSkipsPersistedLocalQualityCheck(t *testing.T) {
 	t.Fatal("resumed local quality stage did not finish")
 }
 
+func TestRestartResumeImplementsAppendedConvergenceTasksWithoutRepeatingCompletedReport(t *testing.T) {
+	ctx := context.Background()
+	project := initCheckpointGitProject(t)
+	featureDir := filepath.Join(project, "specs", "001-product")
+	if err := os.MkdirAll(featureDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		"spec.md":  "# Product\n",
+		"plan.md":  "# Plan\n\n## Phase 2: Convergence\n- [ ] T999 Add focused regression coverage per FR-029\n",
+		"tasks.md": "# Tasks\n\n## Phase 1: Core\n- [x] T001 Existing task\n\n## Phase 2: Convergence\n- [ ] T999 Add focused regression coverage per FR-029\n",
+	} {
+		if err := os.WriteFile(filepath.Join(featureDir, name), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commandFiles := map[string]string{}
+	commandHashes := map[string]string{}
+	for _, stage := range []string{"implement", "converge"} {
+		rel := filepath.Join(".opencode", "commands", "speckit."+stage+".md")
+		absolute := filepath.Join(project, rel)
+		if err := os.MkdirAll(filepath.Dir(absolute), 0700); err != nil {
+			t.Fatal(err)
+		}
+		content := []byte("Follow the repository's canonical task scope: $ARGUMENTS")
+		if err := os.WriteFile(absolute, content, 0600); err != nil {
+			t.Fatal(err)
+		}
+		digest := sha256.Sum256(content)
+		commandFiles[stage] = filepath.ToSlash(rel)
+		commandHashes[stage] = hex.EncodeToString(digest[:])
+	}
+	for path, content := range map[string]string{
+		"go.mod":               "module convergencefixture\n\ngo 1.27.2\n",
+		"cmd/spectide/main.go": "package main\n\nfunc main() {}\n",
+		"internal/fixture.go":  "package internal\n",
+	} {
+		absolute := filepath.Join(project, path)
+		if err := os.MkdirAll(filepath.Dir(absolute), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(absolute, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(project, ".spectide"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.Open(filepath.Join(t.TempDir(), "convergence-resume.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	capability := verifiedFixtureCapability(t, "codex", "/bin/sh", "")
+	profile := model.Profile{Name: "fixture", Provider: "codex", Executable: "/bin/sh", AllowedScopes: []string{project}, Capability: &capability}
+	if _, err = state.SaveProfile(ctx, profile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = state.SaveProfileCapability(ctx, profile.Name, capability); err != nil {
+		t.Fatal(err)
+	}
+	var configured []effectiveStage
+	if err = json.Unmarshal(fakeRunConfiguration(t), &configured); err != nil {
+		t.Fatal(err)
+	}
+	for index := range configured {
+		if configured[index].Stage == "implement" || configured[index].Stage == "converge" {
+			configured[index].Decision.Route = config.Route{Provider: "codex", Profile: profile.Name, Model: "fixture/model", Effort: "medium"}
+			configured[index].Simulated = false
+		}
+	}
+	configurationJSON, err := json.Marshal(configured)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, reused, err := state.CreateRunWithConfiguration(ctx, "", project, "resume appended convergence task", configurationJSON)
+	if err != nil || reused {
+		t.Fatalf("create run reused=%v err=%v", reused, err)
+	}
+	if err = state.AcquireWorkspaceLockOwned(ctx, project, run.ID, "expired-owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.SetRunState(ctx, run.ID, model.Running); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.SetRunState(ctx, run.ID, model.Paused); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.Event(ctx, run.ID, "converge", "run.paused", "info", map[string]any{"stage": "converge"}); err != nil {
+		t.Fatal(err)
+	}
+	stage := model.Stage{ID: "interrupted-convergence", RunID: run.ID, Key: "converge", Position: indexOfStage("converge"), State: model.StageRun, Provider: "codex", Profile: profile.Name, Model: "fixture/model", Effort: "medium", Attempt: 1}
+	if err = state.AddStage(ctx, stage); err != nil {
+		t.Fatal(err)
+	}
+	priorConvergence, err := state.StartExecutionAttempt(ctx, model.ExecutionAttempt{RunID: run.ID, Stage: "converge", Phase: "convergence", Provider: "codex", Profile: profile.Name, Model: "fixture/model", Effort: "medium"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorConvergence.Result = "SUCCEEDED"
+	priorConvergence.ExitCode = 0
+	priorConvergence.StartedAt = time.Now().UTC().Add(-time.Second)
+	finished := time.Now().UTC()
+	priorConvergence.FinishedAt = &finished
+	if err = state.CompleteExecutionAttempt(ctx, priorConvergence); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.Gate(ctx, run.ID, "required_tests", "PASS", "fixture verified before convergence append"); err != nil {
+		t.Fatal(err)
+	}
+	configuration, err := state.RunConfiguration(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewWithAdapters(state, &liveFixtureAdapter{})
+	engine.discover = func(root string) (speckit.Installation, error) {
+		return speckit.Installation{ProjectRoot: root, Verified: true, Commands: map[string]string{"implement": "/speckit.implement", "converge": "/speckit.converge"}, CommandFiles: commandFiles, CommandHashes: commandHashes}, nil
+	}
+	if err = engine.saveCursorCheckpoint(ctx, run, featureDir, "tests", "converge", configuration.SHA256, "LIVE", LoopLimits{ConvergenceRounds: 1}, checkpointCursor{Phase: "convergence", Operation: "implement_appended_tasks", Tasks: []string{"T999 Add focused regression coverage per FR-029"}, Position: 1}); err != nil {
+		t.Fatal(err)
+	}
+	implementationPrompt := "Implement only the newly appended convergence tasks below. Preserve the existing product specification and do not edit the task ledger.\n- T999 Add focused regression coverage per FR-029\n"
+	approval, err := state.CreateApproval(ctx, model.Approval{RunID: run.ID, Action: sensitiveWriteAction(workspaceIdentityFingerprint(project), "implement", "convergence_implementation", "codex", profile.Name, implementationPrompt)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = state.ResolveApprovalForRun(ctx, run.ID, approval.ID, model.ApprovalApproved); err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().UTC().Add(-store.RunOwnerLease - time.Second).Format(time.RFC3339Nano)
+	if _, err = state.DB.ExecContext(ctx, `UPDATE run_owners SET heartbeat_at=? WHERE run_id=?`, stale, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = engine.Resume(run.ID); err != nil {
+		t.Fatalf("restart resume at appended-task cursor: %v", err)
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		runState, stateErr := state.GetRun(ctx, run.ID)
+		if stateErr != nil {
+			t.Fatal(stateErr)
+		}
+		if runState.State == model.Completed || runState.State == model.Blocked || runState.State == model.Failed {
+			attempts, attemptsErr := state.ExecutionAttempts(ctx, run.ID)
+			if attemptsErr != nil {
+				t.Fatal(attemptsErr)
+			}
+			counts := map[string]int{}
+			for _, attempt := range attempts {
+				counts[attempt.Stage+"/"+attempt.Phase]++
+			}
+			if counts["converge/convergence"] != 2 || counts["implement/convergence_implementation"] != 1 {
+				t.Fatalf("restart repeated or skipped convergence work: counts=%v attempts=%+v state=%s", counts, attempts, runState.State)
+			}
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatal("resumed convergence stage did not finish")
+}
+
+func TestRestartResumeReanalyzesAfterCompletedOwnerRemediation(t *testing.T) {
+	ctx := context.Background()
+	project := initCheckpointGitProject(t)
+	featureDir := filepath.Join(project, "specs", "001-product")
+	if err := os.MkdirAll(featureDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{"spec.md": "# Product\n", "plan.md": "# Plan\n", "tasks.md": "# Tasks\n"} {
+		if err := os.WriteFile(filepath.Join(featureDir, name), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commandFiles := map[string]string{}
+	commandHashes := map[string]string{}
+	for _, stage := range []string{"analyze", "implement"} {
+		rel := filepath.Join(".opencode", "commands", "speckit."+stage+".md")
+		absolute := filepath.Join(project, rel)
+		if err := os.MkdirAll(filepath.Dir(absolute), 0700); err != nil {
+			t.Fatal(err)
+		}
+		content := []byte("Use the canonical scope for $ARGUMENTS")
+		if err := os.WriteFile(absolute, content, 0600); err != nil {
+			t.Fatal(err)
+		}
+		digest := sha256.Sum256(content)
+		commandFiles[stage] = filepath.ToSlash(rel)
+		commandHashes[stage] = hex.EncodeToString(digest[:])
+	}
+	for path, content := range map[string]string{
+		"go.mod":               "module analyzerestartfixture\n\ngo 1.27.2\n",
+		"cmd/spectide/main.go": "package main\n\nfunc main() {}\n",
+		"internal/fixture.go":  "package internal\n// remediation already applied\n",
+	} {
+		absolute := filepath.Join(project, path)
+		if err := os.MkdirAll(filepath.Dir(absolute), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(absolute, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(project, ".spectide"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.Open(filepath.Join(t.TempDir(), "analyze-resume.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	capability := verifiedFixtureCapability(t, "codex", "/bin/sh", "")
+	profile := model.Profile{Name: "fixture", Provider: "codex", Executable: "/bin/sh", AllowedScopes: []string{project}, Capability: &capability}
+	if _, err = state.SaveProfile(ctx, profile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = state.SaveProfileCapability(ctx, profile.Name, capability); err != nil {
+		t.Fatal(err)
+	}
+	var configured []effectiveStage
+	if err = json.Unmarshal(fakeRunConfiguration(t), &configured); err != nil {
+		t.Fatal(err)
+	}
+	for index := range configured {
+		if configured[index].Stage == "analyze" || configured[index].Stage == "implement" {
+			configured[index].Decision.Route = config.Route{Provider: "codex", Profile: profile.Name, Model: "fixture/model", Effort: "medium"}
+			configured[index].Simulated = false
+		}
+	}
+	configurationJSON, err := json.Marshal(configured)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, reused, err := state.CreateRunWithConfiguration(ctx, "", project, "reanalyze after a remediation", configurationJSON)
+	if err != nil || reused {
+		t.Fatalf("create run reused=%v err=%v", reused, err)
+	}
+	if err = state.AcquireWorkspaceLockOwned(ctx, project, run.ID, "expired-owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.SetRunState(ctx, run.ID, model.Running); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.SetRunState(ctx, run.ID, model.Paused); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.Event(ctx, run.ID, "analyze", "run.paused", "info", map[string]any{"stage": "analyze"}); err != nil {
+		t.Fatal(err)
+	}
+	stage := model.Stage{ID: "interrupted-analyze", RunID: run.ID, Key: "analyze", Position: indexOfStage("analyze"), State: model.StageRun, Provider: "codex", Profile: profile.Name, Model: "fixture/model", Effort: "medium", Attempt: 1}
+	if err = state.AddStage(ctx, stage); err != nil {
+		t.Fatal(err)
+	}
+	priorRemediation, err := state.StartExecutionAttempt(ctx, model.ExecutionAttempt{RunID: run.ID, Stage: "implement", Phase: "analyze_remediation", Provider: "codex", Profile: profile.Name, Model: "fixture/model", Effort: "medium"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	priorRemediation.Result = "SUCCEEDED"
+	priorRemediation.ExitCode = 0
+	priorRemediation.StartedAt = time.Now().UTC().Add(-time.Second)
+	finished := time.Now().UTC()
+	priorRemediation.FinishedAt = &finished
+	if err = state.CompleteExecutionAttempt(ctx, priorRemediation); err != nil {
+		t.Fatal(err)
+	}
+	configuration, err := state.RunConfiguration(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewWithAdapters(state, &liveFixtureAdapter{})
+	engine.discover = func(root string) (speckit.Installation, error) {
+		return speckit.Installation{ProjectRoot: root, Verified: true, Commands: map[string]string{"analyze": "/speckit.analyze", "implement": "/speckit.implement"}, CommandFiles: commandFiles, CommandHashes: commandHashes}, nil
+	}
+	if err = engine.saveCursorCheckpoint(ctx, run, featureDir, "tasks", "analyze", configuration.SHA256, "LIVE", LoopLimits{AnalyzeRemediations: 1}, checkpointCursor{Phase: "analyze", Operation: "continue_after_remediation"}); err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().UTC().Add(-store.RunOwnerLease - time.Second).Format(time.RFC3339Nano)
+	if _, err = state.DB.ExecContext(ctx, `UPDATE run_owners SET heartbeat_at=? WHERE run_id=?`, stale, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	stopApproval := approveWhenRequested(t, state, run.ID)
+	defer stopApproval()
+	if err = engine.Resume(run.ID); err != nil {
+		t.Fatalf("restart resume after analyze remediation: %v", err)
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		runState, stateErr := state.GetRun(ctx, run.ID)
+		if stateErr != nil {
+			t.Fatal(stateErr)
+		}
+		if runState.State == model.Completed || runState.State == model.Blocked || runState.State == model.Failed {
+			attempts, attemptsErr := state.ExecutionAttempts(ctx, run.ID)
+			if attemptsErr != nil {
+				t.Fatal(attemptsErr)
+			}
+			remediationCount, analyzeCount := 0, 0
+			for _, attempt := range attempts {
+				if attempt.Stage == "implement" && attempt.Phase == "analyze_remediation" {
+					remediationCount++
+				}
+				if attempt.Stage == "analyze" {
+					analyzeCount++
+				}
+			}
+			stagesAfter, stageErr := state.Stages(ctx, run.ID)
+			if stageErr != nil {
+				t.Fatal(stageErr)
+			}
+			analyzeReplay := false
+			for _, item := range stagesAfter {
+				if item.Key == "analyze" && item.Attempt == 2 && item.State == model.Succeeded {
+					analyzeReplay = true
+				}
+			}
+			if remediationCount != 1 || analyzeCount != 1 || !analyzeReplay {
+				t.Fatalf("analyze remediation replayed or read-only analysis omitted: attempts=%+v stages=%+v state=%s", attempts, stagesAfter, runState.State)
+			}
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	current, _ := state.GetRun(ctx, run.ID)
+	attempts, _ := state.ExecutionAttempts(ctx, run.ID)
+	stagesAfter, _ := state.Stages(ctx, run.ID)
+	events, _ := state.Events(ctx, run.ID, 0)
+	t.Fatalf("resumed analyze stage did not finish: state=%s attempts=%+v stages=%+v events=%+v", current.State, attempts, stagesAfter, events)
+}
+
 func TestCheckpointTracksLatestArtifactVersionsAndPreservesHistory(t *testing.T) {
 	ctx := context.Background()
 	project := initCheckpointGitProject(t)
