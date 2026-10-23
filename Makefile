@@ -1,6 +1,7 @@
 BIN := bin/spectide
+VERSION ?= dev
 
-.PHONY: fmt format-check lint test web-test web-build build demo smoke security verify load-test-sse
+.PHONY: fmt format-check lint test web-test web-build build demo smoke security verify load-test-sse release-prep
 fmt:
 	gofmt -w cmd internal
 
@@ -37,3 +38,6 @@ verify: format-check lint test web-test web-build build security smoke
 
 load-test-sse:
 	SPECTIDE_RUN_SSE_LOAD=1 go test ./internal/api -run TestSSEModerateLoadAcceptance -count=1 -timeout 3m -v
+
+release-prep: web-build
+	./scripts/prepare-release.sh "$(VERSION)"

@@ -27,6 +27,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// BuildVersion is set by release builds with -ldflags; local development keeps
+// the explicit development version.
+var BuildVersion = "0.1.0-dev"
+
 func writeJSON(out io.Writer, value any) error {
 	encoded, err := json.Marshal(events.SanitizePayload(value))
 	if err != nil {
@@ -55,7 +59,7 @@ func Root() *cobra.Command {
 	root := &cobra.Command{Use: "spectide", Short: "Local, evidence-backed Spec-Kit orchestration", SilenceUsage: true}
 	root.PersistentFlags().StringVar(&db, "db", "", "SQLite state database path")
 	open := func() (*app.App, error) { return app.Open(db) }
-	root.AddCommand(&cobra.Command{Use: "version", Run: func(c *cobra.Command, _ []string) { fmt.Fprintln(c.OutOrStdout(), "spectide 0.1.0-dev") }})
+	root.AddCommand(&cobra.Command{Use: "version", Run: func(c *cobra.Command, _ []string) { fmt.Fprintf(c.OutOrStdout(), "spectide %s\n", BuildVersion) }})
 	root.AddCommand(&cobra.Command{Use: "doctor", Short: "Report local provider and Spec-Kit readiness", RunE: func(c *cobra.Command, _ []string) error {
 		providers := map[string]string{"fake": "SIMULATED_READY", "claude": probe("claude"), "codex": probe("codex"), "opencode": probe("opencode")}
 		_, specErr := speckit.Discover(".")

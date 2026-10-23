@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-binary="${repo_root}/bin/spectide"
+binary="${SPECTIDE_BINARY:-${repo_root}/bin/spectide}"
 if [[ ! -x "${binary}" ]]; then
   echo "missing ${binary}; run make build first" >&2
   exit 1
@@ -14,7 +14,7 @@ cleanup() {
   rm -f "${state_db}" "${state_db}-wal" "${state_db}-shm" "${server_log}"
 }
 trap cleanup EXIT
-"${binary}" doctor
+"${binary}" --db "${state_db}" doctor
 os_name="$(uname -s)"
 case "${os_name}" in
   Darwin)
@@ -41,6 +41,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import re
 
 binary, database, log_path = sys.argv[1:]
 started = time.monotonic_ns()
@@ -62,6 +63,15 @@ try:
             if address:
                 with urllib.request.urlopen(f"http://{address}/healthz", timeout=0.05) as response:
                     if response.status == 200:
+                        index = urllib.request.urlopen(f"http://{address}/", timeout=1).read().decode("utf-8")
+                        if '<div id="root"></div>' not in index:
+                            raise SystemExit("dashboard index was not served by the binary")
+                        script_match = re.search(r'src="([^"]+\.js)"', index)
+                        if not script_match:
+                            raise SystemExit("dashboard JavaScript entry was not present in the embedded index")
+                        script = urllib.request.urlopen(f"http://{address}{script_match.group(1)}", timeout=1).read().decode("utf-8")
+                        if "SpecTide" not in script:
+                            raise SystemExit("dashboard JavaScript asset was not served from the embedded bundle")
                         elapsed = time.monotonic_ns() - started
                         print(f"{address}\t{elapsed / 1_000_000:.3f}")
                         if elapsed > 2_000_000_000:
@@ -86,6 +96,7 @@ elapsed_ms="${measurement#*$'\t'}"
 printf 'Build command: make build (go build -o bin/spectide ./cmd/spectide)\n'
 printf 'Process start to first HTTP 200 /healthz: %s ms (monotonic clock)\n' "${elapsed_ms}"
 echo "health endpoint ready within the 2s startup threshold"
+echo "embedded dashboard index and JavaScript asset served successfully"
 output="$("${binary}" --db "${state_db}" demo --project "${repo_root}/examples/fake-provider-demo")"
 printf '%s\n' "${output}"
 grep -q 'SIMULATED run completed' <<<"${output}"

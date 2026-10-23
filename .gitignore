@@ -1,4 +1,5 @@
 /bin/spectide
+/dist/
 /web/node_modules/
 /web/dist/
 /.taste-skill/
