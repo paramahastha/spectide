@@ -842,3 +842,8 @@
 
 - Convergence and final-review hooks now forward a restored local-check cursor into the quality runner. The outer loop consumes the `continue_registered_checks` cursor first, restores prior check evidence, and then continues its convergence/review cycle; it does not start a new provider operation before the remaining checks pass.
 - Added coverage for the registered-check continuation operation and a restart test that finalizes an interrupted implementation attempt, blocks the run, and proves no replay attempt is added. `go test ./internal/workflow ./internal/store ./internal/quality -count=1`, package vet, and `git diff --check` passed. T087 stays open for full process-exit integration coverage of approval, analyze remediation, local checks, and appended-task convergence.
+
+### T087 continuation update — approval process restart — 2026-10-23
+
+- Added a restart integration scenario that starts from a paused live implementation stage with a durable pending approval, expires the prior owner lease, and resumes with a fresh Engine. The new worker returns to the same approval gate without starting a provider attempt; after approval it appends stage attempt 2 and records exactly one successful provider invocation. The same suite covers blocking/finalizing an ambiguous interrupted write.
+- `go test ./internal/workflow -count=1`, `go vet ./internal/workflow`, targeted race tests for safe replay, ambiguous-write blocking, and pending approval restart, and `git diff --check` passed. T087 remains open for process-restart integration of analyze remediation, local checks, and appended-task convergence.

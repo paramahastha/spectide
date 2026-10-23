@@ -14,6 +14,7 @@ import (
 
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
+	"github.com/spectide/spectide/internal/speckit"
 	"github.com/spectide/spectide/internal/store"
 )
 
@@ -183,6 +184,185 @@ func TestRestartResumeBlocksAndFinalizesAmbiguousWriteAttempt(t *testing.T) {
 	if err != nil || len(attempts) != 1 || attempts[0].Result != "FAILED" || !strings.Contains(attempts[0].Error, "ambiguous") {
 		t.Fatalf("ambiguous provider attempt was not finalized: attempts=%+v err=%v", attempts, err)
 	}
+}
+
+func TestRestartResumeWaitsForPendingWriteApprovalBeforeProviderAttempt(t *testing.T) {
+	ctx := context.Background()
+	project := initCheckpointGitProject(t)
+	featureDir := filepath.Join(project, "specs", "001-product")
+	if err := os.MkdirAll(featureDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{"spec.md": "# Product\n", "plan.md": "# Plan\n", "tasks.md": "# Tasks\n"} {
+		if err := os.WriteFile(filepath.Join(featureDir, name), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commandRel := filepath.Join(".opencode", "commands", "speckit.implement.md")
+	commandPath := filepath.Join(project, commandRel)
+	if err := os.MkdirAll(filepath.Dir(commandPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	commandContent := []byte("Implement only the requested task: $ARGUMENTS")
+	if err := os.WriteFile(commandPath, commandContent, 0600); err != nil {
+		t.Fatal(err)
+	}
+	commandDigest := sha256.Sum256(commandContent)
+	internalDir := filepath.Join(project, "internal")
+	if err := os.MkdirAll(internalDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(internalDir, "fixture.go"), []byte("package internal\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(t.TempDir(), "approval-resume.db")
+	state, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	capability := verifiedFixtureCapability(t, "codex", "/bin/sh", "")
+	profile := model.Profile{Name: "fixture", Provider: "codex", Executable: "/bin/sh", AllowedScopes: []string{project}, Capability: &capability}
+	if _, err = state.SaveProfile(ctx, profile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = state.SaveProfileCapability(ctx, profile.Name, capability); err != nil {
+		t.Fatal(err)
+	}
+	profileRows, err := state.Profiles(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	decisions := make(map[string]config.Decision, len(stages))
+	for _, stage := range stages {
+		decision := config.Decision{Stage: stage, Route: config.Route{Provider: "fake", Profile: "fake-demo"}, Mode: "hybrid", Explanation: "restart fixture"}
+		if stage == "implement" {
+			decision.Route = config.Route{Provider: "codex", Profile: profile.Name, Model: "fixture/model", Effort: "medium"}
+		}
+		decisions[stage] = decision
+	}
+	effective := buildEffectiveRunConfiguration(cfg, decisions, profileRows)
+	configurationJSON, err := json.Marshal(effective)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, reused, err := state.CreateRunWithConfiguration(ctx, "", project, "resume after approval", configurationJSON)
+	if err != nil || reused {
+		t.Fatalf("create run reused=%v err=%v", reused, err)
+	}
+	if err = state.AcquireWorkspaceLockOwned(ctx, project, run.ID, "expired-owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.SetRunState(ctx, run.ID, model.Running); err != nil {
+		t.Fatal(err)
+	}
+	stage := model.Stage{ID: "paused-implement", RunID: run.ID, Key: "implement", Position: indexOfStage("implement"), State: model.Pending, Provider: "codex", Profile: profile.Name, Model: "fixture/model", Effort: "medium", Attempt: 1}
+	if err = state.AddStage(ctx, stage); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.SetStage(ctx, stage.ID, model.StageRun); err != nil {
+		t.Fatal(err)
+	}
+	configuration, err := state.RunConfiguration(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := New(state)
+	owner.discover = func(root string) (speckit.Installation, error) {
+		return speckit.Installation{ProjectRoot: root, Verified: true, Commands: map[string]string{"implement": "/speckit.implement"}, CommandFiles: map[string]string{"implement": filepath.ToSlash(commandRel)}, CommandHashes: map[string]string{"implement": hex.EncodeToString(commandDigest[:])}}, nil
+	}
+	if err = owner.saveCursorCheckpoint(ctx, run, featureDir, "analyze", "implement", configuration.SHA256, "LIVE", LoopLimits{}); err != nil {
+		t.Fatal(err)
+	}
+	action := sensitiveWriteAction(workspaceIdentityFingerprint(project), "implement", "implement", profile.Provider, profile.Name, run.Prompt)
+	approval, err := state.CreateWorkflowApprovalAndPause(ctx, run.ID, stage.Key, action)
+	if err != nil || approval.Status != model.ApprovalPending {
+		t.Fatalf("pending approval=%+v err=%v", approval, err)
+	}
+	stale := time.Now().UTC().Add(-store.RunOwnerLease - time.Second).Format(time.RFC3339Nano)
+	if _, err = state.DB.ExecContext(ctx, `UPDATE run_owners SET heartbeat_at=? WHERE run_id=?`, stale, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	engine := NewWithAdapters(state, &liveFixtureAdapter{})
+	engine.discover = owner.discover
+	if err = engine.Resume(run.ID); err != nil {
+		t.Fatalf("restart resume while approval is pending: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	resumedIntoApproval := false
+	for time.Now().Before(deadline) {
+		attempts, attemptsErr := state.ExecutionAttempts(ctx, run.ID)
+		if attemptsErr != nil {
+			t.Fatal(attemptsErr)
+		}
+		if len(attempts) > 0 {
+			t.Fatalf("provider attempt started before approval: %+v", attempts)
+		}
+		stagesAfter, stageErr := state.Stages(ctx, run.ID)
+		if stageErr != nil {
+			t.Fatal(stageErr)
+		}
+		secondAttempt := false
+		for _, item := range stagesAfter {
+			if item.Key == "implement" && item.Attempt == 2 && item.State == model.StageRun {
+				secondAttempt = true
+			}
+		}
+		events, eventsErr := state.Events(ctx, run.ID, 0)
+		if eventsErr != nil {
+			t.Fatal(eventsErr)
+		}
+		pauseCount := 0
+		for _, event := range events {
+			if event.Type == "run.paused" {
+				pauseCount++
+			}
+		}
+		if secondAttempt && pauseCount >= 2 {
+			resumedIntoApproval = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !resumedIntoApproval {
+		attempts, _ := state.ExecutionAttempts(ctx, run.ID)
+		stagesAfter, _ := state.Stages(ctx, run.ID)
+		events, _ := state.Events(ctx, run.ID, 0)
+		currentRun, _ := state.GetRun(ctx, run.ID)
+		t.Fatalf("restarted worker did not return to pending approval: state=%s stages=%+v attempts=%+v events=%+v", currentRun.State, stagesAfter, attempts, events)
+	}
+	if err = state.ResolveApprovalForRun(ctx, run.ID, approval.ID, model.ApprovalApproved); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		attempts, attemptsErr := state.ExecutionAttempts(ctx, run.ID)
+		if attemptsErr != nil {
+			t.Fatal(attemptsErr)
+		}
+		if len(attempts) > 0 && attempts[0].Result != "RUNNING" {
+			if len(attempts) != 1 || attempts[0].Stage != "implement" || attempts[0].Result != "SUCCEEDED" {
+				t.Fatalf("approved provider attempt=%+v", attempts)
+			}
+			stagesAfter, stageErr := state.Stages(ctx, run.ID)
+			if stageErr != nil {
+				t.Fatal(stageErr)
+			}
+			foundReplay := false
+			for _, item := range stagesAfter {
+				if item.Key == "implement" && item.Attempt == 2 && item.State == model.Succeeded {
+					foundReplay = true
+				}
+			}
+			if !foundReplay {
+				t.Fatalf("restart did not append the next stage attempt: %+v", stagesAfter)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("approved provider invocation did not finish")
 }
 
 func TestCheckpointTracksLatestArtifactVersionsAndPreservesHistory(t *testing.T) {
