@@ -847,3 +847,8 @@
 
 - Added a restart integration scenario that starts from a paused live implementation stage with a durable pending approval, expires the prior owner lease, and resumes with a fresh Engine. The new worker returns to the same approval gate without starting a provider attempt; after approval it appends stage attempt 2 and records exactly one successful provider invocation. The same suite covers blocking/finalizing an ambiguous interrupted write.
 - `go test ./internal/workflow -count=1`, `go vet ./internal/workflow`, targeted race tests for safe replay, ambiguous-write blocking, and pending approval restart, and `git diff --check` passed. T087 remains open for process-restart integration of analyze remediation, local checks, and appended-task convergence.
+
+### T087 continuation update — local quality process restart — 2026-10-23
+
+- Added a process-restart integration test for the local `tests` stage. It persists a PASS result and cursor for the first registered check, expires the old workspace owner, then resumes with a new Engine. The report contains the original result exactly once and each remaining required check exactly once.
+- The targeted restart test passed. `go test ./internal/workflow -count=1`, `go vet ./internal/workflow`, race tests for local-check/approval/ambiguous-write restart, and `git diff --check` passed. T087 remains open for process-restart integration of analyze remediation and appended-task convergence.

@@ -365,6 +365,146 @@ func TestRestartResumeWaitsForPendingWriteApprovalBeforeProviderAttempt(t *testi
 	t.Fatal("approved provider invocation did not finish")
 }
 
+func TestRestartResumeSkipsPersistedLocalQualityCheck(t *testing.T) {
+	ctx := context.Background()
+	project := initCheckpointGitProject(t)
+	featureDir := filepath.Join(project, "specs", "001-product")
+	if err := os.MkdirAll(featureDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{"spec.md": "# Product\n", "plan.md": "# Plan\n", "tasks.md": "# Tasks\n"} {
+		if err := os.WriteFile(filepath.Join(featureDir, name), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commandRel := filepath.Join(".opencode", "commands", "speckit.implement.md")
+	commandPath := filepath.Join(project, commandRel)
+	if err := os.MkdirAll(filepath.Dir(commandPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	commandContent := []byte("Implement only the requested task: $ARGUMENTS")
+	if err := os.WriteFile(commandPath, commandContent, 0600); err != nil {
+		t.Fatal(err)
+	}
+	commandDigest := sha256.Sum256(commandContent)
+	for path, content := range map[string]string{
+		"go.mod":               "module restartfixture\n\ngo 1.27.2\n",
+		"cmd/spectide/main.go": "package main\n\nfunc main() {}\n",
+		"internal/fixture.go":  "package internal\n",
+	} {
+		absolute := filepath.Join(project, path)
+		if err := os.MkdirAll(filepath.Dir(absolute), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(absolute, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(project, ".spectide"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(t.TempDir(), "quality-resume.db")
+	state, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	capability := verifiedFixtureCapability(t, "codex", "/bin/sh", "")
+	profile := model.Profile{Name: "fixture", Provider: "codex", Executable: "/bin/sh", AllowedScopes: []string{project}, Capability: &capability}
+	if _, err = state.SaveProfile(ctx, profile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = state.SaveProfileCapability(ctx, profile.Name, capability); err != nil {
+		t.Fatal(err)
+	}
+	var configured []effectiveStage
+	if err = json.Unmarshal(fakeRunConfiguration(t), &configured); err != nil {
+		t.Fatal(err)
+	}
+	for index := range configured {
+		if configured[index].Stage == "implement" {
+			configured[index].Decision.Route = config.Route{Provider: "codex", Profile: profile.Name, Model: "fixture/model", Effort: "medium"}
+			configured[index].Simulated = false
+		}
+	}
+	configurationJSON, err := json.Marshal(configured)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, reused, err := state.CreateRunWithConfiguration(ctx, "", project, "resume local quality checks", configurationJSON)
+	if err != nil || reused {
+		t.Fatalf("create run reused=%v err=%v", reused, err)
+	}
+	if err = state.AcquireWorkspaceLockOwned(ctx, project, run.ID, "expired-owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.SetRunState(ctx, run.ID, model.Running); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.SetRunState(ctx, run.ID, model.Paused); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.Event(ctx, run.ID, "tests", "run.paused", "info", map[string]any{"stage": "tests"}); err != nil {
+		t.Fatal(err)
+	}
+	stage := model.Stage{ID: "interrupted-tests", RunID: run.ID, Key: "tests", Position: indexOfStage("tests"), State: model.StageRun, Provider: "local", Profile: "engine", Attempt: 1}
+	if err = state.AddStage(ctx, stage); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now().UTC().Add(-time.Second)
+	qualityExecution, err := state.SaveQualityExecution(ctx, model.QualityExecution{
+		RunID: run.ID, Phase: "tests", ProcessID: os.Getpid(), StartedAt: started, FinishedAt: started.Add(time.Second), Verdict: "PASS",
+		Results: []model.QualityResult{{Key: "format", Verdict: "PASS", Command: []string{"gofmt", "-l", "cmd", "internal"}, ProcessID: os.Getpid(), ExitCode: 0, StartedAt: started}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration, err := state.RunConfiguration(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewWithAdapters(state, &liveFixtureAdapter{})
+	engine.discover = func(root string) (speckit.Installation, error) {
+		return speckit.Installation{ProjectRoot: root, Verified: true, Commands: map[string]string{"implement": "/speckit.implement"}, CommandFiles: map[string]string{"implement": filepath.ToSlash(commandRel)}, CommandHashes: map[string]string{"implement": hex.EncodeToString(commandDigest[:])}}, nil
+	}
+	cursor := checkpointCursor{Phase: "tests", Operation: "continue_registered_checks", Check: "format", Position: 1, CompletedQualityExecutionIDs: []string{qualityExecution.ID}}
+	if err = engine.saveCursorCheckpoint(ctx, run, featureDir, "implement", "tests", configuration.SHA256, "LOCAL", LoopLimits{}, cursor); err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().UTC().Add(-store.RunOwnerLease - time.Second).Format(time.RFC3339Nano)
+	if _, err = state.DB.ExecContext(ctx, `UPDATE run_owners SET heartbeat_at=? WHERE run_id=?`, stale, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = engine.Resume(run.ID); err != nil {
+		t.Fatalf("restart resume at local quality cursor: %v", err)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		report, reportErr := state.Report(ctx, run.ID)
+		if reportErr != nil {
+			t.Fatal(reportErr)
+		}
+		runState, stateErr := state.GetRun(ctx, run.ID)
+		if stateErr != nil {
+			t.Fatal(stateErr)
+		}
+		if runState.State == model.Completed || runState.State == model.Blocked || runState.State == model.Failed {
+			counts := map[string]int{}
+			for _, execution := range report.QualityExecutions {
+				for _, result := range execution.Results {
+					counts[result.Key]++
+				}
+			}
+			if counts["format"] != 1 || counts["static_analysis"] != 1 || counts["unit_tests"] != 1 || counts["build"] != 1 {
+				t.Fatalf("completed quality checks were replayed or remaining checks were omitted: counts=%v executions=%+v state=%s", counts, report.QualityExecutions, runState.State)
+			}
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatal("resumed local quality stage did not finish")
+}
+
 func TestCheckpointTracksLatestArtifactVersionsAndPreservesHistory(t *testing.T) {
 	ctx := context.Background()
 	project := initCheckpointGitProject(t)
