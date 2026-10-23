@@ -789,3 +789,9 @@
 - Added one routing-level launch validator used by API dry-run/validation and CLI `config preview`/`config validate`. It canonicalizes the workspace and checks project scope, configured direct/fallback profile registration and scope, persisted capability evidence, and stage route resolution without starting a workflow or probing a provider.
 - CLI blocked responses include an explicit `NOT_RUN` preview and blocked reasons; API preview and validation errors include the same intent and reason data in the standard error envelope. Tests cover unauthorized direct/fallback routes, missing profiles, unprobed capability, project boundary, and zero run creation.
 - `go test ./internal/routing ./internal/api ./internal/cli -count=1`, package vet, and `git diff --check` passed. T100 is complete; T101 is next. T087/T088 remain partial.
+
+### T101 — Finalize heartbeat ownership loss safely — 2026-10-23
+
+- Worker contexts now retain cancellation causes. Heartbeat failure is classified as `WORKSPACE_OWNERSHIP_LOST`, and persistence failures caused by canceled worker contexts finalize as `CANCELLED` instead of being misreported as `FAILED`.
+- Cleanup releases the workspace database lease only when the same owner ID still holds it. A replacement owner remains fenced until stale-terminal recovery confirms the lease expired and the process lock is no longer held. The regression test repeats eight scenarios and checks terminal state, ownership cause, process-lock release, retained replacement-owner fence, safe stale recovery, and a stable event count after cancellation.
+- `go test -race ./internal/workflow -run TestHeartbeatOwnershipLossCancelsActiveWorker -count=2`, `go test ./internal/workflow ./internal/store -count=1`, focused repeat after the final process-lock assertion, `go vet ./internal/workflow ./internal/store`, and `git diff --check` passed. T101 is complete; T102 is next. T087/T088 remain partial.

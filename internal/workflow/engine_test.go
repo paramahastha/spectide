@@ -15,6 +15,7 @@ import (
 	"github.com/spectide/spectide/internal/model"
 	"github.com/spectide/spectide/internal/security"
 	"github.com/spectide/spectide/internal/store"
+	workspaceguard "github.com/spectide/spectide/internal/workspace"
 )
 
 func TestFakeLifecyclePersistsEvidence(t *testing.T) {
@@ -640,22 +641,58 @@ func TestHeartbeatOwnershipLossCancelsActiveWorker(t *testing.T) {
 	}
 	defer s.Close()
 	engine := New(s)
-	project := t.TempDir()
-	run, err := engine.Start(ctx, project, "stop when workspace ownership is lost")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = s.DB.ExecContext(ctx, `UPDATE run_owners SET owner_id=? WHERE run_id=?`, "replacement-owner", run.ID); err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		got, getErr := s.GetRun(ctx, run.ID)
-		if getErr == nil && got.State == model.Cancelled {
-			return
+	for attempt := 0; attempt < 8; attempt++ {
+		project := t.TempDir()
+		run, startErr := engine.Start(ctx, project, "stop when workspace ownership is lost")
+		if startErr != nil {
+			t.Fatal(startErr)
 		}
-		time.Sleep(20 * time.Millisecond)
+		if _, err = s.DB.ExecContext(ctx, `UPDATE run_owners SET owner_id=? WHERE run_id=?`, fmt.Sprintf("replacement-owner-%d", attempt), run.ID); err != nil {
+			t.Fatal(err)
+		}
+		completed, waitErr := engine.Wait(ctx, run.ID)
+		if waitErr != nil || completed.State != model.Cancelled {
+			t.Fatalf("worker loss did not end as cancellation on iteration %d: run=%+v err=%v", attempt, completed, waitErr)
+		}
+		if held, lockErr := workspaceguard.ProcessLockHeld(project); lockErr != nil || held {
+			t.Fatalf("worker retained its process writer lock on iteration %d: held=%t err=%v", attempt, held, lockErr)
+		}
+		var eventCount int
+		if err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE run_id=?`, run.ID).Scan(&eventCount); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(125 * time.Millisecond)
+		var afterCount int
+		if err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE run_id=?`, run.ID).Scan(&afterCount); err != nil {
+			t.Fatal(err)
+		}
+		if afterCount != eventCount {
+			t.Fatalf("worker wrote %d events after cancellation on iteration %d", afterCount-eventCount, attempt)
+		}
+		events, eventErr := s.Events(ctx, run.ID, 0)
+		foundOwnershipLoss := false
+		for _, event := range events {
+			reason, _ := event.Payload["reason"].(string)
+			if event.Type == "stage.cancelled" && strings.Contains(reason, "WORKSPACE_OWNERSHIP_LOST") {
+				foundOwnershipLoss = true
+			}
+		}
+		if eventErr != nil || !foundOwnershipLoss {
+			t.Fatalf("cancellation evidence missing on iteration %d: events=%+v err=%v", attempt, events, eventErr)
+		}
+		var ownerID string
+		var lockCount int
+		if err = s.DB.QueryRowContext(ctx, `SELECT owner_id FROM run_owners WHERE run_id=?`, run.ID).Scan(&ownerID); err != nil {
+			t.Fatal(err)
+		}
+		if err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM workspace_locks WHERE run_id=?`, run.ID).Scan(&lockCount); err != nil || ownerID != fmt.Sprintf("replacement-owner-%d", attempt) || lockCount != 1 {
+			t.Fatalf("worker cleanup crossed the replacement owner's fence: owner=%q lock_count=%d err=%v", ownerID, lockCount, err)
+		}
+		if err = s.RecoverAbandonedRuns(ctx, time.Now().UTC().Add(store.RunOwnerLease+time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM workspace_locks WHERE run_id=?`, run.ID).Scan(&lockCount); err != nil || lockCount != 0 {
+			t.Fatalf("expired terminal-owner fence was not safely reconciled: lock_count=%d err=%v", lockCount, err)
+		}
 	}
-	got, _ := s.GetRun(ctx, run.ID)
-	t.Fatalf("worker kept running after owner identity changed: state=%s", got.State)
 }

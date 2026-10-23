@@ -522,6 +522,31 @@ func (s *Store) ReleaseWorkspaceLock(ctx context.Context, path, runID string) er
 	return tx.Commit()
 }
 
+// ReleaseWorkspaceLockOwned removes a writer lease only while the same owner
+// identity is still registered. A worker whose lease was replaced cannot
+// release another owner's fence while cleaning up its own goroutine.
+func (s *Store) ReleaseWorkspaceLockOwned(ctx context.Context, path, runID, ownerID string) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var currentOwner string
+	if err = tx.QueryRowContext(ctx, `SELECT owner_id FROM run_owners WHERE run_id=?`, runID).Scan(&currentOwner); err != nil {
+		return err
+	}
+	if currentOwner != ownerID {
+		return fmt.Errorf("RUN_OWNER_NOT_REGISTERED")
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM workspace_locks WHERE canonical_path=? AND run_id=?`, path, runID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM run_owners WHERE run_id=? AND owner_id=?`, runID, ownerID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) SaveRoutingDecision(ctx context.Context, runID, stage, provider, profile, modelName, effort, policy, explanation string, simulatedOverride ...bool) error {
 	for _, identity := range []string{provider, profile, modelName, effort, policy} {
 		if security.Redact(identity) != identity {

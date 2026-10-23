@@ -243,5 +243,69 @@ func (s *Store) RecoverAbandonedRuns(ctx context.Context, at time.Time) error {
 			return txErr
 		}
 	}
+	// A worker may have stopped and terminalized its run after its owner
+	// identity was replaced. Keep that lock until its lease is stale and no
+	// process lock remains, then remove only the orphaned terminal owner rows.
+	terminalRows, err := s.DB.QueryContext(ctx, `SELECT r.id,r.project,o.heartbeat_at FROM runs r JOIN run_owners o ON o.run_id=r.id WHERE r.state IN (?,?,?,?)`, model.Completed, model.Blocked, model.Failed, model.Cancelled)
+	if err != nil {
+		return err
+	}
+	type terminalOwner struct{ id, project, heartbeat string }
+	var expired []terminalOwner
+	for terminalRows.Next() {
+		var item terminalOwner
+		if err = terminalRows.Scan(&item.id, &item.project, &item.heartbeat); err != nil {
+			terminalRows.Close()
+			return err
+		}
+		updated, parseErr := time.Parse(time.RFC3339Nano, item.heartbeat)
+		if parseErr != nil || updated.Before(cutoff) {
+			expired = append(expired, item)
+		}
+	}
+	if err = terminalRows.Err(); err != nil {
+		terminalRows.Close()
+		return err
+	}
+	if err = terminalRows.Close(); err != nil {
+		return err
+	}
+	for _, item := range expired {
+		held, lockErr := workspaceguard.ProcessLockHeld(item.project)
+		if lockErr != nil {
+			return lockErr
+		}
+		if held {
+			continue
+		}
+		tx, txErr := s.DB.BeginTx(ctx, nil)
+		if txErr != nil {
+			return txErr
+		}
+		var latestHeartbeat string
+		if txErr = tx.QueryRowContext(ctx, `SELECT heartbeat_at FROM run_owners WHERE run_id=?`, item.id).Scan(&latestHeartbeat); txErr == nil {
+			latest, parseErr := time.Parse(time.RFC3339Nano, latestHeartbeat)
+			if parseErr == nil && !latest.Before(cutoff) {
+				tx.Rollback()
+				continue
+			}
+		} else if txErr == sql.ErrNoRows {
+			tx.Rollback()
+			continue
+		} else {
+			tx.Rollback()
+			return txErr
+		}
+		if _, txErr = tx.ExecContext(ctx, `DELETE FROM workspace_locks WHERE run_id=?`, item.id); txErr == nil {
+			_, txErr = tx.ExecContext(ctx, `DELETE FROM run_owners WHERE run_id=?`, item.id)
+		}
+		if txErr != nil {
+			tx.Rollback()
+			return txErr
+		}
+		if txErr = tx.Commit(); txErr != nil {
+			return txErr
+		}
+	}
 	return nil
 }
