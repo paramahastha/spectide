@@ -463,6 +463,17 @@ func (e *Engine) Resume(id string) error {
 		}
 		child, cancelCause := context.WithCancelCause(context.Background())
 		cancel := func() { cancelCause(context.Canceled) }
+		continuationState := checkpointState
+		if checkpointState.PendingOperation == "await_sensitive_approval" && checkpointState.ApprovalContinuation != nil {
+			continuation := checkpointState.ApprovalContinuation
+			continuationState.PendingPhase = continuation.Phase
+			continuationState.PendingOperation = continuation.Operation
+			continuationState.PendingTasks = append([]string(nil), continuation.Tasks...)
+			continuationState.PendingCheck = continuation.Check
+			continuationState.TaskPosition = continuation.Position
+			continuationState.CompletedQualityExecutionIDs = append([]string(nil), continuation.CompletedQualityExecutionIDs...)
+			continuationState.ApprovalContinuation = nil
+		}
 		e.mu.Lock()
 		e.cancels[id] = cancel
 		e.resumes[id] = make(chan struct{}, 1)
@@ -471,7 +482,7 @@ func (e *Engine) Resume(id string) error {
 		e.mu.Unlock()
 		claimed = true
 		go e.heartbeat(child, id, cancelCause)
-		go e.execute(child, run, decisions, installation, featureDir, startAt, budget.Counts(), gateVerdicts, resumeAttempt, checkpointState)
+		go e.execute(child, run, decisions, installation, featureDir, startAt, budget.Counts(), gateVerdicts, resumeAttempt, continuationState)
 		return nil
 	}
 }

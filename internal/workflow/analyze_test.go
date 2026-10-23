@@ -145,6 +145,19 @@ func TestReadOnlyAnalysisDetectsMutationsWhenInvocationFails(t *testing.T) {
 	}
 }
 
+func TestReadOnlyAnalysisRejectsValidReportWhenInvocationAlsoFails(t *testing.T) {
+	hooks := AnalyzeHooks{
+		ArtifactHash: func(context.Context) (string, error) { return "unchanged", nil },
+		Analyze: func(context.Context) (string, error) {
+			return cleanAnalysis, fmt.Errorf("provider process failed after emitting a report")
+		},
+		Remediate: func(context.Context, speckit.Finding) error { return nil },
+	}
+	if _, err := RunAnalyzeGate(context.Background(), hooks, DefaultLoopLimits()); err == nil || !strings.Contains(err.Error(), "provider process failed") {
+		t.Fatalf("failed analyze invocation with valid-looking output was accepted: %v", err)
+	}
+}
+
 func TestWorkspaceFingerprintIncludesGeneratedDirectoriesAndSymlinks(t *testing.T) {
 	for _, relative := range []string{"vendor/generated.go", "dist/app.js", "build/output.bin"} {
 		t.Run(relative, func(t *testing.T) {

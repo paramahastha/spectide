@@ -2,7 +2,7 @@
 
 **Branch**: `001-build-spectide` | **Date**: 2026-10-22 | **Spec**: [spec.md](spec.md)
 
-**Input**: Feature specification from `/specs/[###-feature-name]/spec.md`
+**Input**: Feature specification from `specs/001-build-spectide/spec.md`
 
 **Note**: This template is filled in by the `/speckit.plan` command; its definition describes the execution workflow.
 

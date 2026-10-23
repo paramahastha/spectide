@@ -63,7 +63,7 @@ func (e *Engine) runLiveAnalyzeLoop(ctx context.Context, run model.Run, decision
 				"Finding: " + security.Redact(finding.Summary),
 				"Resolution: " + security.Redact(finding.Resolution),
 			}, "\n")
-			if _, cancelled, runErr := e.runLiveStageWithControlOptions(ctx, run, "implement", "analyze_remediation", implementRoute, prompt, installation, featureDir, liveStageOptions{templateStage: templateStage, ownerPath: ownerPath}); runErr != nil {
+			if _, cancelled, runErr := e.runLiveStageWithControlOptions(ctx, run, "implement", "analyze_remediation", implementRoute, prompt, installation, featureDir, liveStageOptions{templateStage: templateStage, ownerPath: ownerPath, LoopCounts: budget.Counts(), HasLoopCounts: true}); runErr != nil {
 				if cancelled {
 					return context.Canceled
 				}

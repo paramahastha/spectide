@@ -20,26 +20,36 @@ import (
 )
 
 type cursorCheckpointState struct {
-	CheckpointID                 string            `json:"checkpoint_id"`
-	CompletedStage               string            `json:"completed_stage"`
-	NextStage                    string            `json:"next_stage"`
-	ConfigurationSHA             string            `json:"configuration_sha256"`
-	Execution                    string            `json:"execution"`
-	CursorOnly                   bool              `json:"cursor_only"`
-	WorkspacePath                string            `json:"workspace_path"`
-	FeatureDirectory             string            `json:"feature_directory,omitempty"`
-	WorkspaceIdentity            string            `json:"workspace_identity"`
-	GitHead                      string            `json:"git_head"`
-	GitIndex                     string            `json:"git_index"`
-	ArtifactPathHashes           map[string]string `json:"artifact_path_hashes"`
-	ManagedPathHashes            map[string]string `json:"managed_path_hashes"`
-	LoopCounts                   LoopLimits        `json:"loop_counts"`
-	PendingPhase                 string            `json:"pending_phase,omitempty"`
-	PendingOperation             string            `json:"pending_operation,omitempty"`
-	PendingTasks                 []string          `json:"pending_tasks,omitempty"`
-	PendingCheck                 string            `json:"pending_check,omitempty"`
-	TaskPosition                 int               `json:"task_position,omitempty"`
-	CompletedQualityExecutionIDs []string          `json:"completed_quality_execution_ids,omitempty"`
+	CheckpointID                 string                  `json:"checkpoint_id"`
+	CompletedStage               string                  `json:"completed_stage"`
+	NextStage                    string                  `json:"next_stage"`
+	ConfigurationSHA             string                  `json:"configuration_sha256"`
+	Execution                    string                  `json:"execution"`
+	CursorOnly                   bool                    `json:"cursor_only"`
+	WorkspacePath                string                  `json:"workspace_path"`
+	FeatureDirectory             string                  `json:"feature_directory,omitempty"`
+	WorkspaceIdentity            string                  `json:"workspace_identity"`
+	GitHead                      string                  `json:"git_head"`
+	GitIndex                     string                  `json:"git_index"`
+	ArtifactPathHashes           map[string]string       `json:"artifact_path_hashes"`
+	ManagedPathHashes            map[string]string       `json:"managed_path_hashes"`
+	LoopCounts                   LoopLimits              `json:"loop_counts"`
+	PendingPhase                 string                  `json:"pending_phase,omitempty"`
+	PendingOperation             string                  `json:"pending_operation,omitempty"`
+	PendingTasks                 []string                `json:"pending_tasks,omitempty"`
+	PendingCheck                 string                  `json:"pending_check,omitempty"`
+	TaskPosition                 int                     `json:"task_position,omitempty"`
+	CompletedQualityExecutionIDs []string                `json:"completed_quality_execution_ids,omitempty"`
+	ApprovalContinuation         *checkpointContinuation `json:"approval_continuation,omitempty"`
+}
+
+type checkpointContinuation struct {
+	Phase                        string   `json:"phase,omitempty"`
+	Operation                    string   `json:"operation,omitempty"`
+	Tasks                        []string `json:"tasks,omitempty"`
+	Check                        string   `json:"check,omitempty"`
+	Position                     int      `json:"position,omitempty"`
+	CompletedQualityExecutionIDs []string `json:"completed_quality_execution_ids,omitempty"`
 }
 
 type checkpointCursor struct {
@@ -49,6 +59,7 @@ type checkpointCursor struct {
 	Check                        string
 	Position                     int
 	CompletedQualityExecutionIDs []string
+	ApprovalContinuation         *checkpointContinuation
 }
 
 type storedRunDecision struct {
@@ -110,6 +121,12 @@ func (e *Engine) saveCursorCheckpoint(ctx context.Context, run model.Run, featur
 		state.PendingCheck = cursor.Check
 		state.TaskPosition = cursor.Position
 		state.CompletedQualityExecutionIDs = append([]string(nil), cursor.CompletedQualityExecutionIDs...)
+		if cursor.ApprovalContinuation != nil {
+			continuation := *cursor.ApprovalContinuation
+			continuation.Tasks = append([]string(nil), cursor.ApprovalContinuation.Tasks...)
+			continuation.CompletedQualityExecutionIDs = append([]string(nil), cursor.ApprovalContinuation.CompletedQualityExecutionIDs...)
+			state.ApprovalContinuation = &continuation
+		}
 	}
 	if featureDir != "" {
 		root, rootErr := filepath.EvalSymlinks(run.Project)

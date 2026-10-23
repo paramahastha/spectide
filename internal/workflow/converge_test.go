@@ -57,7 +57,7 @@ func TestRunConvergenceImplementsOnlyAppendedTasksThenRepeatsTests(t *testing.T)
 }
 
 func TestRunConvergenceRestoresAppendedTaskCursorWithoutReConverging(t *testing.T) {
-	for _, operation := range []string{"implement_appended_tasks", "continue_convergence", "continue_registered_checks"} {
+	for _, operation := range []string{"implement_appended_tasks", "continue_convergence", "continue_registered_checks", "start_registered_checks", "restart_registered_checks"} {
 		t.Run(operation, func(t *testing.T) {
 			budget, err := NewLoopBudget(DefaultLoopLimits())
 			if err != nil {
@@ -199,6 +199,74 @@ func TestRunFinalReviewFixesThenRetestsAndReconverges(t *testing.T) {
 	converged, err := RunFinalReview(context.Background(), hooks, DefaultLoopLimits())
 	if err != nil || !converged || convergeCalls != 2 || reviewCalls != 2 || fixCalls != 1 || testCalls != 1 {
 		t.Fatalf("converged=%v err=%v converge=%d review=%d fix=%d tests=%d", converged, err, convergeCalls, reviewCalls, fixCalls, testCalls)
+	}
+}
+
+func TestRunFinalReviewRestoresPendingFinalReviewOperations(t *testing.T) {
+	for _, operation := range []string{"complete_final_review", "complete_convergence", "test_after_final_review_fix", "fix_final_review_findings", "start_registered_checks", "restart_registered_checks"} {
+		t.Run(operation, func(t *testing.T) {
+			budget, err := NewLoopBudget(DefaultLoopLimits())
+			if err != nil {
+				t.Fatal(err)
+			}
+			position := 0
+			if operation == "complete_convergence" || operation == "test_after_final_review_fix" || operation == "fix_final_review_findings" {
+				if err = budget.ConvergenceRound("before", "after", map[string]string{"tests": "FAIL"}, map[string]string{"tests": "FAIL"}); err != nil {
+					t.Fatal(err)
+				}
+				position = 1
+			}
+			convergeCalls, reviewCalls, fixCalls, testCalls := 0, 0, 0, 0
+			cursor := &cursorCheckpointState{PendingPhase: "final_review", PendingOperation: operation, PendingTasks: []string{"final finding"}, TaskPosition: position}
+			convergenceCursor := (*cursorCheckpointState)(nil)
+			if operation == "complete_convergence" {
+				convergenceCursor = cursor
+			}
+			hooks := FinalReviewHooks{
+				Resume: cursor,
+				Convergence: ConvergenceHooks{
+					Phase:  "final_review",
+					Resume: convergenceCursor,
+					Snapshot: func(context.Context) (ConvergenceSnapshot, error) {
+						return ConvergenceSnapshot{SpecificationPath: "specs/001-build-spectide/spec.md", TaskLedger: "tasks", GateVerdicts: map[string]string{"tests": "PASS"}}, nil
+					},
+					Converge: func(context.Context) (string, error) {
+						convergeCalls++
+						return "✅ Converged — required gates pass.", nil
+					},
+					Implement: func(context.Context, []string) error { return nil },
+					Test: func(context.Context) (map[string]string, error) {
+						testCalls++
+						return map[string]string{"tests": "PASS"}, nil
+					},
+				},
+				Review: func(context.Context) ([]string, error) {
+					reviewCalls++
+					return nil, nil
+				},
+				Fix: func(_ context.Context, findings []string) error {
+					fixCalls++
+					if len(findings) != 1 || findings[0] != "final finding" {
+						t.Fatalf("resumed final-review findings=%v", findings)
+					}
+					return nil
+				},
+			}
+			converged, runErr := RunFinalReviewWithBudget(context.Background(), hooks, budget, budget.Limits())
+			wantReview, wantFix, wantTests, wantConverge := 1, 0, 0, 1
+			if operation == "complete_final_review" {
+				wantReview, wantConverge = 0, 0
+			} else if operation == "complete_convergence" {
+				wantConverge = 0
+			} else if operation == "test_after_final_review_fix" || operation == "start_registered_checks" || operation == "restart_registered_checks" {
+				wantTests = 1
+			} else if operation == "fix_final_review_findings" {
+				wantFix, wantTests = 1, 1
+			}
+			if runErr != nil || !converged || reviewCalls != wantReview || fixCalls != wantFix || testCalls != wantTests || convergeCalls != wantConverge {
+				t.Fatalf("operation=%s converged=%v err=%v review=%d fix=%d tests=%d converge=%d", operation, converged, runErr, reviewCalls, fixCalls, testCalls, convergeCalls)
+			}
+		})
 	}
 }
 

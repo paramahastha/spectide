@@ -111,16 +111,16 @@ func readOnlyAnalysis(ctx context.Context, hooks AnalyzeHooks) (speckit.Analysis
 	if before == "" {
 		return speckit.Analysis{}, "", fmt.Errorf("ANALYZE_ARTIFACT_HASH_REQUIRED")
 	}
-	output, err := hooks.Analyze(ctx)
-	after, err := hooks.ArtifactHash(ctx)
-	if err != nil {
-		return speckit.Analysis{}, "", err
+	output, invocationErr := hooks.Analyze(ctx)
+	after, hashErr := hooks.ArtifactHash(ctx)
+	if hashErr != nil {
+		return speckit.Analysis{}, "", hashErr
 	}
 	if before != after {
 		return speckit.Analysis{}, "", fmt.Errorf("ANALYZE_MUTATED_ARTIFACTS")
 	}
-	if err != nil {
-		return speckit.Analysis{}, "", err
+	if invocationErr != nil {
+		return speckit.Analysis{}, "", invocationErr
 	}
 	analysis, err := speckit.ParseAnalysisOutput(output)
 	return analysis, after, err

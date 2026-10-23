@@ -71,7 +71,8 @@ func (e *Engine) liveConvergenceHooks(run model.Run, phase string, decisions map
 			for _, task := range tasks {
 				prompt += "- " + security.Redact(task) + "\n"
 			}
-			_, cancelled, err := e.runLiveStageWithControlPhase(ctx, run, "implement", phase+"_implementation", implementRoute, prompt, installation, featureDir)
+			continuation := &checkpointContinuation{Phase: phase, Operation: "implement_appended_tasks", Tasks: append([]string(nil), tasks...), Position: budget.Counts().ConvergenceRounds}
+			_, cancelled, err := e.runLiveStageWithControlOptions(ctx, run, "implement", phase+"_implementation", implementRoute, prompt, installation, featureDir, liveStageOptions{LoopCounts: budget.Counts(), HasLoopCounts: true, ApprovalContinuation: continuation})
 			if cancelled {
 				return context.Canceled
 			}
@@ -163,7 +164,8 @@ func (e *Engine) runLiveFinalReviewLoop(ctx context.Context, run model.Run, deci
 				prompt.WriteString(security.Redact(finding))
 				prompt.WriteByte('\n')
 			}
-			_, cancelled, err := e.runLiveStageWithControlPhase(ctx, run, "implement", "final_review_fix", decisions["implement"].Route, prompt.String(), installation, featureDir)
+			continuation := &checkpointContinuation{Phase: "final_review", Operation: "fix_final_review_findings", Tasks: append([]string(nil), findings...), Position: budget.Counts().ConvergenceRounds}
+			_, cancelled, err := e.runLiveStageWithControlOptions(ctx, run, "implement", "final_review_fix", decisions["implement"].Route, prompt.String(), installation, featureDir, liveStageOptions{LoopCounts: budget.Counts(), HasLoopCounts: true, ApprovalContinuation: continuation})
 			if cancelled {
 				return context.Canceled
 			}
@@ -175,6 +177,9 @@ func (e *Engine) runLiveFinalReviewLoop(ctx context.Context, run model.Run, deci
 		Boundary: func(ctx context.Context, operation string, tasks []string, position int) error {
 			return e.loopControlBoundaryAt(ctx, run, "final_review", featureDir, budget, checkpointCursor{Phase: "final_review", Operation: operation, Tasks: tasks, Position: position})
 		},
+	}
+	if len(restored) > 0 {
+		hooks.Resume = restored[0]
 	}
 	converged, err := RunFinalReviewWithBudget(ctx, hooks, budget, budget.Limits())
 	if err != nil {

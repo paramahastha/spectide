@@ -28,6 +28,7 @@ type liveFixtureAdapter struct {
 	prompts         []string
 	analyzeStart    string
 	analyzeRelease  string
+	repairMarker    string
 	analyzeBarrier  sync.Once
 }
 
@@ -95,6 +96,11 @@ func (a *liveFixtureAdapter) Build(request adapters.Request) (runner.Invocation,
 		return runner.Invocation{Binary: "/bin/sh", Args: []string{"-c", "printf '%s\\n' '# Implementation Plan' '' '## Summary' 'Bounded fixture plan.' > \"" + path + "\"; printf '%s' 'plan generated'"}, Dir: request.ProjectRoot, Timeout: request.Timeout}, nil
 	}
 	if request.Stage == "implement" {
+		if a.repairMarker != "" {
+			sourcePath := filepath.Join(request.ProjectRoot, "internal", "fixture.go")
+			script := "touch \"" + a.repairMarker + "\"; printf '\\n%s\\n' '// repair evidence' >> \"" + sourcePath + "\"; printf '%s' 'registered check repaired'"
+			return runner.Invocation{Binary: "/bin/sh", Args: []string{"-c", script}, Dir: request.ProjectRoot, Timeout: request.Timeout}, nil
+		}
 		path := filepath.Join(request.ProjectRoot, "internal", "fixture.go")
 		return runner.Invocation{Binary: "/bin/sh", Args: []string{"-c", "printf '\\n%s\\n' '// implementation evidence' >> \"" + path + "\"; printf '%s' 'implementation generated'"}, Dir: request.ProjectRoot, Timeout: request.Timeout}, nil
 	}

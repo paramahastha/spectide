@@ -32,8 +32,11 @@ func (e *Engine) runLiveStageWithControlPhase(ctx context.Context, run model.Run
 }
 
 type liveStageOptions struct {
-	templateStage string
-	ownerPath     string
+	templateStage        string
+	ownerPath            string
+	LoopCounts           LoopLimits
+	HasLoopCounts        bool
+	ApprovalContinuation *checkpointContinuation
 }
 
 func (e *Engine) runLiveStageWithControlOptions(ctx context.Context, run model.Run, stage, phase string, route config.Route, prompt string, installation speckit.Installation, featureDir string, options ...liveStageOptions) (map[string]any, bool, error) {
@@ -182,7 +185,8 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 		e.mu.Lock()
 		resume := e.resumes[run.ID]
 		e.mu.Unlock()
-		if err = e.authorizeSensitiveInvocation(ctx, run, stage, phase, installation.ProjectRoot, *profile, prompt, resume); err != nil {
+		approvalContext := sensitiveApprovalContext{LoopCounts: option.LoopCounts, HasLoopCounts: option.HasLoopCounts, Continuation: option.ApprovalContinuation}
+		if err = e.authorizeSensitiveInvocation(ctx, run, stage, phase, installation.ProjectRoot, *profile, prompt, resume, approvalContext); err != nil {
 			return nil, err
 		}
 	}
@@ -412,7 +416,13 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 	return evidence, nil
 }
 
-func (e *Engine) authorizeSensitiveInvocation(ctx context.Context, run model.Run, stage, phase, projectRoot string, profile model.Profile, prompt string, resume <-chan struct{}) error {
+type sensitiveApprovalContext struct {
+	LoopCounts    LoopLimits
+	HasLoopCounts bool
+	Continuation  *checkpointContinuation
+}
+
+func (e *Engine) authorizeSensitiveInvocation(ctx context.Context, run model.Run, stage, phase, projectRoot string, profile model.Profile, prompt string, resume <-chan struct{}, contexts ...sensitiveApprovalContext) error {
 	stageRows, err := e.store.Stages(ctx, run.ID)
 	if err != nil {
 		return err
@@ -446,8 +456,16 @@ func (e *Engine) authorizeSensitiveInvocation(ctx context.Context, run model.Run
 		if state.FeatureDirectory != "" {
 			featureDir = filepath.Join(run.Project, filepath.FromSlash(state.FeatureDirectory))
 		}
-		cursor := checkpointCursor{Phase: phase, Operation: "await_sensitive_approval"}
-		if err = e.saveCursorCheckpoint(ctx, run, featureDir, completedStage, activeStage.Key, configuration.SHA256, "LIVE", state.LoopCounts, cursor); err != nil {
+		counts := state.LoopCounts
+		var continuation *checkpointContinuation
+		if len(contexts) > 0 {
+			if contexts[0].HasLoopCounts {
+				counts = contexts[0].LoopCounts
+			}
+			continuation = contexts[0].Continuation
+		}
+		cursor := checkpointCursor{Phase: phase, Operation: "await_sensitive_approval", ApprovalContinuation: continuation}
+		if err = e.saveCursorCheckpoint(ctx, run, featureDir, completedStage, activeStage.Key, configuration.SHA256, "LIVE", counts, cursor); err != nil {
 			return err
 		}
 	} else if configErr != sql.ErrNoRows {

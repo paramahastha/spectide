@@ -18,10 +18,8 @@ import (
 func (e *Engine) runTestRepairLoop(ctx context.Context, run model.Run, phase string, decisions map[string]config.Decision, installation speckit.Installation, featureDir string, budget *LoopBudget, restored ...*cursorCheckpointState) (map[string]string, error) {
 	latest := map[string]string{}
 	var resumeCursor *cursorCheckpointState
-	completedIDs := []string{}
 	if len(restored) > 0 && restored[0] != nil && restored[0].PendingPhase == phase && restored[0].PendingOperation == "continue_registered_checks" {
 		resumeCursor = restored[0]
-		completedIDs = append(completedIDs, resumeCursor.CompletedQualityExecutionIDs...)
 	}
 	hooks := TestRepairHooks{
 		Test: func(ctx context.Context) (map[string]string, error) {
@@ -32,9 +30,15 @@ func (e *Engine) runTestRepairLoop(ctx context.Context, run model.Run, phase str
 			case "final_review":
 				workflowStage = "final_review"
 			}
+			currentResume := resumeCursor
+			resumeCursor = nil
+			completedIDs := []string{}
+			if currentResume != nil {
+				completedIDs = append(completedIDs, currentResume.CompletedQualityExecutionIDs...)
+			}
 			startCursor := checkpointCursor{Phase: phase, Operation: "start_registered_checks"}
-			if resumeCursor != nil {
-				startCursor = checkpointCursor{Phase: phase, Operation: resumeCursor.PendingOperation, Check: resumeCursor.PendingCheck, Position: resumeCursor.TaskPosition, CompletedQualityExecutionIDs: append([]string(nil), resumeCursor.CompletedQualityExecutionIDs...)}
+			if currentResume != nil {
+				startCursor = checkpointCursor{Phase: phase, Operation: currentResume.PendingOperation, Check: currentResume.PendingCheck, Position: currentResume.TaskPosition, CompletedQualityExecutionIDs: append([]string(nil), currentResume.CompletedQualityExecutionIDs...)}
 			}
 			if err := e.loopControlBoundaryAt(ctx, run, workflowStage, featureDir, budget, startCursor); err != nil {
 				return nil, err
@@ -52,8 +56,8 @@ func (e *Engine) runTestRepairLoop(ctx context.Context, run model.Run, phase str
 				return nil, err
 			}
 			completed := map[string]string{}
-			if resumeCursor != nil {
-				completed, err = restoreCompletedQualityResults(ctx, e.store, run.ID, phase, registry.Checks(), *resumeCursor)
+			if currentResume != nil {
+				completed, err = restoreCompletedQualityResults(ctx, e.store, run.ID, phase, registry.Checks(), *currentResume)
 				if err != nil {
 					return nil, err
 				}
@@ -115,7 +119,13 @@ func (e *Engine) runTestRepairLoop(ctx context.Context, run model.Run, phase str
 			for _, key := range keys {
 				fmt.Fprintf(&prompt, "- %s: %s\n", key, failed[key])
 			}
-			if _, _, err := e.runLiveStageWithControlPhase(ctx, run, "implement", phase+"_repair", decision.Route, prompt.String(), installation, featureDir); err != nil {
+			// Approval pauses before this write. Resume by rerunning the checks and
+			// repair, but roll back the pre-invocation budget charge in the durable
+			// cursor so the resumed repair consumes that same single slot.
+			continuation := &checkpointContinuation{Phase: phase, Operation: "restart_registered_checks"}
+			counts := testRepairRestartCounts(budget.Counts())
+			_, _, err := e.runLiveStageWithControlOptions(ctx, run, "implement", phase+"_repair", decision.Route, prompt.String(), installation, featureDir, liveStageOptions{LoopCounts: counts, HasLoopCounts: true, ApprovalContinuation: continuation})
+			if err != nil {
 				return err
 			}
 			return nil
@@ -127,6 +137,13 @@ func (e *Engine) runTestRepairLoop(ctx context.Context, run model.Run, phase str
 	}
 	latest = verdicts
 	return latest, nil
+}
+
+func testRepairRestartCounts(counts LoopLimits) LoopLimits {
+	if counts.TestRepairs > 0 {
+		counts.TestRepairs--
+	}
+	return counts
 }
 
 func restoreCompletedQualityResults(ctx context.Context, state interface {

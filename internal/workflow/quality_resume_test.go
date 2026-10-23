@@ -55,3 +55,17 @@ func TestRestoreCompletedQualityResultsFromCheckpointCursor(t *testing.T) {
 		t.Fatal("checkpoint with mismatched completed-check cursor was accepted")
 	}
 }
+
+func TestTestRepairRestartCountsReuseThePendingRepairBudgetSlot(t *testing.T) {
+	counts := LoopLimits{AnalyzeRemediations: 2, TestRepairs: 3, ConvergenceRounds: 4}
+	restarted := testRepairRestartCounts(counts)
+	if restarted != (LoopLimits{AnalyzeRemediations: 2, TestRepairs: 2, ConvergenceRounds: 4}) {
+		t.Fatalf("repair restart counts=%+v", restarted)
+	}
+	if counts.TestRepairs != 3 {
+		t.Fatalf("restart count adjustment mutated the live budget: %+v", counts)
+	}
+	if zero := testRepairRestartCounts(LoopLimits{}); zero != (LoopLimits{}) {
+		t.Fatalf("zero repair count became negative: %+v", zero)
+	}
+}

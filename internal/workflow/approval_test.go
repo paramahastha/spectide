@@ -251,7 +251,7 @@ func TestSensitiveApprovalPersistsExecutableStageCursor(t *testing.T) {
 	if err != nil || reused {
 		t.Fatalf("create run reused=%v err=%v", reused, err)
 	}
-	stage := model.Stage{ID: "active-implement-cursor", RunID: run.ID, Key: "implement", Position: indexOfStage("implement"), State: model.Pending, Provider: "codex", Profile: "fixture", Attempt: 1}
+	stage := model.Stage{ID: "active-tests-cursor", RunID: run.ID, Key: "tests", Position: indexOfStage("tests"), State: model.Pending, Provider: "codex", Profile: "fixture", Attempt: 1}
 	if err = state.AddStage(ctx, stage); err != nil {
 		t.Fatal(err)
 	}
@@ -267,13 +267,14 @@ func TestSensitiveApprovalPersistsExecutableStageCursor(t *testing.T) {
 	}
 	spent := LoopLimits{AnalyzeRemediations: 1, TestRepairs: 2, ConvergenceRounds: 1}
 	engine := New(state)
-	if err = engine.saveCursorCheckpoint(ctx, run, "", "analyze", "implement", configuration.SHA256, "LIVE", spent); err != nil {
+	if err = engine.saveCursorCheckpoint(ctx, run, "", "implement", "tests", configuration.SHA256, "LIVE", spent); err != nil {
 		t.Fatal(err)
 	}
 	profile := model.Profile{Name: "fixture", Provider: "codex"}
 	result := make(chan error, 1)
+	continuation := &checkpointContinuation{Phase: "tests", Operation: "restart_registered_checks"}
 	go func() {
-		result <- engine.authorizeSensitiveInvocation(ctx, run, "implement", "test_repair", project, profile, "Repair the failing local test", nil)
+		result <- engine.authorizeSensitiveInvocation(ctx, run, "implement", "tests_repair", project, profile, "Repair the failing local test", nil, sensitiveApprovalContext{LoopCounts: testRepairRestartCounts(spent), HasLoopCounts: true, Continuation: continuation})
 	}()
 	var approval model.Approval
 	deadline := time.Now().Add(2 * time.Second)
@@ -296,7 +297,8 @@ func TestSensitiveApprovalPersistsExecutableStageCursor(t *testing.T) {
 		t.Fatalf("approval cursor checkpoint missing: checkpoints=%d err=%v", len(checkpoints), err)
 	}
 	checkpoint, cursor, err := engine.latestCursorCheckpoint(ctx, run.ID)
-	if err != nil || checkpoint.Stage != "analyze" || cursor.NextStage != "implement" || cursor.PendingPhase != "test_repair" || cursor.PendingOperation != "await_sensitive_approval" || cursor.LoopCounts != spent {
+	expectedCounts := testRepairRestartCounts(spent)
+	if err != nil || checkpoint.Stage != "implement" || cursor.NextStage != "tests" || cursor.PendingPhase != "tests_repair" || cursor.PendingOperation != "await_sensitive_approval" || cursor.LoopCounts != expectedCounts || cursor.ApprovalContinuation == nil || cursor.ApprovalContinuation.Operation != "restart_registered_checks" || cursor.ApprovalContinuation.Phase != "tests" {
 		t.Fatalf("approval continuation cursor=%+v checkpoint=%+v err=%v", cursor, checkpoint, err)
 	}
 	if err = state.ResolveApprovalForRun(ctx, run.ID, approval.ID, model.ApprovalApproved); err != nil {

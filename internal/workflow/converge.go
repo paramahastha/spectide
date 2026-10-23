@@ -33,6 +33,7 @@ type FinalReviewHooks struct {
 	Review      func(context.Context) ([]string, error)
 	Fix         func(context.Context, []string) error
 	Boundary    func(context.Context, string, []string, int) error
+	Resume      *cursorCheckpointState
 }
 
 // RunConvergence consumes official convergence reports through callbacks while
@@ -74,6 +75,46 @@ func RunFinalReviewWithBudget(ctx context.Context, hooks FinalReviewHooks, budge
 	if budget == nil {
 		return false, fmt.Errorf("FINAL_REVIEW_BUDGET_REQUIRED")
 	}
+	if hooks.Resume != nil && hooks.Resume.PendingPhase == "final_review" {
+		cursor := hooks.Resume
+		switch cursor.PendingOperation {
+		case "complete_final_review":
+			return true, nil
+		case "fix_final_review_findings":
+			if len(cursor.PendingTasks) == 0 || cursor.TaskPosition != budget.Counts().ConvergenceRounds {
+				return false, fmt.Errorf("WORKSPACE_DRIFT: final-review fix cursor is invalid")
+			}
+			if err := hooks.Fix(ctx, append([]string(nil), cursor.PendingTasks...)); err != nil {
+				return false, err
+			}
+			if hooks.Boundary != nil {
+				if err := hooks.Boundary(ctx, "test_after_final_review_fix", cursor.PendingTasks, 0); err != nil {
+					return false, err
+				}
+			}
+			fallthrough
+		case "test_after_final_review_fix":
+			gates, err := hooks.Convergence.Test(ctx)
+			if err != nil {
+				return false, err
+			}
+			if err = requirePassingGates(gates, "FINAL_REVIEW_FIX_TEST"); err != nil {
+				return false, err
+			}
+			hooks.Resume = nil
+			hooks.Convergence.Resume = nil
+		case "start_registered_checks", "restart_registered_checks":
+			gates, err := hooks.Convergence.Test(ctx)
+			if err != nil {
+				return false, err
+			}
+			if err = requirePassingGates(gates, "FINAL_REVIEW_FIX_TEST"); err != nil {
+				return false, err
+			}
+			hooks.Resume = nil
+			hooks.Convergence.Resume = nil
+		}
+	}
 	featurePath := ""
 	previousReviewFindings := ""
 	for {
@@ -90,6 +131,9 @@ func RunFinalReviewWithBudget(ctx context.Context, hooks FinalReviewHooks, budge
 			return false, fmt.Errorf("PRODUCT_SPECIFICATION_PATH_CHANGED")
 		}
 		converged, err := runConvergenceWithBudget(ctx, hooks.Convergence, budget, limits)
+		// A restored cursor is consumed by this one convergence/review cycle.
+		hooks.Resume = nil
+		hooks.Convergence.Resume = nil
 		if err != nil || !converged {
 			return false, err
 		}
@@ -170,6 +214,14 @@ func runConvergenceWithBudget(ctx context.Context, hooks ConvergenceHooks, budge
 			if hooks.Phase == "" || cursor.TaskPosition < 1 || cursor.TaskPosition != len(cursor.CompletedQualityExecutionIDs) {
 				return false, fmt.Errorf("WORKSPACE_DRIFT: registered-check continuation cursor is invalid")
 			}
+			gates, err := hooks.Test(ctx)
+			if err != nil {
+				return false, err
+			}
+			if err = requirePassingGates(gates, "REQUIRED_TEST"); err != nil {
+				return false, err
+			}
+		case "start_registered_checks", "restart_registered_checks":
 			gates, err := hooks.Test(ctx)
 			if err != nil {
 				return false, err

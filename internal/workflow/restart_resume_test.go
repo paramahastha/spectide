@@ -1,10 +1,12 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -226,9 +228,11 @@ func TestRestartResumeWaitsForPendingWriteApprovalBeforeProviderAttempt(t *testi
 	if _, err = state.SaveProfile(ctx, profile); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = state.SaveProfileCapability(ctx, profile.Name, capability); err != nil {
+	capability, err = state.SaveProfileCapability(ctx, profile.Name, capability)
+	if err != nil {
 		t.Fatal(err)
 	}
+	profile.Capability = &capability
 	profileRows, err := state.Profiles(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -523,7 +527,7 @@ func TestRestartResumeImplementsAppendedConvergenceTasksWithoutRepeatingComplete
 	}
 	commandFiles := map[string]string{}
 	commandHashes := map[string]string{}
-	for _, stage := range []string{"implement", "converge"} {
+	for _, stage := range []string{"implement", "converge", "analyze"} {
 		rel := filepath.Join(".opencode", "commands", "speckit."+stage+".md")
 		absolute := filepath.Join(project, rel)
 		if err := os.MkdirAll(filepath.Dir(absolute), 0700); err != nil {
@@ -553,11 +557,16 @@ func TestRestartResumeImplementsAppendedConvergenceTasksWithoutRepeatingComplete
 	if err := os.MkdirAll(filepath.Join(project, ".spectide"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	state, err := store.Open(filepath.Join(t.TempDir(), "convergence-resume.db"))
+	dbPath := filepath.Join(t.TempDir(), "convergence-resume.db")
+	state, err := store.Open(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer state.Close()
+	defer func() {
+		if state != nil {
+			_ = state.Close()
+		}
+	}()
 	capability := verifiedFixtureCapability(t, "codex", "/bin/sh", "")
 	profile := model.Profile{Name: "fixture", Provider: "codex", Executable: "/bin/sh", AllowedScopes: []string{project}, Capability: &capability}
 	if _, err = state.SaveProfile(ctx, profile); err != nil {
@@ -571,7 +580,7 @@ func TestRestartResumeImplementsAppendedConvergenceTasksWithoutRepeatingComplete
 		t.Fatal(err)
 	}
 	for index := range configured {
-		if configured[index].Stage == "implement" || configured[index].Stage == "converge" {
+		if configured[index].Stage == "implement" || configured[index].Stage == "converge" || configured[index].Stage == "final_review" {
 			configured[index].Decision.Route = config.Route{Provider: "codex", Profile: profile.Name, Model: "fixture/model", Effort: "medium"}
 			configured[index].Simulated = false
 		}
@@ -612,58 +621,441 @@ func TestRestartResumeImplementsAppendedConvergenceTasksWithoutRepeatingComplete
 	if err = state.CompleteExecutionAttempt(ctx, priorConvergence); err != nil {
 		t.Fatal(err)
 	}
-	if err = state.Gate(ctx, run.ID, "required_tests", "PASS", "fixture verified before convergence append"); err != nil {
-		t.Fatal(err)
+	for key, evidence := range map[string]string{"analyze_clean": "read-only analysis passed before convergence", "required_tests": "fixture verified before convergence append"} {
+		if err = state.Gate(ctx, run.ID, key, "PASS", evidence); err != nil {
+			t.Fatal(err)
+		}
 	}
 	configuration, err := state.RunConfiguration(ctx, run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	engine := NewWithAdapters(state, &liveFixtureAdapter{})
-	engine.discover = func(root string) (speckit.Installation, error) {
-		return speckit.Installation{ProjectRoot: root, Verified: true, Commands: map[string]string{"implement": "/speckit.implement", "converge": "/speckit.converge"}, CommandFiles: commandFiles, CommandHashes: commandHashes}, nil
-	}
+	engine := New(state)
 	if err = engine.saveCursorCheckpoint(ctx, run, featureDir, "tests", "converge", configuration.SHA256, "LIVE", LoopLimits{ConvergenceRounds: 1}, checkpointCursor{Phase: "convergence", Operation: "implement_appended_tasks", Tasks: []string{"T999 Add focused regression coverage per FR-029"}, Position: 1}); err != nil {
-		t.Fatal(err)
-	}
-	implementationPrompt := "Implement only the newly appended convergence tasks below. Preserve the existing product specification and do not edit the task ledger.\n- T999 Add focused regression coverage per FR-029\n"
-	approval, err := state.CreateApproval(ctx, model.Approval{RunID: run.ID, Action: sensitiveWriteAction(workspaceIdentityFingerprint(project), "implement", "convergence_implementation", "codex", profile.Name, implementationPrompt)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = state.ResolveApprovalForRun(ctx, run.ID, approval.ID, model.ApprovalApproved); err != nil {
 		t.Fatal(err)
 	}
 	stale := time.Now().UTC().Add(-store.RunOwnerLease - time.Second).Format(time.RFC3339Nano)
 	if _, err = state.DB.ExecContext(ctx, `UPDATE run_owners SET heartbeat_at=? WHERE run_id=?`, stale, run.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err = engine.Resume(run.ID); err != nil {
-		t.Fatalf("restart resume at appended-task cursor: %v", err)
+	if err = state.Close(); err != nil {
+		t.Fatal(err)
+	}
+	state = nil
+	discovery, err := json.Marshal(struct {
+		CommandFiles  map[string]string `json:"command_files"`
+		CommandHashes map[string]string `json:"command_hashes"`
+	}{CommandFiles: commandFiles, CommandHashes: commandHashes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := exec.Command(os.Args[0], "-test.run=^TestRestartResumeHelperProcess$")
+	child.Env = append(os.Environ(), "SPECTIDE_RESTART_HELPER=1", "SPECTIDE_RESTART_DB="+dbPath, "SPECTIDE_RESTART_RUN="+run.ID, "SPECTIDE_RESTART_DISCOVERY="+string(discovery))
+	childOutput, outputErr := child.StdoutPipe()
+	if outputErr != nil {
+		t.Fatal(outputErr)
+	}
+	var childStderr strings.Builder
+	child.Stderr = &childStderr
+	if err = child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	state, err = store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
 	}
 	deadline := time.Now().Add(20 * time.Second)
+	approved := false
 	for time.Now().Before(deadline) {
+		approvals, stateErr := state.Approvals(ctx, run.ID)
+		if stateErr != nil {
+			t.Fatal(stateErr)
+		}
+		for _, pending := range approvals {
+			if pending.Status != model.ApprovalPending {
+				continue
+			}
+			attemptsBeforeApproval, attemptsErr := state.ExecutionAttempts(ctx, run.ID)
+			if attemptsErr != nil {
+				t.Fatal(attemptsErr)
+			}
+			for _, attempt := range attemptsBeforeApproval {
+				if attempt.Stage == "implement" && attempt.Phase == "convergence_implementation" {
+					t.Fatalf("provider attempt began before nested approval: %+v", attempt)
+				}
+			}
+			if err = state.ResolveApprovalForRun(ctx, run.ID, pending.ID, model.ApprovalApproved); err != nil {
+				t.Fatal(err)
+			}
+			approved = true
+			break
+		}
+		if approved {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !approved {
+		_ = child.Process.Kill()
+		_, _ = io.ReadAll(childOutput)
+		_ = child.Wait()
+		t.Fatalf("nested convergence approval did not become pending: %s", childStderr.String())
+	}
+	output, readErr := io.ReadAll(childOutput)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if err = child.Wait(); err != nil {
+		t.Fatalf("separate-process resume failed: %v: %s%s", err, output, childStderr.String())
+	}
+	{
 		runState, stateErr := state.GetRun(ctx, run.ID)
 		if stateErr != nil {
 			t.Fatal(stateErr)
 		}
-		if runState.State == model.Completed || runState.State == model.Blocked || runState.State == model.Failed {
-			attempts, attemptsErr := state.ExecutionAttempts(ctx, run.ID)
-			if attemptsErr != nil {
-				t.Fatal(attemptsErr)
-			}
-			counts := map[string]int{}
-			for _, attempt := range attempts {
-				counts[attempt.Stage+"/"+attempt.Phase]++
-			}
-			if counts["converge/convergence"] != 2 || counts["implement/convergence_implementation"] != 1 {
-				t.Fatalf("restart repeated or skipped convergence work: counts=%v attempts=%+v state=%s", counts, attempts, runState.State)
-			}
-			return
+		if runState.State != model.Completed {
+			t.Fatalf("separate-process resumed state=%s output=%s stderr=%s", runState.State, output, childStderr.String())
 		}
-		time.Sleep(25 * time.Millisecond)
+		attempts, attemptsErr := state.ExecutionAttempts(ctx, run.ID)
+		if attemptsErr != nil {
+			t.Fatal(attemptsErr)
+		}
+		counts := map[string]int{}
+		for _, attempt := range attempts {
+			counts[attempt.Stage+"/"+attempt.Phase]++
+		}
+		if runState.State != model.Completed || counts["converge/convergence"] != 2 || counts["implement/convergence_implementation"] != 1 {
+			t.Fatalf("restart repeated or skipped convergence work: counts=%v attempts=%+v state=%s", counts, attempts, runState.State)
+		}
+		firstConvergenceSequence, implementationSequence, nextConvergenceSequence := int64(0), int64(0), int64(0)
+		for _, attempt := range attempts {
+			switch {
+			case attempt.Stage == "converge" && attempt.Phase == "convergence" && firstConvergenceSequence == 0:
+				firstConvergenceSequence = attempt.StartEventSeq
+			case attempt.Stage == "implement" && attempt.Phase == "convergence_implementation":
+				implementationSequence = attempt.StartEventSeq
+			case attempt.Stage == "converge" && attempt.Phase == "convergence":
+				nextConvergenceSequence = attempt.StartEventSeq
+			}
+		}
+		if !(firstConvergenceSequence > 0 && firstConvergenceSequence < implementationSequence && implementationSequence < nextConvergenceSequence) {
+			t.Fatalf("convergence/implementation attempt ordering is invalid: attempts=%+v", attempts)
+		}
+		report, reportErr := state.Report(ctx, run.ID)
+		if reportErr != nil {
+			t.Fatal(reportErr)
+		}
+		qualityBetweenImplementationAndConvergence := false
+		for _, execution := range report.QualityExecutions {
+			if execution.Phase == "convergence" && execution.Verdict == "PASS" && execution.CompletionEventSeq > implementationSequence && execution.CompletionEventSeq < nextConvergenceSequence {
+				qualityBetweenImplementationAndConvergence = true
+			}
+		}
+		if !qualityBetweenImplementationAndConvergence {
+			t.Fatalf("fresh required checks did not pass between implementation and reconvergence: attempts=%+v quality=%+v", attempts, report.QualityExecutions)
+		}
+		checkpoint, cursor, checkpointErr := New(state).latestCursorCheckpoint(ctx, run.ID)
+		if checkpointErr != nil || cursor.LoopCounts.ConvergenceRounds < 1 {
+			t.Fatalf("spent convergence budget was not preserved after process restart: cursor=%+v checkpoint=%+v err=%v", cursor, checkpoint, checkpointErr)
+		}
+		gates, gatesErr := state.Gates(ctx, run.ID)
+		if gatesErr != nil || gateByKey(gates, "required_tests").Verdict != "PASS" || gateByKey(gates, "converged").Verdict != "PASS" || gateByKey(gates, "final_review").Verdict != "PASS" {
+			t.Fatalf("recovery terminal gates are incomplete: gates=%+v err=%v", gates, gatesErr)
+		}
 	}
-	t.Fatal("resumed convergence stage did not finish")
+}
+
+func TestRestartResumeReplaysApprovedTestRepairWithoutDoubleCharging(t *testing.T) {
+	ctx := context.Background()
+	project := initCheckpointGitProject(t)
+	featureDir := filepath.Join(project, "specs", "001-product")
+	if err := os.MkdirAll(featureDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{"spec.md": "# Product\n", "plan.md": "# Plan\n", "tasks.md": "# Tasks\n"} {
+		if err := os.WriteFile(filepath.Join(featureDir, name), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commandRel := filepath.Join(".opencode", "commands", "speckit.implement.md")
+	commandPath := filepath.Join(project, commandRel)
+	if err := os.MkdirAll(filepath.Dir(commandPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	commandContent := []byte("Implement the authorized repair: $ARGUMENTS")
+	if err := os.WriteFile(commandPath, commandContent, 0600); err != nil {
+		t.Fatal(err)
+	}
+	commandDigest := sha256.Sum256(commandContent)
+	for path, content := range map[string]string{
+		"go.mod":                   "module testrepairrestartfixture\n\ngo 1.27.2\n",
+		"cmd/spectide/main.go":     "package main\n\nfunc main() {}\n",
+		"internal/fixture.go":      "package internal\n",
+		"internal/fixture_test.go": "package internal\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestRepairMarker(t *testing.T) {\n\tif _, err := os.Stat(\"repaired.marker\"); err != nil {\n\t\tt.Fatal(err)\n\t}\n}\n",
+	} {
+		absolute := filepath.Join(project, path)
+		if err := os.MkdirAll(filepath.Dir(absolute), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(absolute, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(project, ".spectide"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(project, "internal", "repaired.marker")
+	dbPath := filepath.Join(t.TempDir(), "test-repair-resume.db")
+	state, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	capability := verifiedFixtureCapability(t, "codex", "/bin/sh", "")
+	profile := model.Profile{Name: "fixture", Provider: "codex", Executable: "/bin/sh", AllowedScopes: []string{project}, Capability: &capability}
+	if _, err = state.SaveProfile(ctx, profile); err != nil {
+		t.Fatal(err)
+	}
+	capability, err = state.SaveProfileCapability(ctx, profile.Name, capability)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile.Capability = &capability
+	cfg := config.Default()
+	cfg.Execution.TestRepairLimit = 1
+	decisions := make(map[string]config.Decision, len(stages))
+	for _, stage := range stages {
+		route := config.Route{Provider: "fake", Profile: "fake-demo"}
+		if stage == "implement" {
+			route = config.Route{Provider: "codex", Profile: profile.Name, Model: "fixture/model", Effort: "medium"}
+		}
+		decisions[stage] = config.Decision{Stage: stage, Route: route, Mode: "hybrid", Explanation: "fixture"}
+	}
+	effective := buildEffectiveRunConfiguration(cfg, decisions, []model.Profile{profile})
+	configurationJSON, err := json.Marshal(effective)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, reused, err := state.CreateRunWithConfiguration(ctx, "", project, "resume an approved test repair", configurationJSON)
+	if err != nil || reused {
+		t.Fatalf("create run reused=%v err=%v", reused, err)
+	}
+	if err = state.AcquireWorkspaceLockOwned(ctx, project, run.ID, "expired-owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.SetRunState(ctx, run.ID, model.Running); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.SetRunState(ctx, run.ID, model.Paused); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.Event(ctx, run.ID, "tests", "run.paused", "info", map[string]any{"stage": "tests"}); err != nil {
+		t.Fatal(err)
+	}
+	stage := model.Stage{ID: "interrupted-tests-repair", RunID: run.ID, Key: "tests", Position: indexOfStage("tests"), State: model.StageRun, Provider: "local", Profile: "engine", Attempt: 1}
+	if err = state.AddStage(ctx, stage); err != nil {
+		t.Fatal(err)
+	}
+	configuration, err := state.RunConfiguration(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := New(state)
+	commandFiles := map[string]string{"implement": filepath.ToSlash(commandRel)}
+	commandHashes := map[string]string{"implement": hex.EncodeToString(commandDigest[:])}
+	if err = engine.saveCursorCheckpoint(ctx, run, featureDir, "implement", "tests", configuration.SHA256, "LIVE", LoopLimits{}, checkpointCursor{Phase: "tests", Operation: "start_registered_checks"}); err != nil {
+		t.Fatal(err)
+	}
+	staleOwner := time.Now().UTC().Add(-store.RunOwnerLease - time.Second).Format(time.RFC3339Nano)
+	if _, err = state.DB.ExecContext(ctx, `UPDATE run_owners SET heartbeat_at=? WHERE run_id=?`, staleOwner, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	discovery, err := json.Marshal(struct {
+		CommandFiles  map[string]string `json:"command_files"`
+		CommandHashes map[string]string `json:"command_hashes"`
+	}{CommandFiles: commandFiles, CommandHashes: commandHashes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	startChild := func() *exec.Cmd {
+		child := exec.Command(os.Args[0], "-test.run=^TestRestartResumeHelperProcess$")
+		child.Env = append(os.Environ(), "SPECTIDE_RESTART_HELPER=1", "SPECTIDE_RESTART_DB="+dbPath, "SPECTIDE_RESTART_RUN="+run.ID, "SPECTIDE_RESTART_DISCOVERY="+string(discovery), "SPECTIDE_RESTART_REPAIR_MARKER="+marker, "SPECTIDE_RESTART_ALLOW_BLOCKED=1")
+		return child
+	}
+	first := startChild()
+	var firstOutput bytes.Buffer
+	first.Stdout = &firstOutput
+	first.Stderr = &firstOutput
+	if err = first.Start(); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	var pending model.Approval
+	var firstCheckCount int
+	for time.Now().Before(deadline) {
+		approvals, stateErr := state.Approvals(ctx, run.ID)
+		if stateErr != nil {
+			t.Fatal(stateErr)
+		}
+		for _, approval := range approvals {
+			if approval.Status == model.ApprovalPending && strings.Contains(approval.Action, "tests_repair") {
+				pending = approval
+				break
+			}
+		}
+		report, reportErr := state.Report(ctx, run.ID)
+		if reportErr != nil {
+			t.Fatal(reportErr)
+		}
+		firstCheckCount = len(report.QualityExecutions)
+		currentRun, runErr := state.GetRun(ctx, run.ID)
+		if runErr != nil {
+			t.Fatal(runErr)
+		}
+		if currentRun.State == model.Blocked || currentRun.State == model.Failed || currentRun.State == model.Cancelled {
+			_ = first.Wait()
+			stagesAfter, _ := state.Stages(ctx, run.ID)
+			gatesAfter, _ := state.Gates(ctx, run.ID)
+			eventsAfter, _ := state.Events(ctx, run.ID, 0)
+			t.Fatalf("initial repair restart ended %s before approval: %s stages=%+v gates=%+v events=%+v", currentRun.State, firstOutput.String(), stagesAfter, gatesAfter, eventsAfter)
+		}
+		if pending.ID != "" && firstCheckCount >= 4 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if pending.ID == "" || firstCheckCount < 4 {
+		_ = first.Process.Kill()
+		_ = first.Wait()
+		t.Fatalf("repair did not reach pending approval after registered checks: approval=%+v quality_count=%d output=%s", pending, firstCheckCount, firstOutput.String())
+	}
+	checkpoint, pendingCursor, err := New(state).latestCursorCheckpoint(ctx, run.ID)
+	if err != nil || pendingCursor.ApprovalContinuation == nil || pendingCursor.ApprovalContinuation.Operation != "restart_registered_checks" || pendingCursor.LoopCounts.TestRepairs != 0 {
+		_ = first.Process.Kill()
+		_ = first.Wait()
+		t.Fatalf("pending repair cursor did not preserve the unspent retry slot: cursor=%+v checkpoint=%+v err=%v", pendingCursor, checkpoint, err)
+	}
+	attempts, err := state.ExecutionAttempts(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, attempt := range attempts {
+		if attempt.Stage == "implement" && attempt.Phase == "tests_repair" {
+			_ = first.Process.Kill()
+			_ = first.Wait()
+			t.Fatalf("test repair provider attempt began before approval: %+v", attempt)
+		}
+	}
+	if err = first.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = first.Wait()
+	stale := time.Now().UTC().Add(-store.RunOwnerLease - time.Second).Format(time.RFC3339Nano)
+	if _, err = state.DB.ExecContext(ctx, `UPDATE run_owners SET heartbeat_at=? WHERE run_id=?`, stale, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.ResolveApprovalForRun(ctx, run.ID, pending.ID, model.ApprovalApproved); err != nil {
+		t.Fatal(err)
+	}
+	second := startChild()
+	output, err := second.CombinedOutput()
+	if err != nil {
+		t.Fatalf("restart approved repair in a fresh process: %v: %s", err, output)
+	}
+	report, err := state.Report(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkCounts := map[string]int{}
+	lastVerdicts := map[string]string{}
+	for _, execution := range report.QualityExecutions {
+		for _, result := range execution.Results {
+			checkCounts[result.Key]++
+			lastVerdicts[result.Key] = result.Verdict
+		}
+	}
+	for _, key := range []string{"format", "static_analysis", "unit_tests", "build"} {
+		if checkCounts[key] != 3 || lastVerdicts[key] != "PASS" {
+			currentRun, _ := state.GetRun(ctx, run.ID)
+			stagesAfter, _ := state.Stages(ctx, run.ID)
+			gatesAfter, _ := state.Gates(ctx, run.ID)
+			eventsAfter, _ := state.Events(ctx, run.ID, 0)
+			attemptsAfter, _ := state.ExecutionAttempts(ctx, run.ID)
+			t.Fatalf("quality checks did not run before and after the restarted repair: counts=%v verdicts=%v state=%s output=%s stages=%+v gates=%+v attempts=%+v events=%+v", checkCounts, lastVerdicts, currentRun.State, output, stagesAfter, gatesAfter, attemptsAfter, eventsAfter)
+		}
+	}
+	attempts, err = state.ExecutionAttempts(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var repair *model.ExecutionAttempt
+	for index := range attempts {
+		if attempts[index].Stage == "implement" && attempts[index].Phase == "tests_repair" {
+			repair = &attempts[index]
+		}
+	}
+	if repair == nil || repair.Result != "SUCCEEDED" {
+		t.Fatalf("approved repair was not executed exactly once: attempts=%+v", attempts)
+	}
+	checkpoint, cursor, err := New(state).latestCursorCheckpoint(ctx, run.ID)
+	if err != nil || cursor.LoopCounts.TestRepairs != 1 {
+		t.Fatalf("retry budget was not charged exactly once: cursor=%+v checkpoint=%+v err=%v", cursor, checkpoint, err)
+	}
+}
+
+func TestRestartResumeHelperProcess(t *testing.T) {
+	if os.Getenv("SPECTIDE_RESTART_HELPER") != "1" {
+		return
+	}
+	ctx := context.Background()
+	var discovery struct {
+		CommandFiles  map[string]string `json:"command_files"`
+		CommandHashes map[string]string `json:"command_hashes"`
+	}
+	if err := json.Unmarshal([]byte(os.Getenv("SPECTIDE_RESTART_DISCOVERY")), &discovery); err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.Open(os.Getenv("SPECTIDE_RESTART_DB"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	runID := os.Getenv("SPECTIDE_RESTART_RUN")
+	run, err := state.GetRun(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := NewWithAdapters(state, &liveFixtureAdapter{repairMarker: os.Getenv("SPECTIDE_RESTART_REPAIR_MARKER")})
+	engine.discover = func(root string) (speckit.Installation, error) {
+		commands := make(map[string]string, len(discovery.CommandFiles))
+		for stage := range discovery.CommandFiles {
+			commands[stage] = "/speckit." + stage
+		}
+		return speckit.Installation{ProjectRoot: root, Verified: true, Commands: commands, CommandFiles: discovery.CommandFiles, CommandHashes: discovery.CommandHashes}, nil
+	}
+	if err = engine.Resume(runID); err != nil {
+		t.Fatalf("fresh-process resume: %v", err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		resumed, stateErr := state.GetRun(ctx, run.ID)
+		if stateErr != nil {
+			t.Fatal(stateErr)
+		}
+		switch resumed.State {
+		case model.Completed:
+			return
+		case model.Blocked:
+			if os.Getenv("SPECTIDE_RESTART_ALLOW_BLOCKED") == "1" {
+				return
+			}
+			t.Fatalf("fresh-process resume ended %s", resumed.State)
+		case model.Failed, model.Cancelled:
+			t.Fatalf("fresh-process resume ended %s", resumed.State)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("fresh-process resume did not reach a terminal state")
 }
 
 func TestRestartResumeReanalyzesAfterCompletedOwnerRemediation(t *testing.T) {
