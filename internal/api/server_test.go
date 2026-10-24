@@ -287,6 +287,10 @@ func TestRunStageArtifactAndReportProjectionsAreExplicit(t *testing.T) {
 			t.Errorf("%s projection status=%d body=%s", tc.path, w.Code, w.Body.String())
 		}
 	}
+	report, err := s.Store.Report(context.Background(), run.ID)
+	if err != nil || len(report.ReleaseGates) != 13 || report.ReleaseGates[0].ID != "QG-01" || report.ReleaseGates[12].ID != "QG-13" {
+		t.Fatalf("stable release gates not projected: count=%d err=%v", len(report.ReleaseGates), err)
+	}
 }
 func TestRunNeedsCSRF(t *testing.T) {
 	s := testServer(t)
@@ -685,6 +689,61 @@ func TestCreateAndListProfile(t *testing.T) {
 	s.Handler().ServeHTTP(w, r)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "fake") {
 		t.Fatalf("list=%d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestBlueprintCompatibilityRoutes(t *testing.T) {
+	s := testServer(t)
+	call := func(method, path, body string, csrf bool) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, "http://127.0.0.1"+path, strings.NewReader(body))
+		r.Host = "127.0.0.1"
+		if csrf {
+			r.Header.Set("X-SpecTide-CSRF", s.CSRF)
+		}
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		return w
+	}
+
+	for _, path := range []string{"/api/v1/providers/capabilities", "/api/v1/config/resolved"} {
+		if got := call(http.MethodGet, path, "", false); got.Code != http.StatusOK {
+			t.Errorf("GET %s status=%d body=%s", path, got.Code, got.Body.String())
+		}
+	}
+	if got := call(http.MethodGet, "/api/v1/config/resolved?project=anything", "", false); got.Code != http.StatusBadRequest {
+		t.Fatalf("resolved config accepted project input: %d %s", got.Code, got.Body.String())
+	}
+	profile, err := s.Store.SaveProfile(context.Background(), model.Profile{Name: "compat", Provider: "fake", Executable: "fake", AllowedScopes: []string{"personal-public"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := call(http.MethodPatch, "/api/v1/profiles/"+profile.ID, `{"name":"compat","provider":"fake","executable":"fake","allowed_scopes":["personal-public"]}`, false); got.Code != http.StatusForbidden {
+		t.Fatalf("PATCH profile without CSRF status=%d body=%s", got.Code, got.Body.String())
+	}
+	updated := call(http.MethodPatch, "/api/v1/profiles/"+profile.ID, `{"name":"compat-renamed","provider":"fake","executable":"fake","allowed_scopes":["personal-public"]}`, true)
+	if updated.Code != http.StatusOK || !strings.Contains(updated.Body.String(), "compat-renamed") {
+		t.Fatalf("PATCH profile status=%d body=%s", updated.Code, updated.Body.String())
+	}
+	if missing := call(http.MethodPatch, "/api/v1/profiles/missing", `{"name":"x","provider":"fake","executable":"fake","allowed_scopes":["personal-public"]}`, true); missing.Code != http.StatusNotFound {
+		t.Fatalf("PATCH missing profile status=%d body=%s", missing.Code, missing.Body.String())
+	}
+	run, err := s.Store.CreateRun(context.Background(), t.TempDir(), "approval queue test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	approval, err := s.Store.CreateApproval(context.Background(), model.Approval{RunID: run.ID, Action: "write workspace"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue := call(http.MethodGet, "/api/v1/approvals", "", false)
+	if queue.Code != http.StatusOK || !strings.Contains(queue.Body.String(), approval.ID) {
+		t.Fatalf("pending approvals status=%d body=%s", queue.Code, queue.Body.String())
+	}
+	if !strings.Contains(queue.Body.String(), run.ID) {
+		t.Fatalf("approval queue lacks run identity: %s", queue.Body.String())
+	}
+	if got := call(http.MethodPost, "/api/v1/approvals", "{}", true); got.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("approval queue accepted unsupported mutation: %d", got.Code)
 	}
 }
 

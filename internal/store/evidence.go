@@ -272,12 +272,24 @@ func (s *Store) Approvals(ctx context.Context, runID string) ([]model.Approval, 
 	if err != nil {
 		return nil, err
 	}
+	return scanApprovals(rows)
+}
+
+func (s *Store) PendingApprovals(ctx context.Context) ([]model.Approval, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT id,run_id,action,status,decision,created_at,COALESCE(resolved_at,'') FROM approvals WHERE status=? ORDER BY created_at,id`, model.ApprovalPending)
+	if err != nil {
+		return nil, err
+	}
+	return scanApprovals(rows)
+}
+
+func scanApprovals(rows *sql.Rows) ([]model.Approval, error) {
 	defer rows.Close()
 	var out []model.Approval
 	for rows.Next() {
 		var a model.Approval
 		var created, resolved string
-		if err = rows.Scan(&a.ID, &a.RunID, &a.Action, &a.Status, &a.Decision, &created, &resolved); err != nil {
+		if err := rows.Scan(&a.ID, &a.RunID, &a.Action, &a.Status, &a.Decision, &created, &resolved); err != nil {
 			return nil, err
 		}
 		a.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)

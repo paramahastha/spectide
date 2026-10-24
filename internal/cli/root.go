@@ -37,6 +37,14 @@ func writeJSON(out io.Writer, value any) error {
 	return err
 }
 
+func commandOutput(c *cobra.Command) io.Writer {
+	quiet, _ := c.Root().PersistentFlags().GetBool("quiet")
+	if quiet {
+		return io.Discard
+	}
+	return c.OutOrStdout()
+}
+
 func persistedCapability(c adapters.Capability) model.ProfileCapability {
 	return model.ProfileCapability{
 		Provider: string(c.Provider), ExecutableFound: c.ExecutableFound, Version: c.Version,
@@ -55,8 +63,17 @@ func Root() *cobra.Command {
 	var db string
 	root := &cobra.Command{Use: "spectide", Short: "Local, evidence-backed Spec-Kit orchestration", SilenceUsage: true}
 	root.PersistentFlags().StringVar(&db, "db", "", "SQLite state database path")
+	root.PersistentFlags().Bool("no-color", false, "disable ANSI color output (the current CLI emits no ANSI color)")
+	root.PersistentFlags().Bool("quiet", false, "suppress normal stdout; errors remain on stderr")
+	root.PersistentFlags().Bool("verbose", false, "write command diagnostics to stderr")
+	root.PersistentPreRun = func(c *cobra.Command, _ []string) {
+		verbose, _ := c.Root().PersistentFlags().GetBool("verbose")
+		if verbose {
+			fmt.Fprintf(c.ErrOrStderr(), "spectide: command=%s\n", c.CommandPath())
+		}
+	}
 	open := func() (*app.App, error) { return app.Open(db) }
-	root.AddCommand(&cobra.Command{Use: "version", Run: func(c *cobra.Command, _ []string) { fmt.Fprintf(c.OutOrStdout(), "spectide %s\n", buildinfo.Version) }})
+	root.AddCommand(&cobra.Command{Use: "version", Run: func(c *cobra.Command, _ []string) { fmt.Fprintf(commandOutput(c), "spectide %s\n", buildinfo.Version) }})
 	root.AddCommand(&cobra.Command{Use: "doctor", Short: "Report local provider and Spec-Kit readiness", RunE: func(c *cobra.Command, _ []string) error {
 		providers := map[string]string{"fake": "SIMULATED_READY", "claude": probe("claude"), "codex": probe("codex"), "opencode": probe("opencode")}
 		_, specErr := speckit.Discover(".")
@@ -64,7 +81,7 @@ func Root() *cobra.Command {
 		if specErr != nil {
 			specStatus = specErr.Error()
 		}
-		return writeJSON(c.OutOrStdout(), map[string]any{"database": app.DefaultDBPath(), "providers": providers, "spec_kit": specStatus, "live_workflows": "AVAILABLE_FOR_CONFIGURED_AND_AUTHORIZED_ROUTES"})
+		return writeJSON(commandOutput(c), map[string]any{"database": app.DefaultDBPath(), "providers": providers, "spec_kit": specStatus, "live_workflows": "AVAILABLE_FOR_CONFIGURED_AND_AUTHORIZED_ROUTES"})
 	}})
 	serve := &cobra.Command{Use: "serve", Short: "Serve loopback dashboard and API", RunE: func(c *cobra.Command, _ []string) error {
 		a, e := open()
@@ -92,7 +109,7 @@ func Root() *cobra.Command {
 			return e
 		}
 		defer listener.Close()
-		fmt.Fprintf(c.OutOrStdout(), "SpecTide listening at http://%s\n", listener.Addr().String())
+		fmt.Fprintf(commandOutput(c), "SpecTide listening at http://%s\n", listener.Addr().String())
 		return http.Serve(listener, a.API.Handler())
 	}}
 	serve.Flags().String("host", "127.0.0.1", "loopback host")
@@ -117,10 +134,10 @@ func Root() *cobra.Command {
 			if reportErr != nil {
 				return reportErr
 			}
-			fmt.Fprintf(c.OutOrStdout(), "%s BLOCKED run: %s\n", report.Acceptance.Execution, r.ID)
+			fmt.Fprintf(commandOutput(c), "%s BLOCKED run: %s\n", report.Acceptance.Execution, r.ID)
 			return runStateError(r.State)
 		}
-		fmt.Fprintf(c.OutOrStdout(), "Configured workflow run started: %s\n", r.ID)
+		fmt.Fprintf(commandOutput(c), "Configured workflow run started: %s\n", r.ID)
 		result, e := a.Engine.Wait(context.Background(), r.ID)
 		if e != nil {
 			return e
@@ -130,13 +147,13 @@ func Root() *cobra.Command {
 			return e
 		}
 		if result.State != model.Completed {
-			fmt.Fprintf(c.OutOrStdout(), "%s run ended %s: %s\n", report.Acceptance.Execution, result.State, result.ID)
+			fmt.Fprintf(commandOutput(c), "%s run ended %s: %s\n", report.Acceptance.Execution, result.State, result.ID)
 			return runStateError(result.State)
 		}
 		if report.Acceptance.Execution == "SIMULATED" {
-			fmt.Fprintln(c.OutOrStdout(), "SIMULATED run completed with fixture evidence")
+			fmt.Fprintln(commandOutput(c), "SIMULATED run completed with fixture evidence")
 		} else {
-			fmt.Fprintf(c.OutOrStdout(), "%s run completed with persisted evidence\n", report.Acceptance.Execution)
+			fmt.Fprintf(commandOutput(c), "%s run completed with persisted evidence\n", report.Acceptance.Execution)
 		}
 		return nil
 	}}
@@ -153,7 +170,7 @@ func Root() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		fmt.Fprintf(c.OutOrStdout(), "Configured demo run started: %s\n", r.ID)
+		fmt.Fprintf(commandOutput(c), "Configured demo run started: %s\n", r.ID)
 		result, e := a.Engine.Wait(context.Background(), r.ID)
 		if e != nil {
 			return e
@@ -163,13 +180,13 @@ func Root() *cobra.Command {
 			return e
 		}
 		if result.State != model.Completed {
-			fmt.Fprintf(c.OutOrStdout(), "%s demo run ended %s: %s\n", report.Acceptance.Execution, result.State, result.ID)
+			fmt.Fprintf(commandOutput(c), "%s demo run ended %s: %s\n", report.Acceptance.Execution, result.State, result.ID)
 			return runStateError(result.State)
 		}
 		if report.Acceptance.Execution == "SIMULATED" {
-			fmt.Fprintln(c.OutOrStdout(), "SIMULATED run completed with fixture evidence")
+			fmt.Fprintln(commandOutput(c), "SIMULATED run completed with fixture evidence")
 		} else {
-			fmt.Fprintf(c.OutOrStdout(), "%s demo run completed with persisted evidence\n", report.Acceptance.Execution)
+			fmt.Fprintf(commandOutput(c), "%s demo run completed with persisted evidence\n", report.Acceptance.Execution)
 		}
 		return nil
 	}}
@@ -185,7 +202,7 @@ func Root() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		return writeJSON(c.OutOrStdout(), v)
+		return writeJSON(commandOutput(c), v)
 	}})
 	for _, name := range []string{"status", "report"} {
 		commandName := name
@@ -199,7 +216,7 @@ func Root() *cobra.Command {
 			if e != nil {
 				return e
 			}
-			return writeJSON(c.OutOrStdout(), v)
+			return writeJSON(commandOutput(c), v)
 		}})
 	}
 	root.AddCommand(&cobra.Command{Use: "cancel RUN_ID", Args: cobra.ExactArgs(1), RunE: func(c *cobra.Command, args []string) error {
@@ -234,11 +251,11 @@ func Root() *cobra.Command {
 		if result.State != model.Completed {
 			return runStateError(result.State)
 		}
-		fmt.Fprintf(c.OutOrStdout(), "Run %s completed with durable evidence\n", result.ID)
+		fmt.Fprintf(commandOutput(c), "Run %s completed with durable evidence\n", result.ID)
 		return nil
 	}})
 	root.AddCommand(&cobra.Command{Use: "dashboard", Short: "Print the local dashboard URL", Run: func(c *cobra.Command, _ []string) {
-		fmt.Fprintln(c.OutOrStdout(), "Start `spectide serve` then open http://127.0.0.1:4747")
+		fmt.Fprintln(commandOutput(c), "Start `spectide serve` then open http://127.0.0.1:4747")
 	}})
 	root.AddCommand(&cobra.Command{Use: "logs RUN_ID", Args: cobra.ExactArgs(1), RunE: func(c *cobra.Command, args []string) error {
 		a, e := open()
@@ -250,7 +267,7 @@ func Root() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		return writeJSON(c.OutOrStdout(), v)
+		return writeJSON(commandOutput(c), v)
 	}})
 	projects := &cobra.Command{Use: "projects", Short: "List and register local projects", RunE: func(c *cobra.Command, _ []string) error {
 		a, e := open()
@@ -262,7 +279,7 @@ func Root() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		return writeJSON(c.OutOrStdout(), v)
+		return writeJSON(commandOutput(c), v)
 	}}
 	projects.AddCommand(&cobra.Command{Use: "list", Short: "List registered local projects", RunE: projects.RunE})
 	projects.AddCommand(&cobra.Command{Use: "register PATH", Args: cobra.ExactArgs(1), Short: "Register an existing local project directory", RunE: func(c *cobra.Command, args []string) error {
@@ -292,7 +309,7 @@ func Root() *cobra.Command {
 		}
 		for _, project := range registered {
 			if project.CanonicalPath == canonical {
-				return writeJSON(c.OutOrStdout(), project)
+				return writeJSON(commandOutput(c), project)
 			}
 		}
 		return fmt.Errorf("registered project was not returned by the store")
@@ -309,7 +326,7 @@ func Root() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		return writeJSON(c.OutOrStdout(), v)
+		return writeJSON(commandOutput(c), v)
 	}})
 	approvals.AddCommand(&cobra.Command{Use: "create RUN_ID ACTION", Args: cobra.ExactArgs(2), RunE: func(c *cobra.Command, args []string) error {
 		a, e := open()
@@ -321,7 +338,7 @@ func Root() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		return writeJSON(c.OutOrStdout(), v)
+		return writeJSON(commandOutput(c), v)
 	}})
 	approvals.AddCommand(&cobra.Command{Use: "resolve APPROVAL_ID APPROVED|DENIED", Args: cobra.ExactArgs(2), RunE: func(c *cobra.Command, args []string) error {
 		a, e := open()
@@ -333,7 +350,7 @@ func Root() *cobra.Command {
 		if e = a.Store.ResolveApproval(c.Context(), args[0], decision); e != nil {
 			return e
 		}
-		return writeJSON(c.OutOrStdout(), map[string]string{"approval_id": args[0], "decision": decision})
+		return writeJSON(commandOutput(c), map[string]string{"approval_id": args[0], "decision": decision})
 	}})
 	root.AddCommand(approvals)
 	profiles := &cobra.Command{Use: "profiles", Short: "Manage sanitized local profiles", RunE: func(c *cobra.Command, _ []string) error {
@@ -346,7 +363,7 @@ func Root() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		return writeJSON(c.OutOrStdout(), p)
+		return writeJSON(commandOutput(c), p)
 	}}
 	add := &cobra.Command{Use: "add NAME", Args: cobra.ExactArgs(1), RunE: func(c *cobra.Command, args []string) error {
 		a, e := open()
@@ -367,7 +384,7 @@ func Root() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		return writeJSON(c.OutOrStdout(), p)
+		return writeJSON(commandOutput(c), p)
 	}}
 	add.Flags().String("provider", "", "provider name")
 	add.Flags().String("executable", "", "local executable name or path")
@@ -394,7 +411,7 @@ func Root() *cobra.Command {
 			if _, probeErr = a.Store.SaveProfileCapability(c.Context(), profile.Name, persistedCapability(capability)); probeErr != nil {
 				return probeErr
 			}
-			return writeJSON(c.OutOrStdout(), capability)
+			return writeJSON(commandOutput(c), capability)
 		}
 		return fmt.Errorf("PROFILE_NOT_FOUND: %s", args[0])
 	}})
@@ -424,7 +441,7 @@ func Root() *cobra.Command {
 			}
 			catalogs = append(catalogs, profileModels{Profile: p.Name, Status: status, Models: values})
 		}
-		return writeJSON(c.OutOrStdout(), map[string]any{"profiles": catalogs})
+		return writeJSON(commandOutput(c), map[string]any{"profiles": catalogs})
 	}}
 	models.AddCommand(&cobra.Command{Use: "probe PROFILE", Args: cobra.ExactArgs(1), Short: "Probe provider status and model catalog without exposing credentials", RunE: func(c *cobra.Command, args []string) error {
 		a, e := open()
@@ -447,7 +464,7 @@ func Root() *cobra.Command {
 			if _, probeErr = a.Store.SaveProfileCapability(c.Context(), profile.Name, persistedCapability(capability)); probeErr != nil {
 				return probeErr
 			}
-			return writeJSON(c.OutOrStdout(), map[string]any{"profile": profile.Name, "executable_version": capability.Version, "authentication": capability.Authenticated, "model_catalog": capability.ModelCatalogStatus, "models": capability.ModelValues})
+			return writeJSON(commandOutput(c), map[string]any{"profile": profile.Name, "executable_version": capability.Version, "authentication": capability.Authenticated, "model_catalog": capability.ModelCatalogStatus, "models": capability.ModelValues})
 		}
 		return fmt.Errorf("PROFILE_NOT_FOUND: %s", args[0])
 	}})
@@ -475,7 +492,7 @@ func Root() *cobra.Command {
 		if validationErr != nil {
 			result["blocked_reasons"] = []string{validationErr.Error()}
 		}
-		if e = writeJSON(c.OutOrStdout(), result); e != nil {
+		if e = writeJSON(commandOutput(c), result); e != nil {
 			return e
 		}
 		if validationErr != nil {
@@ -489,7 +506,7 @@ func Root() *cobra.Command {
 		if e != nil {
 			return e
 		}
-		return writeJSON(c.OutOrStdout(), v)
+		return writeJSON(commandOutput(c), v)
 	}}
 	conf.Flags().String("file", config.ProjectPath("."), "configuration file path")
 	validate := &cobra.Command{Use: "validate", RunE: func(c *cobra.Command, _ []string) error { return configCheck(c) }}
@@ -525,9 +542,9 @@ func Root() *cobra.Command {
 		if e = config.Save(path, v); e != nil {
 			return e
 		}
-		fmt.Fprintf(c.OutOrStdout(), "Initialized %s\n", path)
+		fmt.Fprintf(commandOutput(c), "Initialized %s\n", path)
 		if _, e = os.Stat(filepath.Join(abs, ".specify")); e != nil {
-			fmt.Fprintln(c.OutOrStdout(), "Spec-Kit is not initialized here; use the installed `specify` CLI to initialize an authorized integration.")
+			fmt.Fprintln(commandOutput(c), "Spec-Kit is not initialized here; use the installed `specify` CLI to initialize an authorized integration.")
 		}
 		return nil
 	}}
@@ -547,7 +564,7 @@ func Root() *cobra.Command {
 			return e
 		}
 		results := registry.Run(c.Context(), abs)
-		if e = writeJSON(c.OutOrStdout(), results); e != nil {
+		if e = writeJSON(commandOutput(c), results); e != nil {
 			return e
 		}
 		if !registry.RequiredPassed(results) {
@@ -557,6 +574,25 @@ func Root() *cobra.Command {
 	}}
 	verify.Flags().String("project", ".", "project directory to validate")
 	root.AddCommand(verify)
+	workflow := &cobra.Command{Use: "workflow", Short: "Inspect the installed canonical SpecTide workflow"}
+	workflow.AddCommand(&cobra.Command{Use: "list", Short: "List canonical workflow stages", Args: cobra.NoArgs, RunE: func(c *cobra.Command, _ []string) error {
+		return writeJSON(commandOutput(c), map[string]any{"stages": config.StageKeys})
+	}})
+	workflow.AddCommand(&cobra.Command{Use: "explain", Short: "Explain stage ownership and execution boundaries", Args: cobra.NoArgs, RunE: func(c *cobra.Command, _ []string) error {
+		stages := make([]map[string]any, 0, len(config.StageKeys))
+		for _, stage := range config.StageKeys {
+			owner, readOnly := "provider", false
+			switch stage {
+			case "analyze", "final_review":
+				readOnly = true
+			case "tests", "report":
+				owner = "local"
+			}
+			stages = append(stages, map[string]any{"stage": stage, "owner": owner, "read_only": readOnly})
+		}
+		return writeJSON(commandOutput(c), map[string]any{"stages": stages, "notes": []string{"analyze and final_review are read-only", "tests and report are local engine stages", "live provider stages require verified installed capabilities"}})
+	}})
+	root.AddCommand(workflow)
 	return root
 }
 

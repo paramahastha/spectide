@@ -29,11 +29,15 @@ spectide config validate --file /absolute/path/to/repository/.spectide/config.js
 spectide config preview --file /absolute/path/to/repository/.spectide/config.json --prompt "inspect tests"
 spectide run --project /absolute/path/to/repository "describe the task"
 spectide list
+spectide workflow list
+spectide workflow explain
 spectide report RUN_ID
 spectide pause RUN_ID
 spectide resume RUN_ID
 spectide cancel RUN_ID
 ```
+
+`workflow list` and `workflow explain` print JSON for the canonical stage sequence and ownership/read-only boundaries. Root output controls are available before or after a subcommand: `--no-color` (the CLI currently emits no ANSI styling), `--quiet` (suppresses normal stdout), and `--verbose` (writes a command diagnostic to stderr). Errors and exit codes remain active in quiet mode. `--detach` is not supported.
 
 Live provider routes currently end in a durable `BLOCKED` run unless a verified authenticated adapter is available. They are never reported as simulated success. Exit statuses are 0 success, 2 command error, 3 blocked, 4 failed, and 5 cancelled.
 

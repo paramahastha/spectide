@@ -149,6 +149,31 @@ func TestVersionCommandUsesSharedBuildVersion(t *testing.T) {
 	}
 }
 
+func TestWorkflowListAndExplainAreJSONAndOutputControlsArePredictable(t *testing.T) {
+	list, err := executeCLI(t, filepath.Join(t.TempDir(), "workflow.db"), "workflow", "list")
+	if err != nil || !strings.Contains(list, `"stages":["constitution","specify"`) || strings.Contains(list, "\u001b[") {
+		t.Fatalf("workflow list=%q err=%v", list, err)
+	}
+	var listed struct {
+		Stages []string `json:"stages"`
+	}
+	if err = json.Unmarshal([]byte(list), &listed); err != nil || len(listed.Stages) != len(config.StageKeys) {
+		t.Fatalf("workflow list JSON invalid: stages=%d err=%v", len(listed.Stages), err)
+	}
+	explain, err := executeCLI(t, filepath.Join(t.TempDir(), "workflow.db"), "workflow", "explain")
+	if err != nil || !strings.Contains(explain, `"owner":"local"`) || !strings.Contains(explain, `"read_only":true`) {
+		t.Fatalf("workflow explain=%q err=%v", explain, err)
+	}
+	quiet, err := executeCLI(t, filepath.Join(t.TempDir(), "workflow.db"), "--quiet", "--no-color", "workflow", "list")
+	if err != nil || quiet != "" {
+		t.Fatalf("quiet output=%q err=%v", quiet, err)
+	}
+	verbose, err := executeCLI(t, filepath.Join(t.TempDir(), "workflow.db"), "--verbose", "workflow", "list")
+	if err != nil || !strings.Contains(verbose, "spectide: command=spectide workflow list") || !strings.Contains(verbose, `"stages"`) {
+		t.Fatalf("verbose output=%q err=%v", verbose, err)
+	}
+}
+
 func TestVerifyUsesProjectSpecificQualityDiscovery(t *testing.T) {
 	if _, err := exec.LookPath("npm"); err != nil {
 		t.Skip("npm is unavailable")

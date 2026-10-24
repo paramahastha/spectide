@@ -2,6 +2,14 @@ package model
 
 import "testing"
 
+func TestReleaseGateTaxonomyIsStableAndMissingEvidenceIsNotRun(t *testing.T) {
+	gates := []Gate{{Key: "analyze_clean", Verdict: "PASS", Evidence: "analysis report"}, {Key: "required_tests", Verdict: "FAIL", Evidence: "test command exited 1"}}
+	got := ReleaseGateTaxonomy(gates)
+	if len(got) != 13 || got[0].ID != "QG-01" || got[0].Verdict != "NOT_RUN" || got[1].ID != "QG-02" || got[1].Verdict != "PASS" || got[6].ID != "QG-07" || got[6].Verdict != "FAIL" || got[12].ID != "QG-13" || got[12].Verdict != "NOT_RUN" {
+		t.Fatalf("release gate projection=%+v", got)
+	}
+}
+
 func TestSummarizeAcceptanceSeparatesLiveAndSimulationEvidence(t *testing.T) {
 	liveAndFake := []RoutingDecision{{Stage: "analyze", Provider: "codex"}, {Stage: "implement", Provider: "fake"}}
 	gates := []Gate{{Key: "analyze_clean", Verdict: "PASS"}, {Key: "required_tests", Verdict: "PASS"}, {Key: "converged", Verdict: "PASS"}, {Key: "final_review", Verdict: "PASS"}, {Key: "workflow_execution", Verdict: "PASS"}}

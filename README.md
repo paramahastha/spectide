@@ -45,8 +45,10 @@ This path runs entirely on your machine and needs no provider account. It is the
 5. Inspect the same evidence from the terminal:
 
    ```sh
-   ./bin/spectide list
-   ./bin/spectide report RUN_ID
+    ./bin/spectide list
+    ./bin/spectide workflow list
+    ./bin/spectide workflow explain
+    ./bin/spectide report RUN_ID
    ```
 
 The terminal should finish with `SIMULATED run completed with fixture evidence`. That label is expected: this tutorial proves the local workflow without contacting an AI provider.

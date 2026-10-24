@@ -1044,6 +1044,69 @@ func (s *Store) SaveProfile(ctx context.Context, p model.Profile) (model.Profile
 	}
 	return p, tx.Commit()
 }
+
+// UpdateProfile updates an existing profile by stable ID. Changes invalidate
+// capability evidence and cannot affect immutable configurations of existing runs.
+func (s *Store) UpdateProfile(ctx context.Context, id string, p model.Profile) (model.Profile, error) {
+	if id == "" {
+		return model.Profile{}, fmt.Errorf("PROFILE_ID_REQUIRED")
+	}
+	var priorName string
+	if err := s.DB.QueryRowContext(ctx, `SELECT name FROM profiles WHERE id=?`, id).Scan(&priorName); err != nil {
+		if err == sql.ErrNoRows {
+			return model.Profile{}, fmt.Errorf("PROFILE_NOT_FOUND")
+		}
+		return model.Profile{}, err
+	}
+	p.ID = id
+	if p.Name == "" || p.Provider == "" || p.Executable == "" {
+		return p, fmt.Errorf("profile name, provider, and executable are required")
+	}
+	for _, identity := range append([]string{p.Name, p.Executable, p.ConfigDirectory}, p.AllowedScopes...) {
+		if security.Redact(identity) != identity {
+			return model.Profile{}, fmt.Errorf("PROFILE_SECRET_REFERENCE_REJECTED")
+		}
+	}
+	switch p.Provider {
+	case "claude", "codex", "opencode", "fake":
+	default:
+		return p, fmt.Errorf("UNSUPPORTED_PROVIDER: %s", p.Provider)
+	}
+	if strings.ContainsAny(p.Executable, "\x00\n\r") || (strings.ContainsRune(p.Executable, filepath.Separator) && !filepath.IsAbs(p.Executable)) {
+		return p, fmt.Errorf("INVALID_EXECUTABLE: use a command name or absolute executable path")
+	}
+	if p.ConfigDirectory != "" && !filepath.IsAbs(p.ConfigDirectory) {
+		return p, fmt.Errorf("CONFIG_DIRECTORY_MUST_BE_ABSOLUTE")
+	}
+	if len(p.AllowedScopes) == 0 {
+		return p, fmt.Errorf("PROFILE_SCOPE_REQUIRED")
+	}
+	scopes, err := json.Marshal(p.AllowedScopes)
+	if err != nil {
+		return p, err
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return p, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE profiles SET name=?,provider=?,executable=?,config_directory=?,allowed_scopes_json=? WHERE id=?`, p.Name, p.Provider, p.Executable, p.ConfigDirectory, string(scopes), id)
+	if err != nil {
+		return p, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return p, err
+	}
+	if changed != 1 {
+		return p, fmt.Errorf("PROFILE_NOT_FOUND")
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM profile_capabilities WHERE profile_name IN (?,?)`, priorName, p.Name); err != nil {
+		return p, err
+	}
+	p.Capability = nil
+	return p, tx.Commit()
+}
 func (s *Store) Profiles(ctx context.Context) ([]model.Profile, error) {
 	rows, e := s.DB.QueryContext(ctx, `SELECT p.id,p.name,p.provider,p.executable,p.config_directory,p.allowed_scopes_json,COALESCE(c.capability_json,''),COALESCE(c.observed_at,'') FROM profiles p LEFT JOIN profile_capabilities c ON c.profile_name=p.name ORDER BY p.name`)
 	if e != nil {
@@ -1267,5 +1330,5 @@ func (s *Store) Report(ctx context.Context, id string) (model.Report, error) {
 	if decisionErr != nil {
 		return model.Report{}, decisionErr
 	}
-	return model.Report{Run: r, Acceptance: model.SummarizeAcceptance(acceptanceDecisions, g), Configuration: configuration, Stages: st, Attempts: attempts, QualityExecutions: qualityExecutions, Decisions: d, Gates: g, Artifacts: a, Checkpoints: cp, Approvals: ap}, nil
+	return model.Report{Run: r, Acceptance: model.SummarizeAcceptance(acceptanceDecisions, g), ReleaseGates: model.ReleaseGateTaxonomy(g), Configuration: configuration, Stages: st, Attempts: attempts, QualityExecutions: qualityExecutions, Decisions: d, Gates: g, Artifacts: a, Checkpoints: cp, Approvals: ap}, nil
 }

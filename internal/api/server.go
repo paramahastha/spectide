@@ -48,10 +48,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/readyz", s.health)
 	mux.HandleFunc("/api/v1/version", s.version)
 	mux.HandleFunc("/api/v1/capabilities", s.capabilities)
+	mux.HandleFunc("/api/v1/providers/capabilities", s.capabilities)
 	mux.HandleFunc("/api/v1/config/validate", s.validateConfig)
+	mux.HandleFunc("/api/v1/config/resolved", s.resolvedConfig)
+	mux.HandleFunc("/api/v1/approvals", s.pendingApprovals)
 	mux.HandleFunc("/api/v1/runs", s.runs)
 	mux.HandleFunc("/api/v1/runs/", s.run)
 	mux.HandleFunc("/api/v1/profiles", s.profiles)
+	mux.HandleFunc("/api/v1/profiles/", s.profile)
 	mux.HandleFunc("/api/v1/projects", s.projects)
 	mux.HandleFunc("/api/v1/projects/", s.project)
 	mux.HandleFunc("/api/v1/", func(w http.ResponseWriter, _ *http.Request) {
@@ -63,6 +67,35 @@ func (s *Server) Handler() http.Handler {
 	assets, _ := fs.Sub(webassets.Static, "static")
 	mux.Handle("/", http.FileServer(http.FS(assets)))
 	return s.secure(mux)
+}
+
+func (s *Server) profile(w http.ResponseWriter, r *http.Request) {
+	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/profiles/"), "/")
+	if id == "" || strings.Contains(id, "/") {
+		apiError(w, http.StatusNotFound, "NOT_FOUND", "profile endpoint not found")
+		return
+	}
+	if r.Method != http.MethodPatch {
+		apiError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+		return
+	}
+	var profile model.Profile
+	if err := decodeRequest(w, r, 16<<10, &profile); err != nil {
+		apiError(w, http.StatusBadRequest, "INVALID_REQUEST", err.Error())
+		return
+	}
+	profile.ID = id
+	profile.Capability = nil // capability observations can only come from a verified probe
+	updated, err := s.Store.UpdateProfile(r.Context(), id, profile)
+	if err != nil {
+		if strings.Contains(err.Error(), "PROFILE_NOT_FOUND") {
+			apiError(w, http.StatusNotFound, "PROFILE_NOT_FOUND", "profile not found")
+			return
+		}
+		apiError(w, http.StatusUnprocessableEntity, "PROFILE_INVALID", err.Error())
+		return
+	}
+	jsonOut(w, http.StatusOK, updated)
 }
 func (s *Server) profiles(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -126,6 +159,41 @@ func (s *Server) capabilities(w http.ResponseWriter, r *http.Request) {
 		items = append(items, capability{Profile: profile.Name, Provider: profile.Provider, ExecutableFound: c.ExecutableFound, Authenticated: c.Authenticated, ReadOnlyExecution: c.ReadOnlyExecution, WorkspaceWrite: c.WorkspaceWrite, ModelCatalogStatus: c.ModelCatalogStatus, Models: append([]string(nil), c.ModelValues...), EffortValues: append([]string(nil), c.EffortValues...), SafetyModes: append([]string(nil), c.SafetyModes...), CommandCapabilities: append([]string(nil), c.CommandCapabilities...), ObservedAt: c.ObservedAt})
 	}
 	jsonOut(w, http.StatusOK, map[string]any{"providers": providerStatus, "profiles": items})
+}
+
+func (s *Server) pendingApprovals(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		apiError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+		return
+	}
+	approvals, err := s.Store.PendingApprovals(r.Context())
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, "STORE_ERROR", err.Error())
+		return
+	}
+	if approvals == nil {
+		approvals = []model.Approval{}
+	}
+	jsonOut(w, http.StatusOK, approvals)
+}
+
+// resolvedConfig returns only the sanitized global effective configuration.
+// Project settings remain accessible through the registered canonical-project route.
+func (s *Server) resolvedConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		apiError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+		return
+	}
+	if len(r.URL.Query()) != 0 {
+		apiError(w, http.StatusBadRequest, "INVALID_REQUEST", "config/resolved does not accept query parameters")
+		return
+	}
+	value, err := config.LoadEffective(config.GlobalPath(), "")
+	if err != nil {
+		apiError(w, http.StatusUnprocessableEntity, "CONFIGURATION_INVALID", err.Error())
+		return
+	}
+	jsonOut(w, http.StatusOK, value)
 }
 
 func (s *Server) validateConfig(w http.ResponseWriter, r *http.Request) {

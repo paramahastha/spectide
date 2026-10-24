@@ -31,6 +31,15 @@ Build a local-first orchestration application that turns a developer task into a
 
 **Scale/Scope**: One local user/daemon; dashboard lists the 100 most recent runs, keeps compact summaries indefinitely, expires event details 90 days after each event timestamp, and retains detailed histories for at most 1,000 runs. At the cap, prune detail from the oldest terminal runs first while preserving summaries, outcomes, routes, verdicts, approvals and sanitized report metadata; reject new runs if all detailed-history slots are active. Supports 10,000 events per run as initial acceptance capacity.
 
+## Dependency Justification
+
+| Dependency or platform component | Justified operational need | Requirement linkage |
+| --- | --- | --- |
+| Go 1.27 and the standard HTTP/SSE libraries | Provide the single local orchestration authority, loopback API, bounded process supervision, and embedded assets without a remote service. | FR-004, FR-017–FR-021; Constitution I and IV |
+| Cobra | Supplies the installable, discoverable command tree and stable help/flag handling for local workflow operations. | FR-001, FR-028 |
+| Pure-Go SQLite driver | Provides local, WAL-backed durable workflow evidence and supports the offline installation path without a separate database service or C toolchain. | FR-002, FR-003, FR-018, FR-027 |
+| React, TypeScript, and Vite | Build the embedded, accessible dashboard that renders persisted API state and can be tested locally. Vite is build tooling only; it is not a runtime service. | FR-024–FR-026, FR-029 |
+
 ## Constitution Check
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
@@ -43,6 +52,17 @@ Build a local-first orchestration application that turns a developer task into a
 | Durable/observable workflows | SQLite transaction/event model, checkpoints and one writer lock | PASS (implementation staged) |
 | Provider-neutral, accessible delivery | Adapter contract, deterministic fake provider, accessible dashboard | PASS (implementation staged) |
 
+**Post-design re-check (2026-10-24):** PASS for planning. The local Go/SQLite/React architecture, loopback-only API, deterministic fake-provider baseline, and dependency rationales above preserve the applicable constitutional boundaries. Implementation and release evidence remain governed by the task ledger and required quality gates; this re-check does not claim those gates have executed.
+
+## Delivery Phases
+
+1. **Specification and design gates:** preserve one feature specification, complete read-only analysis, and validate constitutional constraints.
+2. **Foundational local authority:** establish migrations, immutable evidence, workspace fencing, configuration, and safety boundaries.
+3. **Workflow and routing:** implement canonical stages, verified adapters, routing decisions, recovery, and approvals.
+4. **Observed local experience:** expose loopback HTTP/SSE projections and the accessible persisted-state dashboard.
+5. **Verification and convergence:** run required offline checks, record inspectable evidence, and process only valid append-only convergence work.
+6. **Approved source-parity completion:** perform the explicitly scoped FR-001, FR-010, and FR-020 compatibility work in T141–T143, then repeat verification and read-only analysis.
+
 ## Project Structure
 
 ### Documentation (this feature)
@@ -53,6 +73,7 @@ specs/001-build-spectide/
 ├── research.md          # Phase 0 output (/speckit.plan command)
 ├── data-model.md        # Phase 1 output (/speckit.plan command)
 ├── quickstart.md        # Phase 1 output (/speckit.plan command)
+├── blueprint-traceability.md # Source-blueprint coverage and intentional variances
 ├── contracts/           # Phase 1 output (/speckit.plan command)
 └── tasks.md             # Phase 2 output (/speckit.tasks command - NOT created by /speckit.plan)
 ```

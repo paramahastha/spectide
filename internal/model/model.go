@@ -71,6 +71,7 @@ type Event struct {
 type Report struct {
 	Run               Run                `json:"run"`
 	Acceptance        AcceptanceSummary  `json:"acceptance"`
+	ReleaseGates      []ReleaseGate      `json:"release_gates"`
 	Configuration     *RunConfiguration  `json:"configuration,omitempty"`
 	Stages            []Stage            `json:"stages"`
 	Attempts          []ExecutionAttempt `json:"execution_attempts"`
@@ -80,6 +81,53 @@ type Report struct {
 	Artifacts         []Artifact         `json:"artifacts"`
 	Checkpoints       []Checkpoint       `json:"checkpoints"`
 	Approvals         []Approval         `json:"approvals"`
+}
+
+// ReleaseGate is the stable release-evidence projection. Detailed runtime
+// gates remain in Report.Gates; this taxonomy makes release reports and the
+// acceptance ledger comparable without renaming or discarding those details.
+type ReleaseGate struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Verdict  string `json:"verdict"`
+	Evidence string `json:"evidence"`
+}
+
+var releaseGateDefinitions = []struct {
+	ID, Name, DetailKey string
+}{
+	{"QG-01", "requirement traceability", "requirement_traceability"},
+	{"QG-02", "spec/plan/tasks consistency", "analyze_clean"},
+	{"QG-03", "checklist acceptance", "checklist_acceptance"},
+	{"QG-04", "task completeness", "task_completeness"},
+	{"QG-05", "build", "build"},
+	{"QG-06", "static checks", "static_checks"},
+	{"QG-07", "automated tests", "required_tests"},
+	{"QG-08", "convergence", "converged"},
+	{"QG-09", "provider compatibility", "provider_compatibility"},
+	{"QG-10", "recovery", "recovery"},
+	{"QG-11", "security", "security"},
+	{"QG-12", "final review", "final_review"},
+	{"QG-13", "documentation", "documentation"},
+}
+
+// ReleaseGateTaxonomy projects stable release IDs from detailed run gates.
+// Missing source evidence is explicit NOT_RUN, never an inferred pass.
+func ReleaseGateTaxonomy(gates []Gate) []ReleaseGate {
+	byKey := make(map[string]Gate, len(gates))
+	for _, gate := range gates {
+		byKey[gate.Key] = gate
+	}
+	projected := make([]ReleaseGate, 0, len(releaseGateDefinitions))
+	for _, definition := range releaseGateDefinitions {
+		gate, ok := byKey[definition.DetailKey]
+		if !ok {
+			projected = append(projected, ReleaseGate{ID: definition.ID, Name: definition.Name, Verdict: "NOT_RUN", Evidence: "no detailed evidence was recorded for this release gate"})
+			continue
+		}
+		projected = append(projected, ReleaseGate{ID: definition.ID, Name: definition.Name, Verdict: gate.Verdict, Evidence: gate.Evidence})
+	}
+	return projected
 }
 
 type AcceptanceSummary struct {
