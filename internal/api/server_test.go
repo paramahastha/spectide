@@ -543,7 +543,7 @@ func TestUnregisteredProjectCreateAndPreviewAreRejectedWithoutRecords(t *testing
 		r.Header.Set("Idempotency-Key", "unregistered-request-123")
 		w := httptest.NewRecorder()
 		s.Handler().ServeHTTP(w, r)
-		if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "PROJECT_NOT_REGISTERED") {
+		if w.Code != http.StatusUnprocessableEntity || (dryRun && !strings.Contains(w.Body.String(), `"category":"PROJECT_UNAVAILABLE"`)) {
 			t.Fatalf("dry_run=%v status=%d body=%s", dryRun, w.Code, w.Body.String())
 		}
 	}
@@ -695,6 +695,15 @@ func TestDryRunPreviewsConfiguredRoutesWithoutCreatingRun(t *testing.T) {
 	if err != nil || len(runs) != 0 {
 		t.Fatalf("dry run created records: runs=%d err=%v", len(runs), err)
 	}
+	for _, table := range []string{"stages", "events", "execution_attempts", "workspace_import_events"} {
+		var count int
+		if err := s.Store.DB.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM "+table).Scan(&count); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if count != 0 {
+			t.Fatalf("dry preview created %d %s", count, table)
+		}
+	}
 }
 
 func TestDryRunRejectsProjectConfigSymlinkEscape(t *testing.T) {
@@ -716,7 +725,7 @@ func TestDryRunRejectsProjectConfigSymlinkEscape(t *testing.T) {
 	r.Header.Set("Idempotency-Key", "preview-request-456")
 	w := httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, r)
-	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "PERMISSION_DENIED") {
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), `"category":"CONFIGURATION_INVALID"`) {
 		t.Fatalf("symlink escape status=%d body=%s", w.Code, w.Body.String())
 	}
 }
@@ -740,7 +749,7 @@ func TestDryRunRejectsWorkspaceOutsideConfiguredScopes(t *testing.T) {
 	r.Header.Set("Idempotency-Key", "preview-scope-123")
 	w := httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, r)
-	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "PERMISSION_DENIED") {
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), `"category":"CONFIGURATION_INVALID"`) {
 		t.Fatalf("outside-scope preview status=%d body=%s", w.Code, w.Body.String())
 	}
 	runs, err := s.Store.Runs(context.Background())
@@ -768,7 +777,7 @@ func TestDryRunBlocksLiveRouteWithoutAuthorizedStoredProfile(t *testing.T) {
 	r.Header.Set("Idempotency-Key", "preview-profile-123")
 	w := httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, r)
-	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "PROFILE_NOT_FOUND") || !strings.Contains(w.Body.String(), `"execution":"NOT_RUN"`) || !strings.Contains(w.Body.String(), `"blocked_reasons":[`) {
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), `"category":"MISSING_PROFILE"`) || !strings.Contains(w.Body.String(), `"stage":"constitution"`) || !strings.Contains(w.Body.String(), `"profile":"missing-profile"`) || !strings.Contains(w.Body.String(), `"execution":"NOT_RUN"`) {
 		t.Fatalf("unauthorized route preview status=%d body=%s", w.Code, w.Body.String())
 	}
 	validation := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/config/validate", strings.NewReader(`{"project":"`+project+`","prompt":"inspect"}`))
@@ -776,12 +785,161 @@ func TestDryRunBlocksLiveRouteWithoutAuthorizedStoredProfile(t *testing.T) {
 	validation.Header.Set("X-SpecTide-CSRF", s.CSRF)
 	validationResponse := httptest.NewRecorder()
 	s.Handler().ServeHTTP(validationResponse, validation)
-	if validationResponse.Code != http.StatusUnprocessableEntity || !strings.Contains(validationResponse.Body.String(), "PROFILE_NOT_FOUND") || !strings.Contains(validationResponse.Body.String(), `"execution":"NOT_RUN"`) {
+	if validationResponse.Code != http.StatusUnprocessableEntity || !strings.Contains(validationResponse.Body.String(), `"category":"MISSING_PROFILE"`) || !strings.Contains(validationResponse.Body.String(), `"execution":"NOT_RUN"`) {
 		t.Fatalf("config validation did not match preview blocker: status=%d body=%s", validationResponse.Code, validationResponse.Body.String())
 	}
 	if runs, err := s.Store.Runs(context.Background()); err != nil || len(runs) != 0 {
 		t.Fatalf("blocked preview/validation created runs=%d err=%v", len(runs), err)
 	}
+	if strings.Contains(w.Body.String(), project) || strings.Contains(w.Body.String(), "PROFILE_NOT_FOUND") || strings.Contains(w.Body.String(), "blocked_reasons") {
+		t.Fatalf("preview exposed raw diagnostic details: %s", w.Body.String())
+	}
+}
+
+func TestPreviewBlockerClassificationsAreBoundedAndSafe(t *testing.T) {
+	cfg := config.Default()
+	cfg.DefaultRoute = config.Route{Provider: "codex", Profile: "local-codex"}
+	cases := []struct{ err, category, target string }{
+		{"ROUTE_REQUIRED: implement", "MISSING_ROUTE", "routing"},
+		{"PROFILE_NOT_FOUND: local-codex for constitution", "MISSING_PROFILE", "profiles"},
+		{"PROFILE_NOT_ALLOWED: local-codex for implement", "PROFILE_NOT_AUTHORIZED", "profiles"},
+		{"PROFILE_CAPABILITY_NOT_PROBED: local-codex", "CAPABILITY_NOT_VERIFIED", "readiness"},
+		{"PROFILE_UNAUTHENTICATED: local-codex", "CAPABILITY_NOT_VERIFIED", "readiness"},
+		{"PROFILE_AUTHENTICATION_NOT_VERIFIED: local-codex", "CAPABILITY_NOT_VERIFIED", "readiness"},
+		{"PROJECT_NOT_REGISTERED", "PROJECT_UNAVAILABLE", "project-selection"},
+		{"invalid json at /private/workspace", "CONFIGURATION_INVALID", "routing"},
+		{"arbitrary secret token", "UNKNOWN", "readiness"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.category, func(t *testing.T) {
+			got := classifyPreviewBlocker(errors.New(tc.err), &cfg)
+			if got.Category != tc.category || got.Remediation.Target != tc.target {
+				t.Fatalf("blocker=%+v want category=%s target=%s", got, tc.category, tc.target)
+			}
+			if strings.Contains(got.Message, tc.err) || strings.Contains(got.Message, "/private") || strings.Contains(got.Message, "secret") {
+				t.Fatalf("unsafe diagnostic text in blocker: %+v", got)
+			}
+			if got.Stage != "" && !knownPreviewStage(got.Stage) {
+				t.Fatalf("unsafe stage %q", got.Stage)
+			}
+		})
+	}
+}
+
+func TestFallbackProfilePreviewBlockerIncludesSafeRouteContextAndCreatesNoRun(t *testing.T) {
+	s := testServer(t)
+	project := t.TempDir()
+	registerProjectFixture(t, s, project)
+	cfg := config.Default()
+	cfg.DefaultRoute = config.Route{Provider: "codex", Profile: "primary", FallbackAuthorized: true, Fallback: []config.Route{{Provider: "claude", Profile: "backup-profile"}}}
+	if err := config.Save(config.ProjectPath(project), cfg); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]any{"project": project, "prompt": "inspect", "dry_run": true})
+	r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs", strings.NewReader(string(body)))
+	r.Host = "127.0.0.1"
+	r.Header.Set("X-SpecTide-CSRF", s.CSRF)
+	r.Header.Set("Idempotency-Key", "preview-fallback-missing-123")
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	for _, expected := range []string{`"category":"MISSING_PROFILE"`, `"stage":"constitution"`, `"profile":"backup-profile"`, `"provider":"claude"`, `"execution":"NOT_RUN"`} {
+		if !strings.Contains(w.Body.String(), expected) {
+			t.Fatalf("fallback preview response missing %s: status=%d body=%s", expected, w.Code, w.Body.String())
+		}
+	}
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("fallback preview status=%d body=%s", w.Code, w.Body.String())
+	}
+	if runs, err := s.Store.Runs(context.Background()); err != nil || len(runs) != 0 {
+		t.Fatalf("fallback preview created runs=%d err=%v", len(runs), err)
+	}
+}
+
+func TestUnauthenticatedPreviewProfilesUseReadinessRemediationAndCreateNoRun(t *testing.T) {
+	for _, authenticated := range []string{"UNAUTHENTICATED", "NOT_PROBED"} {
+		t.Run(authenticated, func(t *testing.T) {
+			s := testServer(t)
+			project := t.TempDir()
+			registerProjectFixture(t, s, project)
+			cfg := config.Default()
+			cfg.DefaultRoute = config.Route{Provider: "codex", Profile: "local-codex"}
+			if err := config.Save(config.ProjectPath(project), cfg); err != nil {
+				t.Fatal(err)
+			}
+			profile := model.Profile{Name: "local-codex", Provider: "codex", Executable: "/bin/sh", AllowedScopes: []string{project}}
+			if _, err := s.Store.SaveProfile(context.Background(), profile); err != nil {
+				t.Fatal(err)
+			}
+			reference, err := security.ResolveExecutableReference(profile.Executable)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.Store.SaveProfileCapability(context.Background(), profile.Name, model.ProfileCapability{Provider: "codex", ExecutableFound: true, ApprovedExecutablePath: reference.Path, ExecutableSHA256: reference.SHA256, Version: "1.2.3", Authenticated: authenticated}); err != nil {
+				t.Fatal(err)
+			}
+			body, _ := json.Marshal(map[string]any{"project": project, "prompt": "inspect", "dry_run": true})
+			r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs", strings.NewReader(string(body)))
+			r.Host = "127.0.0.1"
+			r.Header.Set("X-SpecTide-CSRF", s.CSRF)
+			r.Header.Set("Idempotency-Key", "preview-auth-state-"+strings.ToLower(authenticated))
+			w := httptest.NewRecorder()
+			s.Handler().ServeHTTP(w, r)
+			if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), `"category":"CAPABILITY_NOT_VERIFIED"`) || !strings.Contains(w.Body.String(), `"target":"readiness"`) || strings.Contains(w.Body.String(), `"category":"PROFILE_NOT_AUTHORIZED"`) {
+				t.Fatalf("auth-state preview status=%d body=%s", w.Code, w.Body.String())
+			}
+			if runs, err := s.Store.Runs(context.Background()); err != nil || len(runs) != 0 {
+				t.Fatalf("auth-state preview created runs=%d err=%v", len(runs), err)
+			}
+		})
+	}
+}
+
+func TestPreviewAndStartRevalidateCurrentProjectReadiness(t *testing.T) {
+	s := testServer(t)
+	project := t.TempDir()
+	registerProjectFixture(t, s, project)
+	cfg := config.Default()
+	cfg.DefaultRoute = config.Route{Provider: "codex", Profile: "current-profile"}
+	if err := config.Save(config.ProjectPath(project), cfg); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(map[string]any{"project": project, "project_id": "", "prompt": "inspect", "dry_run": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := func(payload []byte, key string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs", strings.NewReader(string(payload)))
+		r.Host = "127.0.0.1"
+		r.Header.Set("X-SpecTide-CSRF", s.CSRF)
+		r.Header.Set("Idempotency-Key", key)
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		return w
+	}
+	preview := request(body, "recheck-preview-1")
+	if preview.Code != http.StatusUnprocessableEntity || !strings.Contains(preview.Body.String(), `"category":"MISSING_PROFILE"`) {
+		t.Fatalf("current preview status=%d body=%s", preview.Code, preview.Body.String())
+	}
+	startBody, err := json.Marshal(map[string]any{"project": project, "prompt": "inspect"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := request(startBody, "recheck-start-1")
+	if started.Code != http.StatusUnprocessableEntity || strings.Contains(started.Body.String(), `"state":"CREATED"`) {
+		t.Fatalf("stale start status=%d body=%s", started.Code, started.Body.String())
+	}
+	if runs, err := s.Store.Runs(context.Background()); err != nil || len(runs) != 0 {
+		t.Fatalf("stale requests created runs=%d err=%v", len(runs), err)
+	}
+}
+
+func knownPreviewStage(value string) bool {
+	for _, stage := range config.StageKeys {
+		if value == stage {
+			return true
+		}
+	}
+	return false
 }
 
 func TestDryRunRejectsLiveProfileWithoutPersistedCapability(t *testing.T) {
@@ -806,7 +964,7 @@ func TestDryRunRejectsLiveProfileWithoutPersistedCapability(t *testing.T) {
 	r.Header.Set("Idempotency-Key", "preview-capability-123")
 	w := httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, r)
-	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "PROFILE_CAPABILITY_NOT_PROBED") {
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), `"category":"CAPABILITY_NOT_VERIFIED"`) {
 		t.Fatalf("preview status=%d body=%s", w.Code, w.Body.String())
 	}
 	if runs, err := s.Store.Runs(context.Background()); err != nil || len(runs) != 0 {
@@ -845,7 +1003,7 @@ func TestDryRunRejectsFallbackOutsideProjectBoundaryWithoutCreatingRun(t *testin
 	r.Header.Set("Idempotency-Key", "preview-fallback-scope-123")
 	w := httptest.NewRecorder()
 	s.Handler().ServeHTTP(w, r)
-	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "FALLBACK_PROFILE_NOT_ALLOWED") {
+	if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), `"category":"PROFILE_NOT_AUTHORIZED"`) {
 		t.Fatalf("cross-boundary fallback preview status=%d body=%s", w.Code, w.Body.String())
 	}
 	if runs, err := s.Store.Runs(context.Background()); err != nil || len(runs) != 0 {

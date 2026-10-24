@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { runTone, summarizeRuns, type Run } from './domain'
+import { decodePreviewApiFailure, runTone, summarizeRuns, type Run } from './domain'
 
 const run = (state: Run['state'], id: string): Run => ({
   id,
@@ -19,5 +19,23 @@ describe('dashboard run summaries', () => {
     expect(runTone('BLOCKED')).toBe('bad')
     expect(runTone('FAILED')).toBe('bad')
     expect(runTone('COMPLETED')).toBe('good')
+  })
+})
+
+describe('typed route-preview failures', () => {
+  it('decodes a bounded blocker and optional safe route context', () => {
+    expect(decodePreviewApiFailure(JSON.stringify({
+      dry_run: true,
+      execution: 'NOT_RUN',
+      error: { code: 'ROUTE_PREVIEW_BLOCKED', message: 'generic', request_id: 'support-ref' },
+      preview_blockers: [{ category: 'MISSING_PROFILE', message: 'A profile is needed.', remediation: { target: 'profiles', label: 'Review profile setup' }, stage: 'constitution', profile: 'local-codex', provider: 'codex' }],
+    }))).toMatchObject({ preview_blockers: [{ category: 'MISSING_PROFILE', stage: 'constitution', profile: 'local-codex', provider: 'codex' }], execution: 'NOT_RUN' })
+  })
+
+  it('rejects unknown categories, remediation targets, and unbounded arrays', () => {
+    const blocker = { category: 'RAW_ERROR', message: '/private/path', remediation: { target: 'shell', label: 'Run command' } }
+    expect(decodePreviewApiFailure(JSON.stringify({ preview_blockers: [blocker] }))).toBeNull()
+    expect(decodePreviewApiFailure(JSON.stringify({ preview_blockers: [blocker, blocker] }))).toBeNull()
+    expect(decodePreviewApiFailure('{invalid')).toBeNull()
   })
 })

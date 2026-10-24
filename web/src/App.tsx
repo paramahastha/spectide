@@ -9,14 +9,21 @@ import {
   type Report,
   type Run,
   type Project,
+  type PreviewBlocker,
   type WorkspaceStatus,
+  decodePreviewApiFailure,
 } from './domain'
+import { dashboardGuidance } from './dashboard-guidance'
 
 type View = 'workflow' | 'history' | 'profiles' | 'routing' | 'readiness'
 type ConnectionState = 'loading' | 'connected' | 'disconnected'
 type PreviewState = 'idle' | 'ready' | 'blocked' | 'disconnected'
 type LocalEvent = { id?: string; run_id: string; seq: number; timestamp?: string; type: string; stage?: string; payload?: Record<string, unknown> }
 export type RoutePreview = { dry_run: boolean; execution: string; mode: string; decisions: Array<{ stage: string; route: { provider: string; profile: string; model?: string; effort?: string }; explanation: string }> }
+
+class ApiRequestError extends Error {
+  constructor(readonly status: number, readonly body: string) { super(`Request failed (${status})`) }
+}
 
 function isCsrfRequired(body: string): boolean {
   try {
@@ -34,6 +41,7 @@ export function App() {
   const [appVersion, setAppVersion] = useState('0.1.0-dev')
   const [runs, setRuns] = useState<Run[]>([])
   const [totalRunCount, setTotalRunCount] = useState<number | null>(null)
+  const totalRunCountRef = useRef<number | null>(null)
   const [projects, setProjects] = useState<Project[]>([])
   const [workspaceStatus, setWorkspaceStatus] = useState<WorkspaceStatus | null>(null)
   const [activeProjectId, setActiveProjectId] = useState('')
@@ -50,8 +58,7 @@ export function App() {
   const refreshRequest = useRef(0)
   const previewRequest = useRef(0)
   const [view, setView] = useState<View>('workflow')
-  const [project, setProject] = useState('./examples/fake-provider-demo')
-  const [prompt, setPrompt] = useState('Validate the complete SpecTide workflow')
+  const [prompt, setPrompt] = useState('')
   const [busy, setBusy] = useState(false)
   const [approvalBusy, setApprovalBusy] = useState('')
   const [message, setMessage] = useState('Loading local run history…')
@@ -62,6 +69,8 @@ export function App() {
   const [preview, setPreview] = useState<RoutePreview | null>(null)
   const [previewState, setPreviewState] = useState<PreviewState>('idle')
   const [previewError, setPreviewError] = useState('')
+  const [previewBlocker, setPreviewBlocker] = useState<PreviewBlocker | null>(null)
+  const [showDemo, setShowDemo] = useState(false)
   const connection: ConnectionState = apiConnection === 'disconnected' || profileConnection === 'disconnected' || (selected !== '' && streamConnection === 'disconnected')
     ? 'disconnected'
     : apiConnection === 'loading' || profileConnection === 'loading' || (selected !== '' && streamConnection === 'loading')
@@ -105,12 +114,47 @@ export function App() {
         // mutation whose server-side outcome may be ambiguous.
         try { await refreshHandshake() } catch { /* Preserve the original request failure. */ }
       }
-      throw new Error(body || `Request failed (${response.status})`)
+      throw new ApiRequestError(response.status, body)
     }
     const totalCount = response.headers?.get?.('X-Total-Count')
-    if (totalCount !== null && Number.isFinite(Number(totalCount))) setTotalRunCount(Number(totalCount))
+    if (totalCount !== null && Number.isFinite(Number(totalCount))) {
+      totalRunCountRef.current = Number(totalCount)
+      setTotalRunCount(Number(totalCount))
+    }
     return response.json() as Promise<T>
   }, [refreshHandshake])
+
+  const loadProjects = useCallback(async () => {
+    const items = await api<Project[]>('/api/v1/projects')
+    const available = Array.isArray(items) ? items : []
+    setProjects(available)
+    const saved = localStorage.getItem('spectide.project-selection') ?? ''
+    const savedIsValid = saved !== '' && available.some((item) => item.id === saved)
+    if (saved && !savedIsValid) localStorage.removeItem('spectide.project-selection')
+    setActiveProjectId((current) => current && available.some((item) => item.id === current) ? current : savedIsValid ? saved : '')
+    return available
+  }, [api])
+
+  const loadProfiles = useCallback(async () => {
+    const items = await api<Profile[]>('/api/v1/profiles')
+    setProfiles(Array.isArray(items) ? items : [])
+    setProfileError('')
+    setProfileConnection('connected')
+  }, [api])
+
+  const loadWorkspaceStatus = useCallback(async () => {
+    const status = await api<WorkspaceStatus>('/api/v1/workspace/status')
+    setWorkspaceStatus(status)
+  }, [api])
+
+  const refreshProjectContext = useCallback(async () => {
+    try {
+      await loadProjects()
+      setApiConnection('connected')
+    } catch {
+      setApiConnection('disconnected')
+    }
+  }, [loadProjects])
 
   const refresh = useCallback(async () => {
     const request = ++refreshRequest.current
@@ -122,7 +166,7 @@ export function App() {
       setRuns(currentRuns)
       setApiConnection('connected')
       const summary = summarizeRuns(currentRuns)
-      setMessage(`${summary.active} active · ${summary.completed} completed · ${totalRunCount ?? summary.total} durable runs`)
+      setMessage(`${summary.active} active · ${summary.completed} completed · ${totalRunCountRef.current ?? summary.total} durable runs`)
       if (requestedSelection) {
         const next = await api<Report>(`/api/v1/runs/${encodeURIComponent(requestedSelection)}`)
         if (request === refreshRequest.current && selectedRef.current === requestedSelection) setReport(next)
@@ -132,7 +176,7 @@ export function App() {
       setMessage(`Unable to refresh local state: ${String(error)}`)
       setApiConnection('disconnected')
     }
-  }, [activeProjectId, api, totalRunCount])
+  }, [activeProjectId, api])
 
   useEffect(() => {
     let alive = true
@@ -154,24 +198,14 @@ export function App() {
 
   useEffect(() => {
     if (!token) return
-    void refresh()
-    const loadProjects = () => void api<Project[]>('/api/v1/projects').then((items) => {
-      const available = Array.isArray(items) ? items : []
-      setProjects(available)
-      const saved = localStorage.getItem('spectide.project-selection') ?? ''
-      const savedIsValid = saved !== '' && available.some((item) => item.id === saved)
-      if (saved && !savedIsValid) localStorage.removeItem('spectide.project-selection')
-      setActiveProjectId((current) => current && available.some((item) => item.id === current) ? current : savedIsValid ? saved : '')
-    }).catch(() => setProjects([]))
-    loadProjects()
-    void api<WorkspaceStatus>('/api/v1/workspace/status').then(setWorkspaceStatus).catch(() => setWorkspaceStatus(null))
-    const loadProfiles = () => void api<Profile[]>('/api/v1/profiles').then((items) => { setProfiles(Array.isArray(items) ? items : []); setProfileError(''); setProfileConnection('connected') }).catch((error) => { setProfileError(String(error)); setProfileConnection('disconnected') })
-    loadProfiles()
-    const timer = window.setInterval(() => void refresh(), 1800)
-    const profileTimer = window.setInterval(loadProfiles, 1800)
-    const projectTimer = window.setInterval(loadProjects, 5000)
-    return () => { window.clearInterval(timer); window.clearInterval(profileTimer); window.clearInterval(projectTimer) }
-  }, [api, refresh, token])
+    void loadProjects().catch(() => setProjects([]))
+    void loadWorkspaceStatus().catch(() => setWorkspaceStatus(null))
+    void loadProfiles().catch((error) => { setProfileError(String(error)); setProfileConnection('disconnected') })
+  }, [loadProfiles, loadProjects, loadWorkspaceStatus, token])
+
+  useEffect(() => {
+    if (token) void refresh()
+  }, [refresh, token])
 
   useEffect(() => {
     if (activeProjectId && !projects.some((item) => item.id === activeProjectId)) {
@@ -256,6 +290,7 @@ export function App() {
         reconnecting = true
         setStreamConnection('disconnected')
         setMessage('Event stream disconnected · waiting to reconnect')
+        void refresh()
         stream.close()
         window.clearTimeout(reconnectTimer)
         reconnectTimer = window.setTimeout(connect, 500)
@@ -277,8 +312,9 @@ export function App() {
     setPreview(null)
     setPreviewState('idle')
     setPreviewError('')
+    setPreviewBlocker(null)
     return () => { if (previewRequest.current === request) previewRequest.current++ }
-  }, [project, prompt])
+  }, [activeProjectId, prompt])
 
   useEffect(() => {
     if (view === 'routing' && connection === 'disconnected' && !token) {
@@ -289,6 +325,45 @@ export function App() {
 
   const selectedRun = useMemo(() => runs.find((run) => run.id === selected), [runs, selected])
   const activeProject = projects.find((item) => item.id === activeProjectId)
+  const guidance = dashboardGuidance(connection === 'disconnected' ? 'DISCONNECTED' : activeProject ? activeProject.readiness?.status ?? 'UNKNOWN' : undefined)
+  function chooseProject(id: string) {
+    if (id !== activeProjectId) {
+      setPrompt('')
+      setPreview(null)
+      setPreviewBlocker(null)
+      setPreviewState('idle')
+      setPreviewError('')
+      setActiveProjectId(id)
+    }
+  }
+  function navigateTo(nextView: View) {
+    setView(nextView)
+    if (nextView === 'history' || nextView === 'workflow') void refresh()
+    if (nextView === 'routing') void refreshProjectContext()
+    if (nextView === 'profiles' || nextView === 'readiness') {
+      void loadProfiles().catch((error) => { setProfileError(String(error)); setProfileConnection('disconnected') })
+    }
+  }
+  function followRemediation(target: string) {
+    if (target === 'routing') navigateTo('routing')
+    else if (target === 'profiles') navigateTo('profiles')
+    else if (target === 'readiness') navigateTo('readiness')
+    else {
+      navigateTo('workflow')
+      document.getElementById('project-scope-select')?.focus()
+    }
+  }
+  async function retryReadiness() {
+    try {
+      await refreshHandshake()
+      await Promise.all([loadProjects(), loadProfiles(), loadWorkspaceStatus(), refresh()])
+      setMessage('Connected to the local API; project readiness refreshed.')
+    } catch {
+      setApiConnection('disconnected')
+      setProfileConnection('disconnected')
+      setMessage('The local API is still unavailable. Retry after reconnecting.')
+    }
+  }
   async function addProject(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!newProjectPath.trim() || addingProject) return
@@ -296,14 +371,15 @@ export function App() {
     try {
       const created = await api<Project>('/api/v1/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: newProjectPath.trim() }) })
       setProjects((current) => current.some((item) => item.id === created.id) ? current : [...current, created])
-      setActiveProjectId(created.id)
+      chooseProject(created.id)
       setNewProjectPath('')
       setMessage(`${created.display_name} is ready to configure`)
+      void loadWorkspaceStatus().catch(() => setWorkspaceStatus(null))
     } catch (error) { setAddProjectError(String(error)) }
     finally { setAddingProject(false) }
   }
   async function startRun(nextPrompt = prompt) {
-    if (!token || busy || !activeProjectId) { if (!activeProjectId) setMessage('Select a registered project before starting work'); return }
+    if (!token || busy || !activeProjectId || !nextPrompt.trim()) { if (!activeProjectId) setMessage('Select a registered project before starting work'); return }
     setBusy(true)
     setMessage('Starting a workflow using the configured routes…')
     try {
@@ -314,10 +390,17 @@ export function App() {
       })
       setSelected(created.id)
       setView('workflow')
-      await refresh()
+      await Promise.all([refresh(), refreshProjectContext()])
       setMessage(`Workflow run ${created.id.slice(0, 8)} started`)
     } catch (error) {
-      setMessage(`Unable to start run: ${String(error)}`)
+      setMessage('The workflow could not start. Refreshing the selected project’s current readiness.')
+      try {
+      const currentProjects = await loadProjects()
+        const current = currentProjects.find((item) => item.id === activeProjectId)
+        if (current && current.readiness?.status !== 'READY') setMessage(`${current.display_name}: ${current.readiness?.reason ?? 'Current readiness could not be confirmed.'}`)
+      } catch {
+        setMessage('The workflow could not start, and current project readiness could not be refreshed.')
+      }
     } finally {
       setBusy(false)
     }
@@ -328,7 +411,7 @@ export function App() {
     try {
       await api(`/api/v1/runs/${encodeURIComponent(selected)}/cancel`, { method: 'POST' })
       setMessage('Cancellation requested')
-      await refresh()
+      await Promise.all([refresh(), refreshProjectContext()])
     } catch (error) {
       setMessage(`Unable to cancel run: ${String(error)}`)
     }
@@ -339,7 +422,7 @@ export function App() {
     try {
       await api(`/api/v1/runs/${encodeURIComponent(selected)}/${action}`, { method: 'POST' })
       setMessage(`${action === 'pause' ? 'Pause' : 'Resume'} requested`)
-      await refresh()
+      await Promise.all([refresh(), refreshProjectContext()])
     } catch (error) {
       setMessage(`Unable to ${action} run: ${String(error)}`)
     }
@@ -353,7 +436,7 @@ export function App() {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision }),
       })
       setMessage(decision === 'approved' ? 'Workspace write approved; workflow continuation requested' : 'Workspace write denied; workflow will stop before writing')
-      await refresh()
+      await Promise.all([refresh(), refreshProjectContext()])
     } catch (error) {
       setMessage(`Unable to resolve approval: ${String(error)}`)
     } finally {
@@ -380,12 +463,32 @@ export function App() {
       if (request !== previewRequest.current || intent !== `${activeProjectId}\u0000${prompt}`) return
       setPreview(result)
       setPreviewState('ready')
+      setView('routing')
+      void refreshProjectContext()
     } catch (error) {
       if (request !== previewRequest.current || intent !== `${activeProjectId}\u0000${prompt}`) return
-      const detail = String(error)
       setPreview(null)
-      setPreviewError(detail)
+      if (!(error instanceof ApiRequestError)) {
+        setPreviewBlocker(null)
+        setPreviewError('The local SpecTide API could not be reached. Your selected project and task draft are still here. Retry after reconnecting.')
+        setPreviewState('disconnected')
+        setApiConnection('disconnected')
+        setView('routing')
+        return
+      }
+      const decoded = error instanceof ApiRequestError ? decodePreviewApiFailure(error.body) : null
+      const blocker = decoded?.preview_blockers[0] ?? {
+        category: 'UNKNOWN' as const,
+        message: 'The route preview could not be completed. Review project readiness before trying again.',
+        remediation: { target: 'readiness' as const, label: 'Review project readiness' },
+      }
+      setPreviewBlocker(blocker)
+      setPreviewError('')
       setPreviewState(connection === 'disconnected' ? 'disconnected' : 'blocked')
+      setView('routing')
+      if (connection !== 'disconnected') {
+        void refreshProjectContext()
+      }
     }
   }
 
@@ -393,80 +496,76 @@ export function App() {
     <div className="layout">
       <aside className="rail">
         <div className="brand"><span className="brand-mark">S</span><span>Spec<span className="accent">Tide</span></span></div>
-        <div className="locality"><span className="online-dot" />LOCAL CONTROL PLANE</div>
+        <div className="locality"><span className="online-dot" />Local control plane</div>
         <nav className="navigation" aria-label="Main navigation">
-          <button className={view === 'workflow' ? 'nav-item active' : 'nav-item'} aria-current={view === 'workflow' ? 'page' : undefined} onClick={() => setView('workflow')}><span aria-hidden="true">⌁</span> Workflow control</button>
-          <button className={view === 'history' ? 'nav-item active' : 'nav-item'} aria-current={view === 'history' ? 'page' : undefined} onClick={() => setView('history')}><span aria-hidden="true">◷</span> Run history</button>
-          <button className={view === 'routing' ? 'nav-item active' : 'nav-item'} aria-current={view === 'routing' ? 'page' : undefined} onClick={() => setView('routing')}><span aria-hidden="true">⌖</span> Route preview</button>
-          <button className={view === 'profiles' ? 'nav-item active' : 'nav-item'} aria-current={view === 'profiles' ? 'page' : undefined} onClick={() => setView('profiles')}><span aria-hidden="true">⌘</span> Profiles &amp; models</button>
-          <button className={view === 'readiness' ? 'nav-item active' : 'nav-item'} aria-current={view === 'readiness' ? 'page' : undefined} onClick={() => setView('readiness')}><span aria-hidden="true">✓</span> Profile readiness</button>
+          <button className={view === 'workflow' ? 'nav-item active' : 'nav-item'} aria-current={view === 'workflow' ? 'page' : undefined} onClick={() => navigateTo('workflow')}><span aria-hidden="true">⌁</span> Workflow control</button>
+          <button className={view === 'history' ? 'nav-item active' : 'nav-item'} aria-current={view === 'history' ? 'page' : undefined} onClick={() => navigateTo('history')}><span aria-hidden="true">◷</span> Run history</button>
+          <button className={view === 'routing' ? 'nav-item active' : 'nav-item'} aria-current={view === 'routing' ? 'page' : undefined} onClick={() => navigateTo('routing')}><span aria-hidden="true">⌖</span> Route preview</button>
+          <button className={view === 'profiles' ? 'nav-item active' : 'nav-item'} aria-current={view === 'profiles' ? 'page' : undefined} onClick={() => navigateTo('profiles')}><span aria-hidden="true">⌘</span> Profiles &amp; models</button>
+          <button className={view === 'readiness' ? 'nav-item active' : 'nav-item'} aria-current={view === 'readiness' ? 'page' : undefined} onClick={() => navigateTo('readiness')}><span aria-hidden="true">R</span> Profile readiness</button>
         </nav>
-        <div className="rail-footer"><span className="sim-pill">LOCAL</span><p>Each run is labeled from its persisted route and execution evidence.</p><code>127.0.0.1</code></div>
+        <div className="rail-footer"><span className="sim-pill">Local</span><p>Each run is labeled from its persisted route and execution evidence.</p><code>127.0.0.1</code></div>
       </aside>
 
       <main className="main">
         <header className="page-head">
-          <div><div className="eyebrow">SPEC-KIT · LOCAL WORKSPACE</div><h1>{view === 'profiles' ? 'Profiles & models' : view === 'readiness' ? 'Profile readiness' : view === 'routing' ? 'Route preview' : view === 'history' ? 'Run history' : 'Workflow control'}</h1><p className="status-line" role="status"><span className={`status-dot ${connection === 'disconnected' ? 'offline' : ''}`} />{message}</p></div>
-          <button className="button button-primary" disabled={busy || !token || !activeProjectId} onClick={() => void startRun('Run deterministic offline verification')}><span className="button-symbol">＋</span> Run offline demo</button>
+          <div><h1>{view === 'profiles' ? 'Profiles & models' : view === 'readiness' ? 'Profile readiness' : view === 'routing' ? 'Route preview' : view === 'history' ? 'Run history' : 'Workflow control'}</h1><p className="status-line" role="status"><span className={`status-dot ${connection === 'disconnected' ? 'offline' : ''}`} />{message}</p></div>
+          <button className="button button-secondary demo-toggle" aria-pressed={showDemo} onClick={() => setShowDemo((shown) => !shown)}>Offline demonstration · simulated</button>
         </header>
 
         <section className="project-scope" aria-label="Project scope">
           <label htmlFor="project-scope-select">Project scope</label>
-          <select id="project-scope-select" value={activeProjectId} onChange={(event) => setActiveProjectId(event.target.value)}>
+          <select id="project-scope-select" value={activeProjectId} onChange={(event) => chooseProject(event.target.value)}>
             <option value="">All projects</option>
             {projects.map((item) => <option value={item.id} key={item.id}>{item.display_name} · {item.canonical_path}</option>)}
           </select>
           <span>{activeProjectId ? `Showing ${activeProject?.display_name ?? 'selected project'} · ${totalRunCount ?? runs.length} runs` : `Showing all projects · ${totalRunCount ?? runs.length} runs${workspaceStatus?.local_only ? ' · local only' : ''}`}</span>
+          <button className="text-button" type="button" onClick={() => void refreshProjectContext()}>Refresh project state</button>
         </section>
-        <form className="add-project-form" onSubmit={(event) => void addProject(event)} aria-label="Add project">
-          <label htmlFor="add-project-path">Add an existing project</label>
-          <input id="add-project-path" type="text" autoComplete="off" placeholder="Absolute path to a project folder" value={newProjectPath} onChange={(event) => setNewProjectPath(event.target.value)} aria-describedby={addProjectError ? 'add-project-error' : undefined} />
-          <button className="button button-secondary" type="submit" disabled={addingProject || !token || !newProjectPath.trim()}>{addingProject ? 'Adding…' : 'Add project'}</button>
-          {addProjectError && <p id="add-project-error" className="form-error" role="alert">{addProjectError}</p>}
-        </form>
-        {activeProject && <div className={`project-readiness ${activeProject.readiness?.status === 'READY' ? 'ready' : ''}`} role="status">
-          <strong>{activeProject.display_name} · {activeProject.readiness?.status ?? 'READINESS UNKNOWN'}</strong>
-          <span>{activeProject.readiness?.reason ?? 'Refresh project status to assess configuration.'}</span>
-          {activeProject.readiness?.action && <span>{activeProject.readiness.action}</span>}
-          {activeProject.readiness?.status === 'MISSING_CONFIGURATION' || activeProject.readiness?.status === 'MISSING_ROUTE' ? <button className="text-button" onClick={() => setView('routing')}>Review route settings →</button> : null}
-          {activeProject.readiness?.status === 'MISSING_PROFILE' || activeProject.readiness?.status === 'PROFILE_NOT_AUTHORIZED' || activeProject.readiness?.status === 'CAPABILITY_NOT_VERIFIED' ? <button className="text-button" onClick={() => setView('profiles')}>Review provider profiles →</button> : null}
-        </div>}
+        {view === 'workflow' && <section className="readiness-path" aria-label="SpecTide readiness path">
+          <div className="readiness-context"><h2>{activeProject?.display_name ?? 'All projects'}</h2><p>{activeProject?.canonical_path ?? 'Choose one registered project to prepare work.'}</p></div>
+          <ol className="path-steps" aria-label="Route, profile access, capability evidence, dry preview, and start">
+            {['Route', 'Profile access', 'Capability evidence', 'Dry preview', 'Start'].map((step, index) => <li key={step} className={index === 0 && guidance.target === 'routing' || index === 1 && guidance.target === 'profiles' || index === 2 && guidance.target === 'readiness' ? 'current' : index < 3 && guidance.canPreview ? 'complete' : ''}><span>{index + 1}</span>{step}</li>)}
+          </ol>
+          <div className="next-action" role="status"><div><strong>{guidance.title}</strong><p>{connection === 'disconnected' ? guidance.explanation : activeProject?.readiness?.reason ?? guidance.explanation}</p></div><button className="button button-primary" onClick={() => guidance.target === 'preview' ? void previewRoutes() : guidance.target === 'retry' ? void retryReadiness() : followRemediation(guidance.target)} disabled={guidance.target === 'preview' && (!token || !prompt.trim())}>{guidance.actionLabel}</button></div>
+        </section>}
 
         {connection === 'disconnected' && <SharedStateSurface state="disconnected" message="The local SpecTide API cannot be reached. Persisted dashboard data may be stale." />}
+        {showDemo && <section className="panel simulated-demo" aria-label="Offline demonstration"><div className="panel-head"><div><span className="simulated-tag">Simulated · no API request</span><h2>Offline workflow example</h2></div><span className="count">Demo</span></div><p>This local example shows the shape of a workflow without contacting a provider or creating a run.</p><ol><li>Project selected</li><li>Routes checked · NOT_RUN</li><li>Provider execution · simulated</li></ol></section>}
         {view === 'routing' ? (
-          <section className="panel route-preview-panel" aria-label="Route preview surface"><div className="panel-head"><div><div className="eyebrow">DRY RUN · NO WORKFLOW STARTED</div><h2>Resolved provider routes</h2></div><span className="count">NOT RUN</span></div><p className="surface-copy">Preview the configured provider for each stage before starting work. The preview does not create a run or send repository content to a provider.</p><button className="button button-secondary preview-button" onClick={() => void previewRoutes()} disabled={!token}>Preview routes<span aria-hidden="true">→</span></button><RoutePreviewPanel state={previewState} preview={preview} error={previewError} /><div className="route-inputs"><label>Project path<input value={project} onChange={(event) => setProject(event.target.value)} /></label><label>Task prompt<textarea rows={2} value={prompt} onChange={(event) => setPrompt(event.target.value)} /></label></div></section>
+          <section className="panel route-preview-panel" aria-label="Route preview surface"><div className="panel-head"><div><h2>Resolved provider routes</h2></div><span className="count">NOT RUN</span></div><p className="surface-copy">Check the selected project’s configured provider routes. This preview creates no workflow or repository transfer.</p><button className="button button-secondary preview-button" onClick={() => void previewRoutes()} disabled={!token || !activeProjectId || !prompt.trim()}>Preview routes<span aria-hidden="true">→</span></button><RoutePreviewPanel state={previewState} preview={preview} blocker={previewBlocker} error={previewError} onRemediate={followRemediation} />{previewState === 'ready' && guidance.canStart && <button className="button button-primary" onClick={() => void startRun()} disabled={busy || !prompt.trim()}>{busy ? 'Starting…' : 'Start workflow'}</button>}</section>
         ) : view === 'readiness' ? (
           <ProfileReadinessPanel profiles={profiles} disconnected={connection === 'disconnected'} error={profileError} />
         ) : view === 'profiles' ? (
           <section className="panel profile-panel">
-            <div className="panel-head"><div><div className="eyebrow">LOCAL CONFIGURATION</div><h2>Registered profiles</h2></div><span className="count">{profiles.length} profiles</span></div>
+            <div className="panel-head"><div><h2>Registered profiles</h2></div><span className="count">{profiles.length} profiles</span></div>
             {profileError ? <div className="state-banner error" role="alert"><strong>Error loading profiles</strong><span>{profileError}</span></div> : profiles.length ? <div className="profile-list">{profiles.map((profile) => <article className="profile-row" key={profile.id}><div className="provider-icon">{profile.provider.slice(0, 1).toUpperCase()}</div><div className="profile-name"><strong>{profile.name}</strong><span>{profile.provider} · {profile.executable}</span></div><span className="scope">{profile.allowed_scopes.join(', ')}</span><span className="status-tag">{profile.capability?.authenticated ?? 'NOT PROBED'}</span></article>)}</div> : <div className="empty-state" role="status"><span className="empty-icon" aria-hidden="true">⌘</span><strong>No profiles registered</strong><p>Add a local profile with <code>spectide profiles add</code>. Credentials stay in the provider's own account store.</p></div>}
             <div className="notice"><strong>Capability boundary</strong><span>Profile presence does not verify authentication. Use <code>spectide doctor</code> to check local readiness.</span></div>
           </section>
         ) : view === 'history' ? (
-          <section className="panel history-panel"><div className="panel-head"><div><div className="eyebrow">PERSISTED RUNS</div><h2>All runs</h2></div><span className="count">{runs.length} total</span></div><RunList runs={runs} selected={selected} onSelect={setSelected} disconnected={connection === 'disconnected'} /></section>
+          <section className="panel history-panel"><div className="panel-head"><div><h2>All runs</h2></div><span className="count">{runs.length} total</span></div><RunList runs={runs} selected={selected} onSelect={setSelected} disconnected={connection === 'disconnected'} /></section>
         ) : (
           <>
             <section className="overview-grid">
-              <div className="panel runs-panel"><div className="panel-head"><div><div className="eyebrow">WORKSPACE ACTIVITY</div><h2>Recent runs</h2></div><button className="text-button" onClick={() => setView('history')}>View history <span>↗</span></button></div><RunList runs={runs.slice(0, 6)} selected={selected} onSelect={setSelected} disconnected={connection === 'disconnected'} /></div>
-              <div className="panel start-panel"><div className="panel-head"><div><div className="eyebrow">CONFIGURED WORKFLOW</div><h2>Start a workflow</h2></div><span className="small-icon">↗</span></div>
-                <form onSubmit={(event) => { event.preventDefault(); void startRun() }}>
-                  <label>Project path<input required value={project} onChange={(event) => setProject(event.target.value)} /></label>
-                  <label>Task prompt<textarea required rows={3} value={prompt} onChange={(event) => setPrompt(event.target.value)} /></label>
-                  <button className="button button-secondary" disabled={busy || !token}>{busy ? 'Starting…' : 'Start workflow'}<span>→</span></button>
-                </form>
-                <div className="inline-note"><span className="sim-dot" />Execution labels follow configured routes and persisted evidence.</div>
-              </div>
+              <div className="panel task-panel"><div className="panel-head"><div><h2>What should SpecTide do?</h2></div><span className="count">Not saved</span></div><label htmlFor="task-draft">Task prompt</label><textarea id="task-draft" rows={4} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="Describe the work for this project" /><p className="inline-note">The draft stays in this page and clears when you select another project.</p></div>
+              <div className="panel runs-panel"><div className="panel-head"><div><h2>Recent runs</h2></div><button className="text-button" onClick={() => navigateTo('history')}>View history <span>↗</span></button></div><RunList runs={runs.slice(0, 6)} selected={selected} onSelect={setSelected} /></div>
             </section>
 
+            <details className="project-management"><summary>Add or switch registered projects</summary><form className="add-project-form" onSubmit={(event) => void addProject(event)} aria-label="Add project">
+              <label htmlFor="add-project-path">Add an existing project</label>
+              <input id="add-project-path" type="text" autoComplete="off" placeholder="Absolute path to a project folder" value={newProjectPath} onChange={(event) => setNewProjectPath(event.target.value)} aria-describedby={addProjectError ? 'add-project-error' : undefined} />
+              <button className="button button-secondary" type="submit" disabled={addingProject || !token || !newProjectPath.trim()}>{addingProject ? 'Adding…' : 'Add project'}</button>
+              {addProjectError && <p id="add-project-error" className="form-error" role="alert">{addProjectError}</p>}
+            </form></details>
+
             <section className="panel detail-panel" aria-label="Run detail surface" aria-live="polite">
-              <div className="panel-head"><div><div className="eyebrow">OBSERVED WORKFLOW</div><h2>{selectedRun ? <>Run <code>{selectedRun.id.slice(0, 8)}</code></> : 'Run detail'}</h2></div>{selectedRun && <RunDetailStatus run={selectedRun} onPause={() => void runControl('pause')} onResume={() => void runControl('resume')} onCancel={() => void cancelRun()} />}</div>
+              <div className="panel-head"><div><h2>{selectedRun ? <>Run <code>{selectedRun.id.slice(0, 8)}</code></> : 'Run detail'}</h2></div>{selectedRun && <RunDetailStatus run={selectedRun} onPause={() => void runControl('pause')} onResume={() => void runControl('resume')} onCancel={() => void cancelRun()} />}</div>
               {!report ? <div className="empty-inline">Select a run to inspect its stages, routes, and evidence.</div> : <>
                 <div className="run-context"><span className="context-label">EXECUTION</span><span className={`execution-tag ${(report.acceptance?.execution ?? report.run.execution ?? 'UNKNOWN').toLowerCase()}`}>{report.acceptance?.execution ?? report.run.execution ?? 'UNKNOWN'}</span><span className="context-label">ACCEPTANCE</span><span>{report.acceptance?.verdict ?? 'NOT_RECORDED'}</span></div>
                 <div className="run-context"><span className="context-label">TASK</span><span>{report.run.prompt}</span><span className="context-label">PROJECT</span><code>{report.run.project}</code></div>
                 <div className="stage-list">{report.stages.map((stage, index) => {
                   const latest = (report.execution_attempts ?? []).filter((attempt) => attempt.stage === stage.key).at(-1)
-                  return <div className="stage-row" key={stage.id}><span className={stage.state === 'SUCCEEDED' ? 'stage-index complete' : 'stage-index'} aria-hidden="true">{stage.state === 'SUCCEEDED' ? '✓' : String(index + 1).padStart(2, '0')}</span><strong>{stage.key.replaceAll('_', ' ')}</strong><span className="stage-route">{stage.provider} <i>/</i> {stage.profile} <i>·</i> {latest?.model || stage.model || 'default'} <i>·</i> {latest?.effort || stage.effort || 'default effort'} <i>·</i> {latest ? `${latest.phase} iteration ${latest.iteration}` : `attempt ${stage.attempt}`}</span><span className={`stage-state ${stage.state === 'SUCCEEDED' ? 'good' : ''}`}>{stage.state}</span></div>
+                  return <div className="stage-row" key={stage.id}><span className={stage.state === 'SUCCEEDED' ? 'stage-index complete' : 'stage-index'} aria-hidden="true">{stage.state === 'SUCCEEDED' ? 'OK' : index + 1}</span><strong>{stage.key.replaceAll('_', ' ')}</strong><span className="stage-route">{stage.provider} <i>/</i> {stage.profile} <i>·</i> {latest?.model || stage.model || 'default'} <i>·</i> {latest?.effort || stage.effort || 'default effort'} <i>·</i> {latest ? `${latest.phase} iteration ${latest.iteration}` : `attempt ${stage.attempt}`}</span><span className={`stage-state ${stage.state === 'SUCCEEDED' ? 'good' : ''}`}>{stage.state}</span></div>
                 })}</div>
                 <ExecutionHistoryPanel attempts={report.execution_attempts ?? []} qualityExecutions={report.quality_executions ?? []} />
                 {!!report.routing_decisions?.length && <details className="route-details"><summary>Routing decisions <span>{report.routing_decisions.length} stages</span></summary><div className="route-list">{report.routing_decisions.map((decision) => <div key={decision.stage}><strong>{decision.stage}</strong><span>{decision.provider} / {decision.profile}</span><small>{decision.explanation}</small></div>)}</div></details>}
@@ -474,10 +573,10 @@ export function App() {
             </section>
 
             <section className="evidence-grid">
-              <div className="panel evidence-panel"><div className="panel-head"><div><div className="eyebrow">DURABLE EVENTS</div><h2>Activity stream</h2></div><span className={`live-label ${connection === 'disconnected' ? 'offline' : ''}`} role="status" aria-label={`Event stream ${!selected ? 'idle' : connection}`}><i /> {!selected ? 'SELECT RUN' : connection === 'disconnected' ? 'RECONNECTING' : 'LIVE'}</span></div><EventList events={events} /></div>
-              <div className="panel evidence-panel"><div className="panel-head"><div><div className="eyebrow">RECORDED VERDICTS</div><h2>Quality gates</h2></div><span className="count">{report?.gates.length ?? 0}</span></div><GateList gates={report?.gates ?? []} /></div>
+              <div className="panel evidence-panel"><div className="panel-head"><div><h2>Activity stream</h2></div><span className={`live-label ${connection === 'disconnected' ? 'offline' : ''}`} role="status" aria-label={`Event stream ${!selected ? 'idle' : connection}`}><i /> {!selected ? 'Select run' : connection === 'disconnected' ? 'Reconnecting' : 'Live'}</span></div><EventList events={events} /></div>
+              <div className="panel evidence-panel"><div className="panel-head"><div><h2>Quality gates</h2></div><span className="count">{report?.gates.length ?? 0}</span></div><GateList gates={report?.gates ?? []} /></div>
             </section>
-            {report && <section className="panel artifacts-panel"><div className="panel-head"><div><div className="eyebrow">RUN OUTPUTS</div><h2>Artifacts &amp; approvals</h2></div></div>{report.artifacts?.length || report.approvals?.length ? <div className="artifact-list">{report.artifacts?.map((artifact) => <div className="artifact-row" key={artifact.id}><span>▤</span><strong>{artifact.path}</strong><code>{artifact.sha256.slice(0, 12)}</code></div>)}<ApprovalActions approvals={report.approvals ?? []} runState={report.run.state} busy={approvalBusy} onResolve={(id, decision) => void resolveApproval(id, decision)} /></div> : <div className="empty-inline">No artifacts or approvals recorded for this run.</div>}</section>}
+            {report && <section className="panel artifacts-panel"><div className="panel-head"><div><h2>Artifacts &amp; approvals</h2></div></div>{report.artifacts?.length || report.approvals?.length ? <div className="artifact-list">{report.artifacts?.map((artifact) => <div className="artifact-row" key={artifact.id}><span>▤</span><strong>{artifact.path}</strong><code>{artifact.sha256.slice(0, 12)}</code></div>)}<ApprovalActions approvals={report.approvals ?? []} runState={report.run.state} busy={approvalBusy} onResolve={(id, decision) => void resolveApproval(id, decision)} /></div> : <div className="empty-inline">No artifacts or approvals recorded for this run.</div>}</section>}
           </>
         )}
         <footer className="footer"><span>SpecTide <b>{appVersion}</b></span><span>Run labels come from persisted route configuration and stage evidence</span></footer>
@@ -492,7 +591,7 @@ export function ApprovalActions({ approvals, runState, busy = '', onResolve }: {
 
 export function RunList({ runs, selected, onSelect, disconnected = false }: { runs: Run[]; selected: string; onSelect: (id: string) => void; disconnected?: boolean }) {
   if (!runs.length) return <><div className="empty-state compact" role="status" aria-label="Empty run list"><span className="empty-icon" aria-hidden="true">⌁</span><strong>No runs recorded yet</strong><p>Start a configured workflow or run the offline demo.</p></div>{disconnected && <SharedStateSurface state="disconnected" message="Run history may be stale while the local API is unavailable." />}</>
-  return <>{disconnected && <SharedStateSurface state="disconnected" message="Run history may be stale while the local API is unavailable." />}<div className="run-list" aria-label="Run list">{runs.map((run) => <button key={run.id} className={`run-card ${selected === run.id ? 'selected' : ''}`} onClick={() => onSelect(run.id)}><span className="run-avatar" aria-hidden="true">{run.state === 'COMPLETED' ? '✓' : run.state === 'RUNNING' ? '◌' : '·'}</span><span className="run-copy"><strong>{run.prompt}</strong><span>{run.project} <i aria-hidden="true">·</i> {new Date(run.created_at).toLocaleString()}</span></span>{run.execution && <span className={`execution-tag ${run.execution.toLowerCase()}`}>{run.execution}</span>}<span className={`state-pill ${runTone(run.state)}`}>{run.state}</span></button>)}</div></>
+  return <>{disconnected && <SharedStateSurface state="disconnected" message="Run history may be stale while the local API is unavailable." />}<div className="run-list" aria-label="Run list">{runs.map((run) => <button key={run.id} className={`run-card ${selected === run.id ? 'selected' : ''}`} onClick={() => onSelect(run.id)}><span className="run-avatar" aria-hidden="true">{run.state === 'COMPLETED' ? 'C' : run.state === 'RUNNING' ? 'R' : '·'}</span><span className="run-copy"><strong>{run.prompt}</strong><span>{run.project} <i aria-hidden="true">·</i> {new Date(run.created_at).toLocaleString()}</span></span>{run.execution && <span className={`execution-tag ${run.execution.toLowerCase()}`}>{run.execution}</span>}<span className={`state-pill ${runTone(run.state)}`}>{run.state}</span></button>)}</div></>
 }
 
 export function RunDetailStatus({ run, onPause, onResume, onCancel }: { run: Run; onPause: () => void; onResume: () => void; onCancel: () => void }) {
@@ -514,21 +613,21 @@ export function ExecutionHistoryPanel({ attempts, qualityExecutions }: { attempt
     <h3>Provider invocations</h3>
     {!attempts.length ? <div className="empty-inline">No provider invocation history is recorded.</div> : <div className="stage-list">{attempts.map((attempt) => <div className="stage-row" key={attempt.id} data-active={attempt.id === active?.id || undefined}><span className="stage-index" aria-hidden="true">{attempt.iteration}</span><strong>{attempt.phase} · {attempt.result === 'RUNNING' ? 'ACTIVE' : attempt.result}</strong><span className="stage-route">{attempt.provider} / {attempt.profile} · {attempt.model || 'default'} · {attempt.effort || 'default effort'} · iteration {attempt.iteration}</span><span className="stage-state">{attempt.duration_ms} ms</span></div>)}</div>}
     <h3>Quality execution history</h3>
-    {!qualityExecutions.length ? <div className="empty-inline">No local quality execution history is recorded.</div> : <div className="gate-list">{qualityExecutions.map((execution) => <article className="gate-row" key={execution.id}><span className="gate-symbol">{execution.verdict === 'PASS' ? '✓' : '!'}</span><span className="gate-name"><strong>{execution.phase} · iteration {execution.iteration} · {execution.verdict}</strong>{execution.results.map((result) => <small key={result.key}>{result.key}: {result.verdict}{result.summary ? ` · ${result.summary}` : ''}</small>)}</span><span className={`gate-verdict ${execution.verdict === 'PASS' ? 'good' : ''}`}>{execution.results.length} checks</span></article>)}</div>}
+    {!qualityExecutions.length ? <div className="empty-inline">No local quality execution history is recorded.</div> : <div className="gate-list">{qualityExecutions.map((execution) => <article className="gate-row" key={execution.id}><span className="gate-symbol">{execution.verdict === 'PASS' ? 'OK' : '!'}</span><span className="gate-name"><strong>{execution.phase} · iteration {execution.iteration} · {execution.verdict}</strong>{execution.results.map((result) => <small key={result.key}>{result.key}: {result.verdict}{result.summary ? ` · ${result.summary}` : ''}</small>)}</span><span className={`gate-verdict ${execution.verdict === 'PASS' ? 'good' : ''}`}>{execution.results.length} checks</span></article>)}</div>}
   </section>
 }
 
 function GateList({ gates }: { gates: Report['gates'] }) {
   if (!gates.length) return <div className="empty-inline">Quality evidence has not been recorded.</div>
-  return <div className="gate-list">{gates.map((gate) => <div className="gate-row" key={gate.key}><span className="gate-symbol">{gate.verdict === 'PASS' ? '✓' : '!'}</span><span className="gate-name"><strong>{gate.key.replaceAll('_', ' ')}</strong><small>{gate.evidence}</small></span><span className={`gate-verdict ${gate.verdict === 'PASS' ? 'good' : ''}`}>{gate.verdict}</span></div>)}</div>
+  return <div className="gate-list">{gates.map((gate) => <div className="gate-row" key={gate.key}><span className="gate-symbol">{gate.verdict === 'PASS' ? 'OK' : '!'}</span><span className="gate-name"><strong>{gate.key.replaceAll('_', ' ')}</strong><small>{gate.evidence}</small></span><span className={`gate-verdict ${gate.verdict === 'PASS' ? 'good' : ''}`}>{gate.verdict}</span></div>)}</div>
 }
 
-export function RoutePreviewPanel({ state, preview, error }: { state: PreviewState; preview: RoutePreview | null; error: string }) {
+export function RoutePreviewPanel({ state, preview, blocker, error, onRemediate }: { state: PreviewState; preview: RoutePreview | null; blocker: PreviewBlocker | null; error: string; onRemediate: (target: string) => void }) {
   if (state === 'idle') return <div className="empty-inline" role="status">Route preview has not been run. No work starts from this screen.</div>
   if (state === 'disconnected') return <SharedStateSurface state="disconnected" message={error || 'Connect to the local API to preview routes.'} />
-  if (state === 'blocked') return <SharedStateSurface state="error" title="Blocked" message={error || 'The configured route is not authorized.'} />
+  if (state === 'blocked') return <section className="preview-recovery" role="alert" aria-label="Route preview blocked"><div className="recovery-heading"><strong>Blocked · NOT_RUN</strong><span>No workflow or repository transfer occurred.</span></div><p>{blocker?.message ?? 'The route preview could not be completed. Review project readiness before trying again.'}</p>{(blocker?.stage || blocker?.profile || blocker?.provider) && <dl>{blocker.stage && <div><dt>Stage</dt><dd>{blocker.stage.replaceAll('_', ' ')}</dd></div>}{blocker.profile && <div><dt>Profile</dt><dd>{blocker.profile}</dd></div>}{blocker.provider && <div><dt>Provider</dt><dd>{blocker.provider}</dd></div>}</dl>}<button className="button button-secondary" onClick={() => onRemediate(blocker?.remediation.target ?? 'readiness')}>{blocker?.remediation.label ?? 'Review project readiness'}</button></section>
   if (!preview?.decisions.length) return <div className="empty-inline" role="status">No route decisions were returned.</div>
-  return <div className="route-preview-results" role="status" aria-label="Ready route preview"><p><strong>Ready · NOT RUN</strong><span>Mode: {preview.mode} · Execution: {preview.execution}</span></p><div className="route-list">{preview.decisions.map((decision) => <div key={decision.stage}><strong>{decision.stage.replaceAll('_', ' ')}</strong><span>{decision.route.provider} / {decision.route.profile} · {decision.route.model || 'default model'} · {decision.route.effort || 'default effort'}</span><small>{decision.explanation}</small></div>)}</div></div>
+  return <div className="route-preview-results" role="status" aria-label="Ready route preview"><p><strong>Ready · NOT_RUN</strong><span>Mode: {preview.mode} · Execution: {preview.execution}</span></p><p className="preview-assurance">No workflow or repository transfer occurred.</p><div className="route-list">{preview.decisions.map((decision) => <div key={decision.stage}><strong>{decision.stage.replaceAll('_', ' ')}</strong><span>{decision.route.provider} / {decision.route.profile} · {decision.route.model || 'default model'} · {decision.route.effort || 'default effort'}</span><small>{decision.explanation}</small></div>)}</div></div>
 }
 
 export function SharedStateSurface({ state, title, message }: { state: 'empty' | 'error' | 'disconnected'; title?: string; message: string }) {
@@ -537,7 +636,7 @@ export function SharedStateSurface({ state, title, message }: { state: 'empty' |
 }
 
 export function ProfileReadinessPanel({ profiles, disconnected, error }: { profiles: Profile[]; disconnected: boolean; error: string }) {
-  return <section className="panel readiness-panel" aria-label="Profile readiness surface"><div className="panel-head"><div><div className="eyebrow">LOCAL PROVIDER CAPABILITIES</div><h2>Profile readiness</h2></div><span className="count">{profiles.length} profiles</span></div>
+  return <section className="panel readiness-panel" aria-label="Profile readiness surface"><div className="panel-head"><div><h2>Profile readiness</h2></div><span className="count">{profiles.length} profiles</span></div>
     {disconnected ? <SharedStateSurface state="disconnected" message="Profile readiness cannot be refreshed while the local API is unavailable." /> : error ? <SharedStateSurface state="error" message={error} /> : profiles.length === 0 ? <div className="empty-state" role="status"><strong>No profiles to assess</strong><p>Register a provider profile to see its observed readiness.</p></div> : <div className="readiness-list">{profiles.map((profile) => {
       const capability = profile.capability
       const ready = capability?.authenticated === 'AUTHENTICATED' && capability.executable_found && capability.read_only_execution && capability.workspace_write

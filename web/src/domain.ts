@@ -17,6 +17,79 @@ export interface Project {
   readiness?: { status: string; reason: string; action?: string }
 }
 
+export type PreviewBlockerCategory =
+  | 'MISSING_ROUTE'
+  | 'MISSING_PROFILE'
+  | 'PROFILE_NOT_AUTHORIZED'
+  | 'CAPABILITY_NOT_VERIFIED'
+  | 'PROJECT_UNAVAILABLE'
+  | 'CONFIGURATION_INVALID'
+  | 'UNKNOWN'
+
+export type PreviewRemediationTarget = 'routing' | 'profiles' | 'readiness' | 'project-selection'
+
+export interface PreviewRemediation {
+  target: PreviewRemediationTarget
+  label: string
+}
+
+export interface PreviewBlocker {
+  category: PreviewBlockerCategory
+  message: string
+  remediation: PreviewRemediation
+  stage?: string
+  profile?: string
+  provider?: string
+}
+
+export interface DecodedApiFailure {
+  error?: { code?: string; message?: string; request_id?: string }
+  execution?: 'NOT_RUN'
+  dry_run?: boolean
+  preview_blockers: PreviewBlocker[]
+}
+
+const previewBlockerCategories: PreviewBlockerCategory[] = [
+  'MISSING_ROUTE', 'MISSING_PROFILE', 'PROFILE_NOT_AUTHORIZED', 'CAPABILITY_NOT_VERIFIED',
+  'PROJECT_UNAVAILABLE', 'CONFIGURATION_INVALID', 'UNKNOWN',
+]
+const remediationTargets: PreviewRemediationTarget[] = ['routing', 'profiles', 'readiness', 'project-selection']
+
+export function decodePreviewApiFailure(body: string): DecodedApiFailure | null {
+  try {
+    const value: unknown = JSON.parse(body)
+    if (!value || typeof value !== 'object') return null
+    const record = value as Record<string, unknown>
+    if (!Array.isArray(record.preview_blockers) || record.preview_blockers.length !== 1) return null
+    const item = record.preview_blockers[0] as Record<string, unknown> | null
+    if (!item || typeof item !== 'object' || !previewBlockerCategories.includes(item.category as PreviewBlockerCategory) || typeof item.message !== 'string') return null
+    const remediation = item.remediation as Record<string, unknown> | null
+    if (!remediation || typeof remediation !== 'object' || !remediationTargets.includes(remediation.target as PreviewRemediationTarget) || typeof remediation.label !== 'string') return null
+    const safeOptional = (field: string) => typeof item[field] === 'string' && /^[a-zA-Z0-9._-]{1,80}$/.test(item[field] as string) ? item[field] as string : undefined
+    const blocker: PreviewBlocker = {
+      category: item.category as PreviewBlockerCategory,
+      message: item.message.slice(0, 240),
+      remediation: { target: remediation.target as PreviewRemediationTarget, label: remediation.label.slice(0, 80) },
+      ...(safeOptional('stage') ? { stage: safeOptional('stage') } : {}),
+      ...(safeOptional('profile') ? { profile: safeOptional('profile') } : {}),
+      ...(safeOptional('provider') ? { provider: safeOptional('provider') } : {}),
+    }
+    const apiError = record.error && typeof record.error === 'object' ? record.error as Record<string, unknown> : undefined
+    return {
+      preview_blockers: [blocker],
+      ...(apiError ? { error: {
+        ...(typeof apiError.code === 'string' ? { code: apiError.code } : {}),
+        ...(typeof apiError.message === 'string' ? { message: apiError.message.slice(0, 240) } : {}),
+        ...(typeof apiError.request_id === 'string' ? { request_id: apiError.request_id.slice(0, 80) } : {}),
+      } } : {}),
+      dry_run: record.dry_run === true,
+      execution: record.execution === 'NOT_RUN' ? 'NOT_RUN' : undefined,
+    }
+  } catch {
+    return null
+  }
+}
+
 export interface WorkspaceStatus {
   workspace_id: string
   version: string

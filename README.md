@@ -95,6 +95,8 @@ The dashboard starts at [http://127.0.0.1:4747](http://127.0.0.1:4747) and shows
 
 You can pass `--project /absolute/path/to/repository` when running from another directory or in scripts.
 
+In the dashboard, select one registered project to see its readiness path and next action. Add a task in the single in-memory draft, choose **Preview routes**, and review the resolved stages before the separate **Start workflow** action. A preview always reports `NOT_RUN`; a blocked preview explains the safe immediate cause and links to its local recovery view without creating a run or transferring repository content. Selecting another project clears the draft. The **Offline demonstration · simulated** control opens a local example and does not call the workflow API.
+
 ## Connect a coding agent
 
 Install and sign in to one provider first. Keep credentials in that provider's own tooling; never put API keys or tokens in `.spectide/config.json`.

@@ -4,6 +4,7 @@ import { mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
 const screenshotDir = resolve(import.meta.dirname, '../../docs/screenshots')
+const baselineDir = resolve(import.meta.dirname, '../../.taste-skill/before')
 const stageKeys = ['constitution', 'specify', 'clarify', 'plan', 'checklist', 'tasks', 'analyze', 'implement', 'tests', 'converge', 'final_review', 'report']
 const run = {
   id: 'browser-run-001',
@@ -50,7 +51,7 @@ const profile = {
   capability: { provider: 'codex', executable_found: true, version: '1.2.3', authenticated: 'AUTHENTICATED', read_only_execution: true, workspace_write: true },
 }
 
-type FixtureOptions = { runs?: unknown[]; profiles?: unknown[]; error?: string; versionError?: boolean; report?: unknown; previewError?: string }
+type FixtureOptions = { runs?: unknown[]; profiles?: unknown[]; error?: string; versionError?: boolean; report?: unknown; previewError?: string; previewBlocker?: Record<string, unknown>; previewDelayMs?: number; previewTransportFailure?: boolean; projectUnavailable?: boolean }
 
 const projectFixture = { id: 'browser-project-001', canonical_path: '/workspace/demo', display_name: 'Browser demo', readiness: { status: 'READY', reason: 'Fixture configuration is ready.' } }
 const secondProjectFixture = { id: 'browser-project-002', canonical_path: '/workspace/second', display_name: 'Second project', readiness: { status: 'READY', reason: 'Fixture configuration is ready.' } }
@@ -77,15 +78,19 @@ async function installAPI(page: Page, options: FixtureOptions = {}) {
       projects.push(added)
       return route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(added) })
     }
-    if (path === '/api/v1/projects') return route.fulfill({ contentType: 'application/json', body: JSON.stringify(projects) })
+    if (path === '/api/v1/projects') return route.fulfill({ contentType: 'application/json', body: JSON.stringify(options.projectUnavailable ? [] : projects) })
     if (path === '/api/v1/workspace/status') return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ workspace_id: 'browser-workspace-001', version: 'test', dashboard_url: 'http://127.0.0.1:4747', local_only: true }) })
     if (path === '/api/v1/runs' && route.request().method() === 'POST') {
       const body = route.request().postDataJSON() as { dry_run?: boolean; project_id?: string }
       if (body.dry_run) {
-        if (options.previewError) return route.fulfill({ status: 422, contentType: 'application/json', body: JSON.stringify({ error: { code: 'ROUTE_PREVIEW_BLOCKED', message: options.previewError }, execution: 'NOT_RUN' }) })
+        if (options.previewTransportFailure) return route.abort('failed')
+        if (options.previewDelayMs) await new Promise((resolveDelay) => setTimeout(resolveDelay, options.previewDelayMs))
+        if (options.previewError) return route.fulfill({ status: 422, contentType: 'application/json', body: JSON.stringify({ error: { code: 'ROUTE_PREVIEW_BLOCKED', message: options.previewError, request_id: 'internal-support-id' }, request_id: 'internal-support-id', execution: 'NOT_RUN', dry_run: true, preview_blockers: [options.previewBlocker ?? { category: 'UNKNOWN', message: 'The route preview could not be completed. Review project readiness before trying again.', remediation: { target: 'readiness', label: 'Review project readiness' } }] }) })
         return route.fulfill({ contentType: 'application/json', body: JSON.stringify(readyPreview) })
       }
-      return route.fulfill({ status: 409, contentType: 'application/json', body: '{"error":"unexpected run creation in browser acceptance"}' })
+    const started = { ...run, id: 'started-browser-run', project_id: body.project_id, prompt: route.request().postDataJSON().prompt, state: 'RUNNING' }
+    options.runs = [started, ...(options.runs ?? [])]
+    return route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify(started) })
     }
     if (path === '/api/v1/runs') {
       if (options.error === 'runs') return route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"run store unavailable"}' })
@@ -126,6 +131,17 @@ async function saveScreenshot(page: Page, name: string) {
   await page.screenshot({ path: resolve(screenshotDir, `${name}.png`), fullPage: true })
 }
 
+test('capture workflow guidance baseline at desktop, tablet, and phone widths', async ({ page }) => {
+  await open(page)
+  await selectProject(page)
+  await page.getByRole('button', { name: /Workflow control/ }).click()
+  await mkdir(baselineDir, { recursive: true })
+  for (const width of [1440, 768, 390]) {
+    await page.setViewportSize({ width, height: 1000 })
+    await page.screenshot({ path: resolve(baselineDir, `workflow-${width}.png`), fullPage: true })
+  }
+})
+
 test('run history and detail render with accessible status labels', async ({ page }) => {
   await open(page)
   await page.getByRole('button', { name: /Run history/ }).click()
@@ -156,6 +172,7 @@ test('project scope filters by stable ID and adds a third project from one absol
   await page.getByRole('button', { name: /Project A workflow/ }).click()
   await expect(page.getByText('project-a-run fixture activity')).toBeVisible()
   await expect(page.getByText('project-b-run fixture activity')).toHaveCount(0)
+  await page.getByText('Add or switch registered projects').click()
   await page.locator('#add-project-path').focus()
   await page.keyboard.type('/workspace/third')
   await page.keyboard.press('Tab')
@@ -173,10 +190,13 @@ test('empty, failed, and disconnected dashboard surfaces are labeled and accessi
   await expect(page.getByText('No runs recorded yet')).toBeVisible()
   await scan(page, 'empty-run-list')
 
-  await page.getByRole('button', { name: /Route preview/ }).click()
+  await page.getByRole('button', { name: /Workflow control/ }).click()
   await selectProject(page)
+  await page.locator('#task-draft').fill('Check the current route')
   await page.getByRole('button', { name: /Preview routes/ }).click()
-  await expect(page.getByRole('alert', { name: 'error state' })).toContainText('PROJECT_PATH_UNAVAILABLE')
+  await expect(page.getByRole('alert', { name: 'Route preview blocked' })).toContainText('NOT_RUN')
+  await expect(page.getByRole('alert', { name: 'Route preview blocked' })).not.toContainText('PROJECT_PATH_UNAVAILABLE')
+  await expect(page.getByRole('alert', { name: 'Route preview blocked' })).not.toContainText('internal-support-id')
   await saveScreenshot(page, 'route-preview-blocked-desktop')
   await scan(page, 'route-preview-error')
 
@@ -190,17 +210,18 @@ test('empty, failed, and disconnected dashboard surfaces are labeled and accessi
   const profileErrorPage = await page.context().newPage()
   await open(profileErrorPage, { error: 'profiles' })
   await profileErrorPage.getByRole('button', { name: /Profiles & models/ }).click()
-  await expect(profileErrorPage.getByRole('alert')).toContainText('profile store unavailable')
+  await expect(profileErrorPage.getByRole('alert')).toContainText('Request failed (503)')
   await scan(profileErrorPage, 'profile-error')
   await profileErrorPage.close()
 })
 
 test('ready route preview, profile empty states, and profile readiness are accessible', async ({ page }) => {
   await open(page)
-  await page.getByRole('button', { name: /Route preview/ }).click()
   await selectProject(page)
+  await page.locator('#task-draft').fill('Verify the configured stage routes')
   await page.getByRole('button', { name: /Preview routes/ }).click()
-  await expect(page.getByRole('status', { name: 'Ready route preview' })).toContainText('NOT RUN')
+  await expect(page.getByRole('status', { name: 'Ready route preview' })).toContainText('NOT_RUN')
+  await expect(page.getByRole('status', { name: 'Ready route preview' })).toContainText('No workflow or repository transfer occurred.')
   await expect(page.locator('.route-preview-results .route-list > div')).toHaveCount(12)
   await saveScreenshot(page, 'route-preview-desktop')
   await scan(page, 'route-preview')
@@ -213,6 +234,87 @@ test('ready route preview, profile empty states, and profile readiness are acces
   await expect(page.getByText('No profiles to assess')).toBeVisible()
   await saveScreenshot(page, 'profile-readiness-empty-desktop')
   await scan(page, 'profile-readiness')
+})
+
+test('one selected project and draft carry through preview to an explicit start', async ({ page }) => {
+  await open(page, { runs: [] })
+  await selectProject(page)
+  await page.locator('#task-draft').fill('Implement the selected project request')
+  await page.getByRole('button', { name: 'Preview routes' }).click()
+  await expect(page.getByRole('status', { name: 'Ready route preview' })).toContainText('NOT_RUN')
+  await expect(page.getByRole('status', { name: 'Ready route preview' })).toContainText('No workflow or repository transfer occurred.')
+  await page.getByRole('button', { name: 'Start workflow' }).click()
+  await expect(page.locator('.status-line')).toContainText('1 active')
+  await expect(page.getByRole('button', { name: /Implement the selected project request.*RUNNING/ })).toBeVisible()
+  await expect(page.locator('.status-line')).not.toContainText('Unable to start')
+})
+
+test('pending preview results are discarded when the selected project changes', async ({ page }) => {
+  await open(page, { runs: [], previewDelayMs: 900 })
+  await selectProject(page)
+  await page.locator('#task-draft').fill('Preview the first project')
+  await page.getByRole('button', { name: 'Preview routes' }).click()
+  await page.locator('#project-scope-select').selectOption(secondProjectFixture.id)
+  await expect(page.locator('#task-draft')).toHaveValue('')
+  await page.waitForTimeout(1000)
+  await page.getByRole('button', { name: 'Route preview' }).click()
+  await expect(page.getByText('Route preview has not been run. No work starts from this screen.')).toBeVisible()
+  await expect(page.getByText(/browser-fixture.*deterministic/)).toHaveCount(0)
+})
+
+test('an unavailable active project keeps its task draft and disables preview actions', async ({ page }) => {
+  const options: FixtureOptions = { runs: [] }
+  await open(page, options)
+  await selectProject(page)
+  await page.locator('#task-draft').fill('Keep this unsent request in memory')
+  options.projectUnavailable = true
+  await page.getByRole('button', { name: 'Refresh project state' }).click()
+  await expect(page.locator('#project-scope-select')).toHaveValue('', { timeout: 7000 })
+  await expect(page.locator('#task-draft')).toHaveValue('Keep this unsent request in memory')
+  await page.getByRole('button', { name: 'Route preview' }).click()
+  await expect(page.getByRole('button', { name: 'Preview routes' })).toBeDisabled()
+  await page.getByRole('button', { name: 'Workflow control' }).click()
+  await expect(page.locator('#task-draft')).toHaveValue('Keep this unsent request in memory')
+})
+
+test('blocked previews show bounded recovery for every blocker category', async ({ page }) => {
+  const cases = [
+    { category: 'MISSING_ROUTE', target: 'routing', label: 'Review route settings', message: 'Routes are not configured for this project.' },
+    { category: 'MISSING_PROFILE', target: 'profiles', label: 'Review profile setup', message: 'Profile browser-fixture is needed for the constitution stage.', stage: 'constitution', profile: 'browser-fixture', provider: 'codex' },
+    { category: 'PROFILE_NOT_AUTHORIZED', target: 'profiles', label: 'Review profile access', message: 'The selected profile is not authorized for this project.' },
+    { category: 'CAPABILITY_NOT_VERIFIED', target: 'readiness', label: 'Review profile readiness', message: 'Provider capability evidence needs verification.' },
+    { category: 'UNKNOWN', target: 'readiness', label: 'Review project readiness', message: 'The route preview could not be completed safely.' },
+  ]
+  for (const item of cases) {
+    const recoveryPage = await page.context().newPage()
+    await open(recoveryPage, { previewError: 'raw-internal-diagnostic /private/repo', previewBlocker: { category: item.category, message: item.message, remediation: { target: item.target, label: item.label }, ...(item.stage ? { stage: item.stage, profile: item.profile, provider: item.provider } : {}) } })
+    await selectProject(recoveryPage)
+    await recoveryPage.locator('#task-draft').fill('Check blocked routes')
+    await recoveryPage.getByRole('button', { name: /Preview routes/ }).click()
+    const recovery = recoveryPage.getByRole('alert', { name: 'Route preview blocked' })
+    await expect(recovery).toContainText('NOT_RUN')
+    await expect(recovery).toContainText(item.message)
+    await expect(recovery).not.toContainText('raw-internal-diagnostic')
+    await expect(recovery).not.toContainText('internal-support-id')
+    await recoveryPage.getByRole('button', { name: item.label }).click()
+    await expect(recoveryPage.locator('h1')).toHaveText(item.target === 'profiles' ? 'Profiles & models' : item.target === 'readiness' ? 'Profile readiness' : 'Route preview')
+    await scan(recoveryPage, `preview-${item.category.toLowerCase()}`)
+    await recoveryPage.close()
+  }
+})
+
+test('route-preview transport failure is disconnected and preserves project and task context', async ({ page }) => {
+  await open(page, { previewTransportFailure: true })
+  await selectProject(page)
+  await page.locator('#task-draft').fill('Keep this task for retry')
+  await page.getByRole('button', { name: /Preview routes/ }).click()
+  const disconnected = page.locator('.route-preview-panel [aria-label="disconnected state"]')
+  await expect(disconnected).toContainText('could not be reached')
+  await expect(disconnected).toContainText('task draft are still here')
+  await scan(page, 'route-preview-transport-disconnected')
+  await page.getByRole('button', { name: /Workflow control/ }).click()
+  await expect(page.locator('#project-scope-select')).toHaveValue(projectFixture.id)
+  await expect(page.locator('#task-draft')).toHaveValue('Keep this task for retry')
 })
 
 test('two viewers agree, keyboard focus is visible, reduced motion is honored, and 200% zoom reflows', async ({ browser }) => {
@@ -307,8 +409,10 @@ test('all 26 required dashboard page and state pairs pass Axe', async ({ page, c
   }
 
   await page.reload()
-  await page.getByRole('button', { name: /Route preview/ }).click()
+  await page.getByRole('button', { name: /Workflow control/ }).click()
   await selectProject(page)
+  await page.locator('#task-draft').fill('Check the selected project route')
+  await page.getByRole('button', { name: /Route preview/ }).click()
   await page.getByRole('button', { name: /Preview routes/ }).click()
   await expect(page.getByRole('status', { name: 'Ready route preview' })).toBeVisible()
   await scan(page, 'route-preview-ready')

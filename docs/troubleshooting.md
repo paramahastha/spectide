@@ -19,4 +19,12 @@
 | `RETENTION_CAP_ACTIVE` | All detailed-history slots are active. Wait for a terminal run before retrying. |
 | Provider `NOT_FOUND` or `FOUND_NOT_AUTHENTICATED` | Install the CLI or authenticate through its own supported account flow. SpecTide probes do not inspect or copy credentials. |
 
+## Dashboard route preview
+
+The dashboard's **All projects** scope is for observing run history. Select one registered project to use the readiness action and task draft. The route preview rechecks current server readiness on every request and reports `NOT_RUN` for both ready and blocked outcomes. A blocked result has a safe cause and a local remediation action; its support request ID is secondary and is not needed to decide what to fix. A preview does not create a run, stage, event, provider invocation, or repository transfer.
+
+If a project changes after the dashboard loads, preview or start it again to see the current prerequisite. A rejected start refreshes the selected project's readiness; it does not imply that a run began. If the local API is disconnected, use **Retry after reconnecting** before acting on any previous readiness message. Your unsent task draft stays in the open page if the selected project becomes unavailable, and project-specific actions remain disabled until you choose an available project.
+
+The task draft exists only in the current page session and clears when you select another project. The offline demonstration is labeled simulated and makes no API request.
+
 Collect `spectide doctor`, `spectide list`, and `spectide report RUN_ID` output for local diagnosis. Review and redact repository-specific information before sharing a report.

@@ -30,7 +30,7 @@ const preview = {
   mode: 'hybrid',
   decisions: [{ stage: 'implement', route: { provider: 'fake', profile: 'offline', model: 'fixture-model', effort: 'high' }, explanation: 'deterministic offline route' }],
 }
-const projectFixture = { id: 'project-fixture', canonical_path: '/workspace/demo', display_name: 'demo' }
+const projectFixture = { id: 'project-fixture', canonical_path: '/workspace/demo', display_name: 'demo', readiness: { status: 'READY', reason: 'Fixture project is ready.' } }
 let savedProjectSelection = ''
 const installProjectPreference = (value: string) => {
   savedProjectSelection = value
@@ -43,6 +43,43 @@ const installProjectPreference = (value: string) => {
 const selectProjectFixture = () => installProjectPreference(projectFixture.id)
 
 describe('FR-026 dashboard page and state matrix', () => {
+  it('keeps all-project scope observational and shares one transient task draft', async () => {
+    const second = { id: 'project-second', canonical_path: '/workspace/second', display_name: 'second', readiness: { status: 'READY', reason: 'Ready.' } }
+    const requests: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input); requests.push(`${init?.method ?? 'GET'} ${url}`)
+      if (url.endsWith('/api/v1/version')) return json({ csrf_token: 'csrf-fixture' })
+      if (url.endsWith('/api/v1/projects')) return json([projectFixture, second])
+      if (url.endsWith('/api/v1/workspace/status')) return json({ workspace_id: 'workspace-fixture', version: 'test', dashboard_url: 'http://127.0.0.1:4747', local_only: true })
+      if (url.endsWith('/api/v1/profiles')) return json([])
+      if (url.endsWith('/api/v1/runs') || url.includes('/api/v1/runs?project_id=')) return json([])
+      return json({}, 404)
+    }))
+    vi.stubGlobal('EventSource', class { close() {} addEventListener() {} })
+    installProjectPreference('')
+    render(<App />)
+    await screen.findByRole('option', { name: /demo/ })
+    expect((document.querySelector('#project-scope-select') as HTMLSelectElement).value).toBe('')
+    expect(screen.getByRole('button', { name: 'Select a project' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Preview routes' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Route preview' }))
+    expect(screen.getByRole('button', { name: 'Preview routes' }).hasAttribute('disabled')).toBe(true)
+    expect(requests.some((request) => request.startsWith('POST '))).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Offline demonstration · simulated' }))
+    expect(await screen.findByRole('region', { name: 'Offline demonstration' })).toBeTruthy()
+    expect(screen.getByText('Simulated · no API request')).toBeTruthy()
+    expect(requests.some((request) => request.startsWith('POST '))).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Workflow control' }))
+    fireEvent.change(document.querySelector('#project-scope-select')!, { target: { value: projectFixture.id } })
+    fireEvent.change(screen.getByLabelText('Task prompt'), { target: { value: 'Keep this only for the current project' } })
+    expect(screen.getAllByLabelText('Task prompt')).toHaveLength(1)
+    expect(screen.queryByLabelText('Project path')).toBeNull()
+    fireEvent.change(document.querySelector('#project-scope-select')!, { target: { value: second.id } })
+    expect((screen.getByLabelText('Task prompt') as HTMLTextAreaElement).value).toBe('')
+    expect(screen.queryByText(/Route preview has not been run/)).toBeNull()
+    expect(requests.some((request) => request.startsWith('POST '))).toBe(false)
+  })
+
   it('defaults to All projects, filters server activity by project ID, and adds only an absolute path', async () => {
     const second = { id: 'project-second', canonical_path: '/workspace/second', display_name: 'second' }
     const third = { id: 'project-third', canonical_path: '/workspace/third', display_name: 'third' }
@@ -105,7 +142,7 @@ describe('FR-026 dashboard page and state matrix', () => {
       if (url.endsWith('/api/v1/projects')) return json([first, second])
       if (url.endsWith('/api/v1/workspace/status')) return json({ workspace_id: 'workspace-fixture', version: 'test', dashboard_url: 'http://127.0.0.1:4747', local_only: true })
       if (url.endsWith('/api/v1/profiles')) return json([])
-      if (url.endsWith('/api/v1/runs')) return json([])
+      if (url.endsWith('/api/v1/runs') || url.includes('/api/v1/runs?project_id=')) return json([])
       return json({}, 404)
     }))
     vi.stubGlobal('EventSource', class { close() {} addEventListener() {} })
@@ -116,8 +153,9 @@ describe('FR-026 dashboard page and state matrix', () => {
     fireEvent.click(screen.getByRole('button', { name: /Review route settings/ }))
     expect(screen.getByRole('heading', { name: 'Route preview' })).toBeTruthy()
     fireEvent.change(document.querySelector('#project-scope-select')!, { target: { value: second.id } })
+    fireEvent.click(screen.getByRole('button', { name: /Workflow control/ }))
     expect(await screen.findByText('A provider profile needs authorization.')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: /Review provider profiles/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Review profile access/ }))
     expect(screen.getByRole('heading', { name: 'Profiles & models' })).toBeTruthy()
   })
 
@@ -194,12 +232,19 @@ describe('FR-026 dashboard page and state matrix', () => {
   )
 
   it('renders route-preview ready, blocked, and disconnected states', () => {
-    const { rerender } = render(<RoutePreviewPanel state="ready" preview={preview} error="" />)
-    expect(screen.getByText(/Ready · NOT RUN/)).toBeTruthy()
+    const remedy = vi.fn()
+    const { rerender } = render(<RoutePreviewPanel state="ready" preview={preview} blocker={null} error="" onRemediate={remedy} />)
+    expect(screen.getByText(/Ready · NOT_RUN/)).toBeTruthy()
     expect(screen.getByText(/fixture-model.*high/)).toBeTruthy()
-    rerender(<RoutePreviewPanel state="blocked" preview={null} error="PROFILE_NOT_ALLOWED" />)
-    expect(screen.getByRole('alert').textContent).toContain('PROFILE_NOT_ALLOWED')
-    rerender(<RoutePreviewPanel state="disconnected" preview={null} error="API unavailable" />)
+    rerender(<RoutePreviewPanel state="blocked" preview={null} blocker={{ category: 'MISSING_PROFILE', message: 'Profile local-codex is needed for the constitution stage.', remediation: { target: 'profiles', label: 'Review profile setup' }, stage: 'constitution', profile: 'local-codex', provider: 'codex' }} error="" onRemediate={remedy} />)
+    expect(screen.getByRole('alert', { name: 'Route preview blocked' }).textContent).toContain('NOT_RUN')
+    expect(screen.getByRole('alert', { name: 'Route preview blocked' }).textContent).toContain('constitution')
+    fireEvent.click(screen.getByRole('button', { name: 'Review profile setup' }))
+    expect(remedy).toHaveBeenCalledWith('profiles')
+    rerender(<RoutePreviewPanel state="blocked" preview={null} blocker={{ category: 'CAPABILITY_NOT_VERIFIED', message: 'Provider authentication evidence needs verification.', remediation: { target: 'readiness', label: 'Review profile readiness' } }} error="" onRemediate={remedy} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Review profile readiness' }))
+    expect(remedy).toHaveBeenLastCalledWith('readiness')
+    rerender(<RoutePreviewPanel state="disconnected" preview={null} blocker={null} error="API unavailable" onRemediate={remedy} />)
     expect(screen.getByRole('status').textContent).toContain('Disconnected')
   })
 
@@ -231,14 +276,15 @@ describe('FR-026 dashboard page and state matrix', () => {
     Object.defineProperty(globalThis.crypto, 'randomUUID', { configurable: true, value: () => 'preview-key-12345678' })
     selectProjectFixture()
     render(<App />)
-    fireEvent.click(await screen.findByRole('button', { name: /Route preview/ }))
+    await screen.findByRole('option', { name: /demo/ })
+    fireEvent.change(screen.getByLabelText('Task prompt'), { target: { value: 'Check the selected project routes' } })
     fireEvent.click(await screen.findByRole('button', { name: /Preview routes/ }))
-    expect(await screen.findByText(/Ready · NOT RUN/)).toBeTruthy()
+    expect(await screen.findByText(/Ready · NOT_RUN/)).toBeTruthy()
     expect(requestBody?.dry_run).toBe(true)
     expect(requestBody?.project_id).toBe(projectFixture.id)
   })
 
-  it.each(['Project path', 'Task prompt'])('ignores a route preview that resolves after %s changes', async (field) => {
+  it.each(['Project scope', 'Task prompt'])('ignores a route preview that resolves after %s changes', async (field) => {
     let resolvePreview!: (response: Response) => void
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
@@ -254,10 +300,15 @@ describe('FR-026 dashboard page and state matrix', () => {
     Object.defineProperty(globalThis.crypto, 'randomUUID', { configurable: true, value: () => 'preview-key-delayed' })
     selectProjectFixture()
     render(<App />)
-    fireEvent.click(await screen.findByRole('button', { name: /Route preview/ }))
+    await screen.findByRole('option', { name: /demo/ })
+    fireEvent.change(screen.getByLabelText('Task prompt'), { target: { value: 'Check route state' } })
     fireEvent.click(await screen.findByRole('button', { name: /Preview routes/ }))
-    fireEvent.change(screen.getByLabelText(field), { target: { value: field === 'Project path' ? '/workspace/changed-during-preview' : 'Changed intent while preview is pending' } })
+    if (field === 'Project scope') {
+      const second = { id: 'project-second', canonical_path: '/workspace/second', display_name: 'second', readiness: { status: 'READY', reason: 'Ready.' } }
+      fireEvent.change(document.querySelector('#project-scope-select')!, { target: { value: second.id } })
+    } else fireEvent.change(screen.getByLabelText('Task prompt'), { target: { value: 'Changed intent while preview is pending' } })
     await act(async () => { resolvePreview(await json(preview)) })
+    fireEvent.click(screen.getByRole('button', { name: /Route preview/ }))
     expect(screen.getByText(/Route preview has not been run/)).toBeTruthy()
     expect(screen.queryByText(/fixture-model/)).toBeNull()
   })
@@ -369,31 +420,71 @@ describe('FR-026 dashboard page and state matrix', () => {
     Object.defineProperty(globalThis.crypto, 'randomUUID', { configurable: true, value: () => 'preview-key-12345678' })
     selectProjectFixture()
     render(<App />)
-    fireEvent.click(await screen.findByRole('button', { name: /Route preview/ }))
+    await screen.findByRole('option', { name: /demo/ })
+    fireEvent.change(screen.getByLabelText('Task prompt'), { target: { value: 'Check route state' } })
     fireEvent.click(await screen.findByRole('button', { name: /Preview routes/ }))
     expect(await screen.findByText(/fixture-model.*high/)).toBeTruthy()
-    fireEvent.change(screen.getByLabelText('Project path'), { target: { value: '/workspace/other' } })
+    fireEvent.change(document.querySelector('#project-scope-select')!, { target: { value: '' } })
     expect(screen.getByText(/Route preview has not been run/)).toBeTruthy()
     expect(screen.queryByText(/fixture-model/)).toBeNull()
   })
 
-  it('clears disconnected state after run-list recovery without a selected event stream', async () => {
+  it('shows a route-preview transport failure as disconnected and keeps the selected project and task', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/version')) return json({ csrf_token: 'csrf-fixture' })
+      if (url.endsWith('/api/v1/projects')) return json([projectFixture])
+      if (url.endsWith('/api/v1/workspace/status')) return json({ workspace_id: 'workspace-fixture', version: 'test', dashboard_url: 'http://127.0.0.1:4747', local_only: true })
+      if (url.endsWith('/api/v1/profiles')) return json([])
+      if (url.endsWith('/api/v1/runs') && init?.method === 'POST') throw new TypeError('Failed to fetch')
+      if (url.endsWith('/api/v1/runs') || url.includes('/api/v1/runs?project_id=')) return json([])
+      return json({}, 404)
+    }))
+    vi.stubGlobal('EventSource', class { close() {} addEventListener() {} })
+    Object.defineProperty(globalThis.crypto, 'randomUUID', { configurable: true, value: () => 'preview-key-12345678' })
+    selectProjectFixture()
+    render(<App />)
+    await screen.findByRole('option', { name: /demo/ })
+    fireEvent.change(screen.getByLabelText('Task prompt'), { target: { value: 'Keep this task for retry' } })
+    fireEvent.click(screen.getByRole('button', { name: /Preview routes/ }))
+    const previewDisconnected = await waitFor(() => {
+      const panel = document.querySelector('.route-preview-panel [aria-label="disconnected state"]')
+      if (!panel) throw new Error('route-preview disconnected surface not rendered')
+      return panel
+    })
+    expect(previewDisconnected.textContent).toContain('could not be reached')
+    fireEvent.click(screen.getByRole('button', { name: 'Workflow control' }))
+    expect((screen.getByLabelText('Task prompt') as HTMLTextAreaElement).value).toBe('Keep this task for retry')
+    expect((document.querySelector('#project-scope-select') as HTMLSelectElement).value).toBe(projectFixture.id)
+  })
+
+  it('refreshes disconnected state from an explicit retry without background polling', async () => {
     vi.useFakeTimers()
     let disconnected = true
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
       if (url.endsWith('/api/v1/version')) return json({ csrf_token: 'csrf-fixture' })
       if (url.endsWith('/api/v1/profiles')) return disconnected ? Promise.reject(new Error('offline')) : json([])
       if (url.endsWith('/api/v1/runs')) return disconnected ? Promise.reject(new Error('offline')) : json([])
+      if (url.endsWith('/api/v1/projects')) return json([])
+      if (url.endsWith('/api/v1/workspace/status')) return json({ workspace_id: 'workspace-fixture', version: 'test', dashboard_url: 'http://127.0.0.1:4747', local_only: true })
       return json({}, 404)
-    }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
     vi.stubGlobal('EventSource', class { close() {} addEventListener() {} })
     render(<App />)
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
     expect(screen.getAllByLabelText('disconnected state').length).toBeGreaterThan(0)
+    const requestsWhileOffline = fetchMock.mock.calls.length
     disconnected = false
     await act(async () => { await vi.advanceTimersByTimeAsync(1800) })
-    expect(screen.queryByLabelText('disconnected state')).toBeNull()
+    expect(fetchMock.mock.calls.length).toBe(requestsWhileOffline)
+    expect(screen.getAllByLabelText('disconnected state').length).toBeGreaterThan(0)
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Retry after reconnecting' }))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(requestsWhileOffline)
     vi.useRealTimers()
   })
 
@@ -448,9 +539,9 @@ describe('FR-026 dashboard page and state matrix', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
     expect(MockEventSource.instances.length).toBeGreaterThan(0)
     await act(async () => { MockEventSource.instances[0].onerror?.() })
-    expect(screen.getAllByText(/RECONNECTING/).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/Reconnecting/).length).toBeGreaterThan(0)
     await act(async () => { await vi.advanceTimersByTimeAsync(1800) })
-    expect(screen.getAllByText(/RECONNECTING/).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/Reconnecting/).length).toBeGreaterThan(0)
     vi.useRealTimers()
   })
 
@@ -641,7 +732,7 @@ describe('FR-026 dashboard page and state matrix', () => {
     const originalStreams = MockEventSource.instances.slice(0, 2)
     await act(async () => originalStreams.forEach((stream) => stream.emit(1, 'provider.event')))
     await act(async () => { originalStreams.forEach((stream) => stream.onerror?.()) })
-    expect(screen.getAllByText(/RECONNECTING/).length).toBe(2)
+    expect(screen.getAllByText(/Reconnecting/).length).toBe(2)
 
     snapshot = {
       ...snapshot,
@@ -679,7 +770,7 @@ describe('FR-026 dashboard page and state matrix', () => {
         expect.stringContaining('provider codex turn completed'),
       ])
       expect(container.querySelectorAll('.event-row')).toHaveLength(5)
-      expect(container.querySelector('[aria-label="Event stream connected"]')?.textContent).toContain('LIVE')
+      expect(container.querySelector('[aria-label="Event stream connected"]')?.textContent).toContain('Live')
     }
     expect(replayStreams[0].url).toContain('after=1')
   })
@@ -739,7 +830,7 @@ describe('FR-026 automated accessibility scan', () => {
     const containers = [
       render(<RunList runs={[run('RUNNING')]} selected="" onSelect={() => undefined} />).container,
       detail,
-      render(<section aria-label="Route preview surface"><h2>Route preview</h2><RoutePreviewPanel state="ready" preview={preview} error="" /></section>).container,
+      render(<section aria-label="Route preview surface"><h2>Route preview</h2><RoutePreviewPanel state="ready" preview={preview} blocker={null} error="" onRemediate={() => undefined} /></section>).container,
       render(<ProfileReadinessPanel profiles={[profile]} disconnected={false} error="" />).container,
       render(<SharedStateSurface state="empty" message="No reports yet" />).container,
       render(<SharedStateSurface state="error" message="The report is unavailable" />).container,

@@ -238,30 +238,35 @@ func (s *Server) validateConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) previewProject(ctx context.Context, project, prompt string) (map[string]any, error) {
+	preview, err, _ := s.previewProjectWithConfig(ctx, project, prompt)
+	return preview, err
+}
+
+func (s *Server) previewProjectWithConfig(ctx context.Context, project, prompt string) (map[string]any, error, *config.Config) {
 	root, err := canonicalProject(project)
 	if err != nil {
-		return nil, err
+		return nil, err, nil
 	}
 	if _, err = s.Store.ProjectByPath(ctx, root); err != nil {
-		return nil, fmt.Errorf("PROJECT_NOT_REGISTERED")
+		return nil, fmt.Errorf("PROJECT_NOT_REGISTERED"), nil
 	}
 	configPath, err := safeProjectConfigPath(root)
 	if err != nil {
-		return nil, err
+		return nil, err, nil
 	}
 	cfg, err := config.LoadEffective(config.GlobalPath(), configPath)
 	if err != nil {
-		return nil, err
+		return nil, err, nil
 	}
 	profiles, err := s.Store.Profiles(ctx)
 	if err != nil {
-		return nil, err
+		return nil, err, &cfg
 	}
 	decisions, err := routing.ValidateLaunch(cfg, root, prompt, profiles)
 	if err != nil {
-		return nil, err
+		return nil, err, &cfg
 	}
-	return map[string]any{"dry_run": true, "valid": true, "execution": "NOT_RUN", "mode": cfg.RoutingMode, "decisions": decisions}, nil
+	return map[string]any{"dry_run": true, "valid": true, "execution": "NOT_RUN", "mode": cfg.RoutingMode, "decisions": decisions}, nil, &cfg
 }
 
 func queryInteger(r *http.Request, name string, fallback int) (int, error) {
@@ -288,16 +293,20 @@ func apiError(w http.ResponseWriter, status int, code, message string) {
 	jsonOut(w, status, contractError(code, message, requestID))
 }
 
-func apiPreviewBlocked(w http.ResponseWriter, code, message string) {
+func apiPreviewBlocked(w http.ResponseWriter, code, message string, blockers ...PreviewBlocker) {
 	requestID := w.Header().Get("X-Request-ID")
 	if requestID == "" {
 		requestID = newRequestID()
 		w.Header().Set("X-Request-ID", requestID)
 	}
-	response := contractError(code, message, requestID)
+	response := contractError(code, "The selected project's routes need attention before they can be previewed.", requestID)
 	response["execution"] = "NOT_RUN"
 	response["dry_run"] = true
-	response["blocked_reasons"] = []string{security.Redact(message)}
+	blocker := classifyPreviewBlocker(errors.New(message), nil)
+	if len(blockers) > 0 {
+		blocker = blockers[0]
+	}
+	response["preview_blockers"] = []PreviewBlocker{blocker}
 	jsonOut(w, http.StatusUnprocessableEntity, response)
 }
 
@@ -529,15 +538,19 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 		if in.ProjectID != "" {
 			resolved, resolveErr := (projectsvc.Service{Store: s.Store}).ResolveID(r.Context(), strings.TrimSpace(in.ProjectID))
 			if resolveErr != nil {
+				if in.DryRun {
+					apiPreviewBlocked(w, "ROUTE_PREVIEW_BLOCKED", "PROJECT_NOT_REGISTERED", classifyPreviewBlocker(errors.New("PROJECT_NOT_REGISTERED"), nil))
+					return
+				}
 				apiError(w, http.StatusUnprocessableEntity, "PROJECT_NOT_REGISTERED", "project_id does not identify an available registered project")
 				return
 			}
 			projectPath = resolved.CanonicalPath
 		}
 		if in.DryRun {
-			preview, err := s.previewProject(r.Context(), projectPath, in.Prompt)
+			preview, err, cfg := s.previewProjectWithConfig(r.Context(), projectPath, in.Prompt)
 			if err != nil {
-				apiPreviewBlocked(w, "ROUTE_PREVIEW_BLOCKED", err.Error())
+				apiPreviewBlocked(w, "ROUTE_PREVIEW_BLOCKED", err.Error(), classifyPreviewBlocker(err, cfg))
 				return
 			}
 			jsonOut(w, http.StatusOK, preview)
