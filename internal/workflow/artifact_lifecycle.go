@@ -74,7 +74,12 @@ func existingOwnerArtifact(projectRoot, featureDir, stage string) (string, bool,
 	return filepath.ToSlash(rel), true, nil
 }
 
-func stageCommandRequired(projectRoot, featureDir, stage string) (bool, error) {
+func stageCommandRequired(projectRoot, featureDir, stage string, specificationIntent ...string) (bool, error) {
+	// An explicitly requested amendment is the one exception to Specify's
+	// create-once policy: it updates the selected feature's existing spec.
+	if stage == "specify" && len(specificationIntent) > 0 && specificationIntent[0] == specificationIntentAmend {
+		return true, nil
+	}
 	_, present, err := existingOwnerArtifact(projectRoot, featureDir, stage)
 	if err != nil {
 		return false, err

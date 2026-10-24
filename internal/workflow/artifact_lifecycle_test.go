@@ -44,6 +44,38 @@ func TestExistingOwnerArtifactPreservesConstitutionAndPartialProductSpec(t *test
 	}
 }
 
+func TestSpecifyAmendmentIntentRunsDespiteExistingSpecification(t *testing.T) {
+	root := t.TempDir()
+	feature := filepath.Join(root, "specs", "001-product")
+	if err := os.MkdirAll(feature, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(feature, "spec.md"), []byte("# Existing specification\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if required, err := stageCommandRequired(root, feature, "specify", specificationIntentContinue); err != nil || required {
+		t.Fatalf("continuation required=%v err=%v, want preserved", required, err)
+	}
+	if required, err := stageCommandRequired(root, feature, "specify", specificationIntentAmend); err != nil || !required {
+		t.Fatalf("amendment required=%v err=%v, want invocation", required, err)
+	}
+}
+
+func TestSpecificationIntentRecognizesPhaseAmendmentPrompts(t *testing.T) {
+	for _, prompt := range []string{
+		"Implement spec based on this plan for next phase",
+		"Start a new phase for the selected feature",
+		"Amend specification for the selected feature",
+	} {
+		if got := specificationIntentForPrompt(prompt); got != specificationIntentAmend {
+			t.Errorf("specificationIntentForPrompt(%q)=%q, want %q", prompt, got, specificationIntentAmend)
+		}
+	}
+	if got := specificationIntentForPrompt("Continue implementation against the accepted specification"); got != specificationIntentContinue {
+		t.Fatalf("continuation intent=%q, want %q", got, specificationIntentContinue)
+	}
+}
+
 func TestExistingOwnerArtifactRejectsConstitutionSymlinkEscape(t *testing.T) {
 	root, outside := t.TempDir(), t.TempDir()
 	feature := filepath.Join(root, "specs", "001-product")

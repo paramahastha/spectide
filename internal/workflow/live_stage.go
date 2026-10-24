@@ -65,6 +65,14 @@ func (e *Engine) runLiveStageWithControlOptions(ctx context.Context, run model.R
 		}
 	}()
 	evidence, err := e.runLiveStagePromptPhase(child, run, stage, phase, route, prompt, installation, featureDir, options...)
+	if err != nil && stage == "clarify" && strings.Contains(err.Error(), "STAGE_EXPLICIT_NO_OP_REQUIRED: SPECTIDE_NO_CLARIFICATION") && child.Err() == nil {
+		if eventErr := e.store.Event(context.Background(), run.ID, stage, "stage.corrective_retry", "warning", map[string]any{"reason": "clarify completed without required no-op evidence", "execution": "LIVE"}); eventErr != nil {
+			err = eventErr
+		} else {
+			repairPrompt := strings.TrimSpace(prompt) + "\n\nYour previous Clarify response completed without valid no-op evidence. Repair the result now: either update only the selected spec.md when clarification is needed, or emit exactly one standalone SPECTIDE_NO_CLARIFICATION: <specific reason> line."
+			evidence, err = e.runLiveStagePromptPhase(child, run, stage, "clarify_format_repair", route, repairPrompt, installation, featureDir, options...)
+		}
+	}
 	close(stop)
 	<-done
 	if err != nil {

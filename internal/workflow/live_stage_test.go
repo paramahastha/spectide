@@ -38,6 +38,7 @@ type liveFixtureAdapter struct {
 	analyzeStart    string
 	analyzeRelease  string
 	repairMarker    string
+	clarifyOutputs  []string
 	analyzeBarrier  sync.Once
 }
 
@@ -100,6 +101,10 @@ func (a *liveFixtureAdapter) Build(request adapters.Request) (runner.Invocation,
 	a.efforts = append(a.efforts, request.Effort)
 	a.prompts = append(a.prompts, request.Prompt)
 	output := "{\"type\":\"message\"}"
+	if request.Stage == "clarify" && len(a.clarifyOutputs) > 0 {
+		output = a.clarifyOutputs[0]
+		a.clarifyOutputs = a.clarifyOutputs[1:]
+	}
 	if request.Stage == "plan" {
 		path := filepath.Join(request.ProjectRoot, "specs", "001-product", "plan.md")
 		return runner.Invocation{Binary: "/bin/sh", Args: []string{"-c", "printf '%s\\n' '# Implementation Plan' '' '## Summary' 'Bounded fixture plan.' > \"" + path + "\"; printf '%s' 'plan generated'"}, Dir: request.ProjectRoot, Timeout: request.Timeout}, nil
@@ -734,6 +739,64 @@ func TestExecutableReplacementAfterProbeInvalidatesProfileCapability(t *testing.
 	events, err := state.Events(ctx, run.ID, 0)
 	if err != nil || len(events) == 0 || events[len(events)-1].Type != "profile.capability_invalidated" {
 		t.Fatalf("capability invalidation was not reported: events=%+v err=%v", events, err)
+	}
+}
+
+func TestClarifyRetriesOnceForMissingNoopEvidence(t *testing.T) {
+	ctx := context.Background()
+	state, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	project := t.TempDir()
+	feature := filepath.Join(project, "specs", "001-product")
+	if err = os.MkdirAll(feature, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(feature, "spec.md"), []byte("# Product\n\n## Requirements\n\n- The selected feature has a valid, existing specification with detailed requirements and acceptance criteria for its current behavior.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	commandPath := filepath.Join(project, ".specify", "commands", "clarify.md")
+	if err = os.MkdirAll(filepath.Dir(commandPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	command := []byte("Clarify the selected specification. Input: $ARGUMENTS")
+	if err = os.WriteFile(commandPath, command, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	projectCanonical := canonicalTestDirectory(t, project)
+	digest := sha256.Sum256(command)
+	installation := speckit.Installation{ProjectRoot: projectCanonical, Verified: true, Commands: map[string]string{"clarify": "/speckit.clarify"}, CommandFiles: map[string]string{"clarify": ".specify/commands/clarify.md"}, CommandHashes: map[string]string{"clarify": hex.EncodeToString(digest[:])}}
+	profile := model.Profile{Name: "fixture", Provider: "codex", Executable: "/bin/sh", AllowedScopes: []string{project}}
+	if _, err = state.SaveProfile(ctx, profile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = state.SaveProfileCapability(ctx, profile.Name, verifiedFixtureCapability(t, "codex", "/bin/sh", "")); err != nil {
+		t.Fatal(err)
+	}
+	run, _, err := state.CreateRunWithConfiguration(ctx, "", project, "clarify existing feature", []byte(`[]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &liveFixtureAdapter{clarifyOutputs: []string{"Clarification review complete.", "SPECTIDE_NO_CLARIFICATION: existing specification is complete and internally consistent"}}
+	engine := NewWithAdapters(state, adapter)
+	evidence, cancelled, err := engine.runLiveStageWithControl(ctx, run, "clarify", config.Route{Provider: "codex", Profile: "fixture"}, run.Prompt, installation, feature)
+	if err != nil || cancelled || evidence["no_op_reason"] == nil {
+		t.Fatalf("corrective retry evidence=%+v cancelled=%v err=%v", evidence, cancelled, err)
+	}
+	attempts, err := state.ExecutionAttempts(ctx, run.ID)
+	if err != nil || len(attempts) != 2 || attempts[0].Result != "FAILED" || attempts[1].Result != "SUCCEEDED" || attempts[1].Phase != "clarify_format_repair" {
+		t.Fatalf("clarify attempts=%+v err=%v", attempts, err)
+	}
+	seenRetry := false
+	for _, event := range reportEvents(t, state, run.ID) {
+		if event.Type == "stage.corrective_retry" {
+			seenRetry = true
+		}
+	}
+	if !seenRetry || len(adapter.prompts) != 2 || !strings.Contains(adapter.prompts[1], "Repair the result now") {
+		t.Fatalf("corrective retry was not persisted or constrained: events=%+v prompts=%q", reportEvents(t, state, run.ID), adapter.prompts)
 	}
 }
 

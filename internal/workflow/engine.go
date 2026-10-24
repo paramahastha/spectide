@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -132,7 +133,7 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 				blockedStage, blockedReason = stage, "LIVE_STAGE_UNSUPPORTED: no verified Spec-Kit command for "+stage
 			} else if installationErr != nil {
 				blockedStage, blockedReason = stage, installationErr.Error()
-			} else if required, pathErr := stageCommandRequired(workspace, featureDir, stage); pathErr != nil {
+			} else if required, pathErr := stageCommandRequired(workspace, featureDir, stage, specificationIntentForPrompt(prompt)); pathErr != nil {
 				blockedStage, blockedReason = stage, pathErr.Error()
 			} else if required {
 				if _, requireErr := speckit.RequireStage(installation, liveSpecKitStage(stage)); requireErr != nil {
@@ -160,6 +161,7 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 		return model.Run{}, false, fmt.Errorf("QUALITY_CHECK_MANIFEST_DRIFT")
 	}
 	effective := buildEffectiveRunConfiguration(cfg, decisions, profiles, qualityRegistry)
+	effective.SpecificationIntent = specificationIntentForPrompt(prompt)
 	if effective.QualitySelectionPolicy != "DISCOVER_AFTER_IMPLEMENTATION" {
 		effective.QualityManifestSHA256 = manifestHashAfter
 	}
@@ -388,7 +390,7 @@ func (e *Engine) Resume(id string) error {
 		if checkpointState.FeatureDirectory != "" {
 			featureDir = filepath.Join(run.Project, filepath.FromSlash(checkpointState.FeatureDirectory))
 		}
-		installation, featureDir, discoverErr := e.resumeSpecKit(run.Project, decisions, featureDir, checkpointState.NextStage)
+		installation, featureDir, discoverErr := e.resumeSpecKit(run.Project, decisions, featureDir, checkpointState.NextStage, effectiveConfiguration.SpecificationIntent)
 		if discoverErr != nil {
 			return e.blockUnverifiedRestart(run, discoverErr)
 		}
@@ -556,7 +558,7 @@ func (e *Engine) latestPausedStage(runID string) (string, error) {
 	return stage, nil
 }
 
-func (e *Engine) resumeSpecKit(project string, decisions map[string]config.Decision, featureDir, nextStage string) (speckit.Installation, string, error) {
+func (e *Engine) resumeSpecKit(project string, decisions map[string]config.Decision, featureDir, nextStage string, specificationIntent string) (speckit.Installation, string, error) {
 	for _, stage := range stages {
 		if decisions[stage].Route.Provider == "fake" {
 			continue
@@ -581,7 +583,7 @@ func (e *Engine) resumeSpecKit(project string, decisions map[string]config.Decis
 			if indexOfStage(routedStage) < indexOfStage(nextStage) {
 				continue
 			}
-			required, pathErr := stageCommandRequired(project, featureDir, routedStage)
+			required, pathErr := stageCommandRequired(project, featureDir, routedStage, specificationIntent)
 			if pathErr != nil {
 				return speckit.Installation{}, "", pathErr
 			}
@@ -731,6 +733,10 @@ func workerCancellationReason(ctx context.Context) string {
 		return cause.Error()
 	}
 	return "worker context cancelled"
+}
+
+func amendSpecificationPrompt(prompt string) string {
+	return strings.TrimSpace(prompt) + "\n\nThis is an amendment to the selected feature for a new phase. Update only its existing spec.md; preserve the feature directory, its identity, and prior requirements unless this request explicitly changes them. Do not create another feature directory or modify the Constitution."
 }
 
 func (e *Engine) cancelRunWithReason(runID, stage, stageID, reason string) error {
@@ -933,7 +939,7 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 				e.finish(r.ID)
 				return
 			}
-			if present {
+			if present && !(key == "specify" && effectiveConfiguration.SpecificationIntent == specificationIntentAmend) {
 				if err := e.store.SetStage(ctx, st.ID, model.Skipped); err != nil {
 					e.failPersistence(ctx, r.ID)
 					return
@@ -1162,7 +1168,11 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 				e.failPersistence(ctx, r.ID)
 				return
 			}
-			evidence, cancelled, runErr := e.runLiveStageWithControl(ctx, r, key, d, r.Prompt, installation, featureDir)
+			stagePrompt := r.Prompt
+			if key == "specify" && effectiveConfiguration.SpecificationIntent == specificationIntentAmend {
+				stagePrompt = amendSpecificationPrompt(r.Prompt)
+			}
+			evidence, cancelled, runErr := e.runLiveStageWithControl(ctx, r, key, d, stagePrompt, installation, featureDir)
 			if runErr != nil {
 				if cancelled {
 					reason := "cancellation requested"
