@@ -151,6 +151,7 @@ export interface ExecutionAttempt {
   result: string
   exit_code: number
   error?: string
+  evidence_json?: string
   artifact_ids?: string[]
 }
 

@@ -21,6 +21,19 @@ type PreviewState = 'idle' | 'ready' | 'blocked' | 'disconnected'
 type LocalEvent = { id?: string; run_id: string; seq: number; timestamp?: string; type: string; stage?: string; payload?: Record<string, unknown> }
 export type RoutePreview = { dry_run: boolean; execution: string; mode: string; decisions: Array<{ stage: string; route: { provider: string; profile: string; model?: string; effort?: string }; explanation: string }> }
 
+function modelLabel(provider: string, model?: string) { return model || (provider === 'codex' ? 'CLI default (not reported by provider)' : 'provider default') }
+function effortLabel(effort?: string) { return effort || 'provider default effort' }
+function usageEvidence(attempt: ExecutionAttempt): { resolved_model?: string; input_tokens?: number; output_tokens?: number } {
+  try {
+    const value: unknown = JSON.parse(attempt.evidence_json ?? '{}')
+    if (!value || typeof value !== 'object') return {}
+    const data = value as Record<string, unknown>
+    const safeModel = typeof data.resolved_model === 'string' && /^[A-Za-z0-9][A-Za-z0-9._/-]{0,119}$/.test(data.resolved_model) ? data.resolved_model : undefined
+    const safeTokens = (candidate: unknown) => typeof candidate === 'number' && Number.isSafeInteger(candidate) && candidate >= 0 ? candidate : undefined
+    return { ...(safeModel ? { resolved_model: safeModel } : {}), ...(safeTokens(data.input_tokens) !== undefined ? { input_tokens: safeTokens(data.input_tokens) } : {}), ...(safeTokens(data.output_tokens) !== undefined ? { output_tokens: safeTokens(data.output_tokens) } : {}) }
+  } catch { return {} }
+}
+
 class ApiRequestError extends Error {
   constructor(readonly status: number, readonly body: string) { super(`Request failed (${status})`) }
 }
@@ -59,6 +72,7 @@ export function App() {
   const previewRequest = useRef(0)
   const [view, setView] = useState<View>('workflow')
   const [prompt, setPrompt] = useState('')
+  const [featureSlug, setFeatureSlug] = useState('')
   const [busy, setBusy] = useState(false)
   const [approvalBusy, setApprovalBusy] = useState('')
   const [message, setMessage] = useState('Loading local run history…')
@@ -329,6 +343,7 @@ export function App() {
   function chooseProject(id: string) {
     if (id !== activeProjectId) {
       setPrompt('')
+      setFeatureSlug('')
       setPreview(null)
       setPreviewBlocker(null)
       setPreviewState('idle')
@@ -380,13 +395,14 @@ export function App() {
   }
   async function startRun(nextPrompt = prompt) {
     if (!token || busy || !activeProjectId || !nextPrompt.trim()) { if (!activeProjectId) setMessage('Select a registered project before starting work'); return }
+    if (/\b(next|new) phase\b/i.test(nextPrompt) && !featureSlug.trim()) { setMessage('Enter a new feature slug for this next-phase run before starting.'); return }
     setBusy(true)
     setMessage('Starting a workflow using the configured routes…')
     try {
       const created = await api<Run>('/api/v1/runs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
-        body: JSON.stringify({ project_id: activeProjectId, prompt: nextPrompt }),
+        body: JSON.stringify({ project_id: activeProjectId, prompt: nextPrompt, feature_slug: featureSlug.trim() }),
       })
       setSelected(created.id)
       setView('workflow')
@@ -453,20 +469,21 @@ export function App() {
     setPreviewError('')
     const request = ++previewRequest.current
     if (!activeProjectId) { setPreviewState('blocked'); setPreviewError('Select a registered project before previewing routes.'); return }
-    const intent = `${activeProjectId}\u0000${prompt}`
+    if (/\b(next|new) phase\b/i.test(prompt) && !featureSlug.trim()) { setPreviewState('blocked'); setPreviewError('Choose a new feature slug before previewing this next-phase run.'); return }
+    const intent = `${activeProjectId}\u0000${prompt}\u0000${featureSlug}`
     try {
       const result = await api<RoutePreview>('/api/v1/runs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
-        body: JSON.stringify({ project_id: activeProjectId, prompt, dry_run: true }),
+        body: JSON.stringify({ project_id: activeProjectId, prompt, feature_slug: featureSlug.trim(), dry_run: true }),
       })
-      if (request !== previewRequest.current || intent !== `${activeProjectId}\u0000${prompt}`) return
+      if (request !== previewRequest.current || intent !== `${activeProjectId}\u0000${prompt}\u0000${featureSlug}`) return
       setPreview(result)
       setPreviewState('ready')
       setView('routing')
       void refreshProjectContext()
     } catch (error) {
-      if (request !== previewRequest.current || intent !== `${activeProjectId}\u0000${prompt}`) return
+      if (request !== previewRequest.current || intent !== `${activeProjectId}\u0000${prompt}\u0000${featureSlug}`) return
       setPreview(null)
       if (!(error instanceof ApiRequestError)) {
         setPreviewBlocker(null)
@@ -547,7 +564,7 @@ export function App() {
         ) : (
           <>
             <section className="overview-grid">
-              <div className="panel task-panel"><div className="panel-head"><div><h2>What should SpecTide do?</h2></div><span className="count">Not saved</span></div><label htmlFor="task-draft">Task prompt</label><textarea id="task-draft" rows={4} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="Describe the work for this project" /><p className="inline-note">The draft stays in this page and clears when you select another project.</p></div>
+              <div className="panel task-panel"><div className="panel-head"><div><h2>What should SpecTide do?</h2></div><span className="count">Not saved</span></div><label htmlFor="task-draft">Task prompt</label><textarea id="task-draft" rows={4} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="Describe the work for this project" />{/\b(next|new) phase\b/i.test(prompt) && <><label htmlFor="feature-slug">New feature slug</label><input id="feature-slug" value={featureSlug} onChange={(event) => setFeatureSlug(event.target.value)} placeholder="e.g. 007-reporting-dashboard" /><p className="inline-note">Choose a new, unused slug. The existing active feature will stay unchanged.</p></>}<p className="inline-note">The draft stays in this page and clears when you select another project.</p></div>
               <div className="panel runs-panel"><div className="panel-head"><div><h2>Recent runs</h2></div><button className="text-button" onClick={() => navigateTo('history')}>View history <span>↗</span></button></div><RunList runs={runs.slice(0, 6)} selected={selected} onSelect={setSelected} /></div>
             </section>
 
@@ -565,7 +582,7 @@ export function App() {
                 <div className="run-context"><span className="context-label">TASK</span><span>{report.run.prompt}</span><span className="context-label">PROJECT</span><code>{report.run.project}</code></div>
                 <div className="stage-list">{report.stages.map((stage, index) => {
                   const latest = (report.execution_attempts ?? []).filter((attempt) => attempt.stage === stage.key).at(-1)
-                  return <div className="stage-row" key={stage.id}><span className={stage.state === 'SUCCEEDED' ? 'stage-index complete' : 'stage-index'} aria-hidden="true">{stage.state === 'SUCCEEDED' ? 'OK' : index + 1}</span><strong>{stage.key.replaceAll('_', ' ')}</strong><span className="stage-route">{stage.provider} <i>/</i> {stage.profile} <i>·</i> {latest?.model || stage.model || 'default'} <i>·</i> {latest?.effort || stage.effort || 'default effort'} <i>·</i> {latest ? `${latest.phase} iteration ${latest.iteration}` : `attempt ${stage.attempt}`}</span><span className={`stage-state ${stage.state === 'SUCCEEDED' ? 'good' : ''}`}>{stage.state}</span></div>
+                  return <div className="stage-row" key={stage.id}><span className={stage.state === 'SUCCEEDED' ? 'stage-index complete' : 'stage-index'} aria-hidden="true">{stage.state === 'SUCCEEDED' ? 'OK' : index + 1}</span><strong>{stage.key.replaceAll('_', ' ')}</strong><span className="stage-route">{stage.provider} <i>/</i> {stage.profile} <i>·</i> {modelLabel(latest?.provider || stage.provider, latest?.model || stage.model)} <i>·</i> {effortLabel(latest?.effort || stage.effort)} <i>·</i> {latest ? `${latest.phase} iteration ${latest.iteration}` : `attempt ${stage.attempt}`}</span><span className={`stage-state ${stage.state === 'SUCCEEDED' ? 'good' : ''}`}>{stage.state}</span></div>
                 })}</div>
                 <ExecutionHistoryPanel attempts={report.execution_attempts ?? []} qualityExecutions={report.quality_executions ?? []} />
                 {!!report.routing_decisions?.length && <details className="route-details"><summary>Routing decisions <span>{report.routing_decisions.length} stages</span></summary><div className="route-list">{report.routing_decisions.map((decision) => <div key={decision.stage}><strong>{decision.stage}</strong><span>{decision.provider} / {decision.profile}</span><small>{decision.explanation}</small></div>)}</div></details>}
@@ -602,7 +619,7 @@ export function EventList({ events }: { events: LocalEvent[] }) {
   if (!events.length) return <div className="empty-inline">Select a run to follow its persisted event stream.</div>
   return <div className="event-list">{events.map((event, index) => {
     const payload = event.payload ?? {}
-    const summaries = [payload.summary, payload.provider_event_type, payload.result, payload.verdict, payload.phase, payload.iteration != null ? `iteration ${payload.iteration}` : undefined, payload.dropped_count != null ? `${payload.dropped_count} events dropped` : undefined].filter((value): value is string => typeof value === 'string' && value.length > 0)
+    const summaries = [payload.error_code, payload.summary, payload.next_action, payload.provider_event_type, payload.result, payload.verdict, payload.phase, payload.iteration != null ? `iteration ${payload.iteration}` : undefined, payload.dropped_count != null ? `${payload.dropped_count} events dropped` : undefined].filter((value): value is string => typeof value === 'string' && value.length > 0)
     return <div className="event-row" key={`${event.id}-${index}`}><time>{event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : '—'}</time><span className="event-dot" /><span className="event-copy"><strong>{event.type.replaceAll('.', ' ')}</strong>{event.stage && <small>{event.stage}</small>}{summaries.map((summary, summaryIndex) => <small key={`${summaryIndex}-${summary}`}>{summary}</small>)}</span></div>
   })}</div>
 }
@@ -611,7 +628,8 @@ export function ExecutionHistoryPanel({ attempts, qualityExecutions }: { attempt
   const active = attempts.filter((attempt) => attempt.result === 'RUNNING').at(-1)
   return <section className="execution-history" aria-label="Provider and quality execution history">
     <h3>Provider invocations</h3>
-    {!attempts.length ? <div className="empty-inline">No provider invocation history is recorded.</div> : <div className="stage-list">{attempts.map((attempt) => <div className="stage-row" key={attempt.id} data-active={attempt.id === active?.id || undefined}><span className="stage-index" aria-hidden="true">{attempt.iteration}</span><strong>{attempt.phase} · {attempt.result === 'RUNNING' ? 'ACTIVE' : attempt.result}</strong><span className="stage-route">{attempt.provider} / {attempt.profile} · {attempt.model || 'default'} · {attempt.effort || 'default effort'} · iteration {attempt.iteration}</span><span className="stage-state">{attempt.duration_ms} ms</span></div>)}</div>}
+    {attempts.some((attempt) => attempt.provider === 'codex') && <p className="inline-note">Codex account usage is managed by the selected profile. SpecTide shows only usage reported in provider events.</p>}
+    {!attempts.length ? <div className="empty-inline">No provider invocation history is recorded.</div> : <div className="stage-list">{attempts.map((attempt) => { const usage = usageEvidence(attempt); return <div className="stage-row" key={attempt.id} data-active={attempt.id === active?.id || undefined}><span className="stage-index" aria-hidden="true">{attempt.iteration}</span><strong>{attempt.phase} · {attempt.result === 'RUNNING' ? 'ACTIVE' : attempt.result}</strong><span className="stage-route">{attempt.provider} / {attempt.profile} · {modelLabel(attempt.provider, usage.resolved_model || attempt.model)} · {effortLabel(attempt.effort)} · iteration {attempt.iteration}</span><span className="stage-state">{usage.input_tokens !== undefined || usage.output_tokens !== undefined ? `${usage.input_tokens ?? '—'} in / ${usage.output_tokens ?? '—'} out tokens · ` : ''}{attempt.duration_ms} ms</span></div> })}</div>}
     <h3>Quality execution history</h3>
     {!qualityExecutions.length ? <div className="empty-inline">No local quality execution history is recorded.</div> : <div className="gate-list">{qualityExecutions.map((execution) => <article className="gate-row" key={execution.id}><span className="gate-symbol">{execution.verdict === 'PASS' ? 'OK' : '!'}</span><span className="gate-name"><strong>{execution.phase} · iteration {execution.iteration} · {execution.verdict}</strong>{execution.results.map((result) => <small key={result.key}>{result.key}: {result.verdict}{result.summary ? ` · ${result.summary}` : ''}</small>)}</span><span className={`gate-verdict ${execution.verdict === 'PASS' ? 'good' : ''}`}>{execution.results.length} checks</span></article>)}</div>}
   </section>

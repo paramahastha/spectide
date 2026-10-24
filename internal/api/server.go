@@ -525,10 +525,11 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var in struct {
-			ProjectID string `json:"project_id"`
-			Project   string `json:"project"`
-			Prompt    string `json:"prompt"`
-			DryRun    bool   `json:"dry_run"`
+			ProjectID   string `json:"project_id"`
+			Project     string `json:"project"`
+			Prompt      string `json:"prompt"`
+			FeatureSlug string `json:"feature_slug"`
+			DryRun      bool   `json:"dry_run"`
 		}
 		if e := decodeRequest(w, r, 32<<10, &in); e != nil || (strings.TrimSpace(in.ProjectID) == "") == (strings.TrimSpace(in.Project) == "") || strings.TrimSpace(in.Prompt) == "" {
 			apiError(w, http.StatusBadRequest, "INVALID_REQUEST", "exactly one project_id or project and a prompt are required")
@@ -556,7 +557,7 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 			jsonOut(w, http.StatusOK, preview)
 			return
 		}
-		run, reused, e := s.Engine.StartIdempotent(r.Context(), idempotencyKey, projectPath, in.Prompt)
+		run, reused, e := s.Engine.StartIdempotentWithFeatureSlug(r.Context(), idempotencyKey, projectPath, in.Prompt, strings.TrimSpace(in.FeatureSlug))
 		if e != nil {
 			code := "RUN_REJECTED"
 			if strings.HasPrefix(e.Error(), "PROJECT_NOT_REGISTERED:") {

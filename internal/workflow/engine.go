@@ -67,6 +67,10 @@ func (e *Engine) Start(ctx context.Context, project, prompt string) (model.Run, 
 }
 
 func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt string) (model.Run, bool, error) {
+	return e.StartIdempotentWithFeatureSlug(ctx, key, project, prompt, "")
+}
+
+func (e *Engine) StartIdempotentWithFeatureSlug(ctx context.Context, key, project, prompt, featureSlug string) (model.Run, bool, error) {
 	workspace, err := canonicalWorkspace(project)
 	if err != nil {
 		return model.Run{}, false, err
@@ -107,6 +111,15 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 	var installation speckit.Installation
 	var installationErr error
 	var featureDir string
+	intent := specificationIntentForPrompt(prompt)
+	if intent == specificationIntentNext {
+		if featureSlug == "" {
+			return model.Run{}, false, fmt.Errorf("SPECIFICATION_SCOPE_REQUIRED: enter a new feature slug before starting this next-phase run")
+		}
+		featureDir, installationErr = speckit.SelectNextFeatureDirectory(workspace, featureSlug)
+	} else if featureSlug != "" {
+		return model.Run{}, false, fmt.Errorf("SPECIFICATION_SCOPE_UNEXPECTED: a new feature slug is only valid for a next-phase request")
+	}
 	for _, stage := range stages {
 		decision, resolveErr := cfg.Resolve(stage, prompt)
 		if resolveErr != nil {
@@ -116,8 +129,11 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 			continue
 		}
 		installation, installationErr = e.discover(workspace)
-		if installationErr == nil {
+		if installationErr == nil && intent != specificationIntentNext {
 			featureDir, installationErr = speckit.SelectFeatureDirectory(workspace, prompt)
+		}
+		if intent == specificationIntentNext && featureSlug != "" {
+			featureDir, installationErr = speckit.SelectNextFeatureDirectory(workspace, featureSlug)
 		}
 		break
 	}
@@ -133,7 +149,7 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 				blockedStage, blockedReason = stage, "LIVE_STAGE_UNSUPPORTED: no verified Spec-Kit command for "+stage
 			} else if installationErr != nil {
 				blockedStage, blockedReason = stage, installationErr.Error()
-			} else if required, pathErr := stageCommandRequired(workspace, featureDir, stage, specificationIntentForPrompt(prompt)); pathErr != nil {
+			} else if required, pathErr := stageCommandRequired(workspace, featureDir, stage, intent); pathErr != nil {
 				blockedStage, blockedReason = stage, pathErr.Error()
 			} else if required {
 				if _, requireErr := speckit.RequireStage(installation, liveSpecKitStage(stage)); requireErr != nil {
@@ -161,7 +177,10 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 		return model.Run{}, false, fmt.Errorf("QUALITY_CHECK_MANIFEST_DRIFT")
 	}
 	effective := buildEffectiveRunConfiguration(cfg, decisions, profiles, qualityRegistry)
-	effective.SpecificationIntent = specificationIntentForPrompt(prompt)
+	effective.SpecificationIntent = intent
+	if intent == specificationIntentNext {
+		effective.SpecificationScope = filepath.ToSlash(filepath.Join("specs", featureSlug))
+	}
 	if effective.QualitySelectionPolicy != "DISCOVER_AFTER_IMPLEMENTATION" {
 		effective.QualityManifestSHA256 = manifestHashAfter
 	}
@@ -1190,11 +1209,15 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 					e.failPersistence(ctx, r.ID)
 					return
 				}
-				if persistErr := e.store.Event(context.Background(), r.ID, key, "stage.failed", "error", map[string]any{"reason": safeStageError(runErr), "execution": "LIVE"}); persistErr != nil {
+				terminalState, eventType := model.Failed, "stage.failed"
+				if key == "clarify" && strings.Contains(runErr.Error(), "STAGE_EXPLICIT_NO_OP_REQUIRED: SPECTIDE_NO_CLARIFICATION") {
+					terminalState, eventType = model.Blocked, "stage.blocked"
+				}
+				if persistErr := e.store.Event(context.Background(), r.ID, key, eventType, "error", map[string]any{"reason": safeStageError(runErr), "execution": "LIVE"}); persistErr != nil {
 					e.failPersistence(ctx, r.ID)
 					return
 				}
-				if persistErr := e.store.SetRunState(context.Background(), r.ID, model.Failed); persistErr != nil {
+				if persistErr := e.store.SetRunState(context.Background(), r.ID, terminalState); persistErr != nil {
 					e.failPersistence(ctx, r.ID)
 					return
 				}

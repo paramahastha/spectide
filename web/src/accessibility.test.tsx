@@ -791,6 +791,19 @@ describe('FR-026 dashboard page and state matrix', () => {
     expect(screen.getByText(/tests · iteration 2 · FAIL/)).toBeTruthy()
     expect(screen.getByText(/unit_tests: FAIL · one package failed/)).toBeTruthy()
   })
+
+  it('labels an omitted Codex model as the unreported CLI default', () => {
+    render(<ExecutionHistoryPanel attempts={[{ id: 'attempt-codex-default', stage: 'clarify', phase: 'clarify', iteration: 1, provider: 'codex', profile: 'work', model: '', started_at: '2026-10-22T12:00:00Z', result: 'SUCCEEDED', duration_ms: 100, exit_code: 0 }]} qualityExecutions={[]} />)
+    expect(screen.getByText(/CLI default \(not reported by provider\)/)).toBeTruthy()
+    expect(screen.getByText(/Codex account usage is managed by the selected profile/)).toBeTruthy()
+  })
+
+  it('shows only the sanitized resolved Codex model and token counts when reported', () => {
+    render(<ExecutionHistoryPanel attempts={[{ id: 'attempt-usage', stage: 'clarify', phase: 'clarify', iteration: 1, provider: 'codex', profile: 'work', model: '', started_at: '2026-10-22T12:00:00Z', result: 'SUCCEEDED', duration_ms: 100, exit_code: 0, evidence_json: JSON.stringify({ resolved_model: 'openai/gpt-5.2-codex', input_tokens: 42, output_tokens: 7, account_email: 'private@example.com' }) }]} qualityExecutions={[]} />)
+    expect(screen.getByText(/openai\/gpt-5.2-codex/)).toBeTruthy()
+    expect(screen.getByText(/42 in \/ 7 out tokens/)).toBeTruthy()
+    expect(screen.queryByText('private@example.com')).toBeNull()
+  })
 })
 
 describe('sensitive workspace approval controls', () => {

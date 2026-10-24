@@ -340,6 +340,33 @@ func TestSelectFeatureDirectoryHonorsExplicitActiveFeature(t *testing.T) {
 	}
 }
 
+func TestSelectNextFeatureDirectoryRequiresUnusedSafeSlug(t *testing.T) {
+	root := t.TempDir()
+	old := filepath.Join(root, "specs", "006-completed")
+	if err := os.MkdirAll(old, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".specify"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".specify", "feature.json"), []byte(`{"feature_directory":"specs/006-completed"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := SelectNextFeatureDirectory(root, "007-next-phase")
+	canonical, canonicalErr := filepath.EvalSymlinks(root)
+	if err != nil || canonicalErr != nil || got != filepath.Join(canonical, "specs", "007-next-phase") {
+		t.Fatalf("next scope=%q err=%v", got, err)
+	}
+	for _, slug := range []string{"../outside", "UPPER", "a", "bad_slug"} {
+		if _, err := SelectNextFeatureDirectory(root, slug); err == nil {
+			t.Errorf("unsafe slug %q was accepted", slug)
+		}
+	}
+	if _, err := SelectNextFeatureDirectory(root, "006-completed"); err == nil {
+		t.Fatal("existing feature slug collision was accepted")
+	}
+}
+
 func TestSelectFeatureDirectoryRejectsInvalidExplicitSelectors(t *testing.T) {
 	cases := map[string]struct {
 		selector string

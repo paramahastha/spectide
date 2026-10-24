@@ -61,15 +61,14 @@ func TestSpecifyAmendmentIntentRunsDespiteExistingSpecification(t *testing.T) {
 	}
 }
 
-func TestSpecificationIntentRecognizesPhaseAmendmentPrompts(t *testing.T) {
-	for _, prompt := range []string{
-		"Implement spec based on this plan for next phase",
-		"Start a new phase for the selected feature",
-		"Amend specification for the selected feature",
-	} {
-		if got := specificationIntentForPrompt(prompt); got != specificationIntentAmend {
-			t.Errorf("specificationIntentForPrompt(%q)=%q, want %q", prompt, got, specificationIntentAmend)
+func TestSpecificationIntentSeparatesNextFeatureFromAmendment(t *testing.T) {
+	for _, prompt := range []string{"Implement spec based on this plan for next phase", "Start a new phase for the selected feature"} {
+		if got := specificationIntentForPrompt(prompt); got != specificationIntentNext {
+			t.Errorf("specificationIntentForPrompt(%q)=%q, want %q", prompt, got, specificationIntentNext)
 		}
+	}
+	if got := specificationIntentForPrompt("Amend specification for the selected feature"); got != specificationIntentAmend {
+		t.Fatalf("explicit amendment intent=%q, want %q", got, specificationIntentAmend)
 	}
 	if got := specificationIntentForPrompt("Continue implementation against the accepted specification"); got != specificationIntentContinue {
 		t.Fatalf("continuation intent=%q, want %q", got, specificationIntentContinue)

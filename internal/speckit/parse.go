@@ -160,6 +160,29 @@ func SelectFeatureDirectory(projectRoot, prompt string) (string, error) {
 	return filepath.Join(specsRoot, name), nil
 }
 
+// SelectNextFeatureDirectory validates a user supplied slug and refuses to
+// reuse any existing scope, including the active .specify selector.
+func SelectNextFeatureDirectory(projectRoot, slug string) (string, error) {
+	if !regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,62}$`).MatchString(slug) {
+		return "", fmt.Errorf("SPECIFICATION_SLUG_INVALID: use 2–63 lowercase letters, digits, or hyphens")
+	}
+	root, err := filepath.Abs(projectRoot)
+	if err != nil {
+		return "", err
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	feature := filepath.Join(root, "specs", slug)
+	if _, err = os.Lstat(feature); err == nil {
+		return "", fmt.Errorf("SPECIFICATION_SLUG_COLLISION: specs/%s already exists", slug)
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	return feature, nil
+}
+
 // selectedFeatureDirectory validates Spec-Kit's canonical active-feature
 // declaration. Its value is deliberately constrained to a direct, real child
 // of specs so a repository-controlled selector cannot widen workflow scope.
@@ -248,7 +271,7 @@ func EnsureFeatureDirectory(projectRoot, featureDir string) error {
 // ValidateUniqueFeatureDirectory verifies that the selected directory remains
 // the one active feature scope. An explicit Spec-Kit selector is authoritative;
 // without one, legacy workspaces must still have exactly one artifact scope.
-func ValidateUniqueFeatureDirectory(projectRoot, featureDir string) error {
+func ValidateUniqueFeatureDirectory(projectRoot, featureDir string, allowNextFeature ...bool) error {
 	root, err := filepath.EvalSymlinks(projectRoot)
 	if err != nil {
 		return err
@@ -260,6 +283,18 @@ func ValidateUniqueFeatureDirectory(projectRoot, featureDir string) error {
 	selected, err = filepath.Abs(selected)
 	if err != nil {
 		return err
+	}
+	if len(allowNextFeature) > 0 && allowNextFeature[0] {
+		requested, absErr := filepath.Abs(featureDir)
+		if absErr != nil || filepath.Clean(requested) != selected {
+			return fmt.Errorf("SPECIFICATION_SCOPE_NOT_UNIQUE")
+		}
+		rel, relErr := filepath.Rel(root, selected)
+		parts := strings.Split(filepath.Clean(rel), string(filepath.Separator))
+		if relErr != nil || filepath.IsAbs(rel) || len(parts) != 2 || parts[0] != "specs" || parts[1] == "" || parts[1] == "." || parts[1] == ".." {
+			return fmt.Errorf("SPECIFICATION_SCOPE_NOT_UNIQUE")
+		}
+		return nil
 	}
 	if configured, explicit, selectorErr := selectedFeatureDirectory(root); selectorErr != nil {
 		return selectorErr

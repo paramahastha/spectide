@@ -71,6 +71,13 @@ func (e *Engine) runLiveStageWithControlOptions(ctx context.Context, run model.R
 		} else {
 			repairPrompt := strings.TrimSpace(prompt) + "\n\nYour previous Clarify response completed without valid no-op evidence. Repair the result now: either update only the selected spec.md when clarification is needed, or emit exactly one standalone SPECTIDE_NO_CLARIFICATION: <specific reason> line."
 			evidence, err = e.runLiveStagePromptPhase(child, run, stage, "clarify_format_repair", route, repairPrompt, installation, featureDir, options...)
+			if err != nil && child.Err() == nil {
+				_ = e.store.Event(context.Background(), run.ID, stage, "clarify.repair_blocked", "warning", map[string]any{
+					"error_code":  "CLARIFY_REPAIR_CONTRACT_UNMET",
+					"summary":     "Clarify did not produce a valid change or the required no-op reason after one repair attempt.",
+					"next_action": "Review the Clarify invocation output, then retry after correcting the spec or provider response.",
+				})
+			}
 		}
 	}
 	close(stop)
@@ -370,7 +377,7 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 		registered, runErr = changedStageArtifacts(installation.ProjectRoot, featureDir, stage, beforeArtifacts)
 	}
 	if runErr == nil && stage == "specify" {
-		runErr = speckit.ValidateUniqueFeatureDirectory(installation.ProjectRoot, featureDir)
+		runErr = speckit.ValidateUniqueFeatureDirectory(installation.ProjectRoot, featureDir, specificationIntentForPrompt(run.Prompt) == specificationIntentNext)
 	}
 	if runErr == nil {
 		if option.ownerPath != "" {
@@ -421,7 +428,13 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 	if runErr != nil {
 		attempt.Error = safeStageError(runErr)
 	}
-	evidenceJSON, _ := json.Marshal(map[string]any{"event_types": eventTypes, "event_count": len(result.Events), "stdout_sha256": stdoutHash, "stderr_sha256": stderrHash, "artifact_ids": attempt.ArtifactIDs})
+	attemptEvidence := map[string]any{"event_types": eventTypes, "event_count": len(result.Events), "stdout_sha256": stdoutHash, "stderr_sha256": stderrHash, "artifact_ids": attempt.ArtifactIDs}
+	if route.Provider == string(adapters.Codex) {
+		for key, value := range codexUsageEvidence([]byte(result.Process.Stdout)) {
+			attemptEvidence[key] = value
+		}
+	}
+	evidenceJSON, _ := json.Marshal(attemptEvidence)
 	attempt.EvidenceJSON = string(evidenceJSON)
 	if err = e.store.CompleteExecutionAttempt(context.Background(), attempt); err != nil {
 		return nil, err

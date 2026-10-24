@@ -22,17 +22,22 @@ type effectiveRunConfiguration struct {
 	QualityManifestSHA256  string                     `json:"quality_manifest_sha256,omitempty"`
 	QualityWorkspaceRoot   string                     `json:"quality_workspace_root,omitempty"`
 	SpecificationIntent    string                     `json:"specification_intent,omitempty"`
+	SpecificationScope     string                     `json:"specification_scope,omitempty"`
 }
 
 const (
 	specificationIntentContinue = "continue"
 	specificationIntentAmend    = "amend"
+	specificationIntentNext     = "create-next-feature"
 )
 
 func specificationIntentForPrompt(prompt string) string {
 	normalized := strings.ToLower(prompt)
-	if strings.Contains(normalized, "new phase") || strings.Contains(normalized, "next phase") || strings.Contains(normalized, "amend specification") || strings.Contains(normalized, "amend the specification") {
+	if strings.Contains(normalized, "amend specification") || strings.Contains(normalized, "amend the specification") {
 		return specificationIntentAmend
+	}
+	if strings.Contains(normalized, "new phase") || strings.Contains(normalized, "next phase") {
+		return specificationIntentNext
 	}
 	return specificationIntentContinue
 }
@@ -159,8 +164,11 @@ func parseEffectiveRunConfiguration(encoded string) (effectiveRunConfiguration, 
 }
 
 func validateEffectiveRunConfiguration(effective effectiveRunConfiguration) error {
-	if effective.SpecificationIntent != "" && effective.SpecificationIntent != specificationIntentContinue && effective.SpecificationIntent != specificationIntentAmend {
+	if effective.SpecificationIntent != "" && effective.SpecificationIntent != specificationIntentContinue && effective.SpecificationIntent != specificationIntentAmend && effective.SpecificationIntent != specificationIntentNext {
 		return fmt.Errorf("WORKSPACE_DRIFT: immutable specification intent is invalid")
+	}
+	if effective.SpecificationIntent == specificationIntentNext && !strings.HasPrefix(effective.SpecificationScope, "specs/") {
+		return fmt.Errorf("WORKSPACE_DRIFT: next-feature scope is missing")
 	}
 	if effective.QualitySelectionPolicy != "" && effective.QualitySelectionPolicy != "FROZEN_AT_START" && effective.QualitySelectionPolicy != "DISCOVER_AFTER_IMPLEMENTATION" {
 		return fmt.Errorf("WORKSPACE_DRIFT: immutable quality selection policy is invalid")
