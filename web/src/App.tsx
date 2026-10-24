@@ -627,7 +627,15 @@ export function RoutePreviewPanel({ state, preview, blocker, error, onRemediate 
   if (state === 'disconnected') return <SharedStateSurface state="disconnected" message={error || 'Connect to the local API to preview routes.'} />
   if (state === 'blocked') return <section className="preview-recovery" role="alert" aria-label="Route preview blocked"><div className="recovery-heading"><strong>Blocked · NOT_RUN</strong><span>No workflow or repository transfer occurred.</span></div><p>{blocker?.message ?? 'The route preview could not be completed. Review project readiness before trying again.'}</p>{(blocker?.stage || blocker?.profile || blocker?.provider) && <dl>{blocker.stage && <div><dt>Stage</dt><dd>{blocker.stage.replaceAll('_', ' ')}</dd></div>}{blocker.profile && <div><dt>Profile</dt><dd>{blocker.profile}</dd></div>}{blocker.provider && <div><dt>Provider</dt><dd>{blocker.provider}</dd></div>}</dl>}<button className="button button-secondary" onClick={() => onRemediate(blocker?.remediation.target ?? 'readiness')}>{blocker?.remediation.label ?? 'Review project readiness'}</button></section>
   if (!preview?.decisions.length) return <div className="empty-inline" role="status">No route decisions were returned.</div>
-  return <div className="route-preview-results" role="status" aria-label="Ready route preview"><p><strong>Ready · NOT_RUN</strong><span>Mode: {preview.mode} · Execution: {preview.execution}</span></p><p className="preview-assurance">No workflow or repository transfer occurred.</p><div className="route-list">{preview.decisions.map((decision) => <div key={decision.stage}><strong>{decision.stage.replaceAll('_', ' ')}</strong><span>{decision.route.provider} / {decision.route.profile} · {decision.route.model || 'default model'} · {decision.route.effort || 'default effort'}</span><small>{decision.explanation}</small></div>)}</div></div>
+  return <section className="route-preview-results" role="status" aria-label="Ready route preview">
+    <header className="preview-result-head"><div><strong>Ready · NOT_RUN</strong><p className="preview-assurance">No workflow or repository transfer occurred.</p></div><span>Mode: {preview.mode} · Execution: {preview.execution}</span></header>
+    <ol className="route-list" aria-label="Stage route decisions">{preview.decisions.map((decision) => <li className="route-card" key={decision.stage}>
+      <h3>{decision.stage.replaceAll('_', ' ')}</h3>
+      <p className="route-card-meta"><code>{decision.route.provider}</code><span aria-hidden="true">/</span><code>{decision.route.profile}</code></p>
+      <p className="route-card-settings">{decision.route.model || 'Default model'} <span aria-hidden="true">·</span> {decision.route.effort || 'Default effort'}</p>
+      <p className="route-card-reason">{decision.explanation}</p>
+    </li>)}</ol>
+  </section>
 }
 
 export function SharedStateSurface({ state, title, message }: { state: 'empty' | 'error' | 'disconnected'; title?: string; message: string }) {

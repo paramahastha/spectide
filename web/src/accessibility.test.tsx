@@ -236,6 +236,8 @@ describe('FR-026 dashboard page and state matrix', () => {
     const { rerender } = render(<RoutePreviewPanel state="ready" preview={preview} blocker={null} error="" onRemediate={remedy} />)
     expect(screen.getByText(/Ready · NOT_RUN/)).toBeTruthy()
     expect(screen.getByText(/fixture-model.*high/)).toBeTruthy()
+    expect(screen.getByRole('list', { name: 'Stage route decisions' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'implement' })).toBeTruthy()
     rerender(<RoutePreviewPanel state="blocked" preview={null} blocker={{ category: 'MISSING_PROFILE', message: 'Profile local-codex is needed for the constitution stage.', remediation: { target: 'profiles', label: 'Review profile setup' }, stage: 'constitution', profile: 'local-codex', provider: 'codex' }} error="" onRemediate={remedy} />)
     expect(screen.getByRole('alert', { name: 'Route preview blocked' }).textContent).toContain('NOT_RUN')
     expect(screen.getByRole('alert', { name: 'Route preview blocked' }).textContent).toContain('constitution')

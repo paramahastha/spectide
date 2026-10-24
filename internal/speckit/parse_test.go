@@ -241,7 +241,8 @@ func TestDiscoverFeatureDirectoryRequiresOneCompleteProductSpec(t *testing.T) {
 		}
 	}
 	got, err := DiscoverFeatureDirectory(root)
-	if err != nil || got != feature {
+	canonicalRoot, canonicalErr := filepath.EvalSymlinks(root)
+	if err != nil || canonicalErr != nil || got != filepath.Join(canonicalRoot, "specs", "001-product") {
 		t.Fatalf("feature=%q err=%v", got, err)
 	}
 	second := filepath.Join(root, "specs", "002-other")
@@ -253,6 +254,32 @@ func TestDiscoverFeatureDirectoryRequiresOneCompleteProductSpec(t *testing.T) {
 	}
 	if _, err = DiscoverFeatureDirectory(root); err == nil || !strings.Contains(err.Error(), "SPECIFICATION_AMBIGUOUS") {
 		t.Fatalf("ambiguous specs error=%v", err)
+	}
+}
+
+func TestDiscoverFeatureDirectoryHonorsExplicitActiveFeature(t *testing.T) {
+	root := t.TempDir()
+	for _, directory := range []string{"005-other", "006-selected"} {
+		feature := filepath.Join(root, "specs", directory)
+		if err := os.MkdirAll(feature, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{"spec.md", "plan.md", "tasks.md"} {
+			if err := os.WriteFile(filepath.Join(feature, name), []byte(name), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".specify"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".specify", "feature.json"), []byte(`{"feature_directory":"specs/006-selected"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := DiscoverFeatureDirectory(root)
+	canonicalRoot, canonicalErr := filepath.EvalSymlinks(root)
+	if err != nil || canonicalErr != nil || got != filepath.Join(canonicalRoot, "specs", "006-selected") {
+		t.Fatalf("selected=%q err=%v", got, err)
 	}
 }
 
@@ -281,6 +308,97 @@ func TestSelectFeatureDirectorySupportsFreshAndIncompleteScopes(t *testing.T) {
 	}
 	if again, err = SelectFeatureDirectory(root, "do not create another scope"); err != nil || again != selected {
 		t.Fatalf("existing scope changed after owner artifacts were added: selected=%q err=%v", again, err)
+	}
+}
+
+func TestSelectFeatureDirectoryHonorsExplicitActiveFeature(t *testing.T) {
+	root := t.TempDir()
+	selected := filepath.Join(root, "specs", "006-selected")
+	other := filepath.Join(root, "specs", "005-other")
+	for _, directory := range []string{selected, other} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(directory, "spec.md"), []byte("spec"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".specify"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".specify", "feature.json"), []byte(`{"feature_directory":"specs/006-selected"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := SelectFeatureDirectory(root, "use the selected feature")
+	canonicalRoot, canonicalErr := filepath.EvalSymlinks(root)
+	if err != nil || canonicalErr != nil || got != filepath.Join(canonicalRoot, "specs", "006-selected") {
+		t.Fatalf("selected=%q err=%v", got, err)
+	}
+	if err = ValidateUniqueFeatureDirectory(root, got); err != nil {
+		t.Fatalf("explicit selection was rejected by later validation: %v", err)
+	}
+}
+
+func TestSelectFeatureDirectoryRejectsInvalidExplicitSelectors(t *testing.T) {
+	cases := map[string]struct {
+		selector string
+		want     string
+	}{
+		"malformed JSON":    {selector: `{"feature_directory":`, want: "SPECIFICATION_SELECTOR_INVALID"},
+		"missing field":     {selector: `{}`, want: "SPECIFICATION_SELECTOR_INVALID"},
+		"path traversal":    {selector: `{"feature_directory":"specs/../outside"}`, want: "SPECIFICATION_SELECTOR_INVALID"},
+		"nested scope":      {selector: `{"feature_directory":"specs/006-selected/nested"}`, want: "SPECIFICATION_SELECTOR_INVALID"},
+		"missing directory": {selector: `{"feature_directory":"specs/006-missing"}`, want: "SPECIFICATION_SELECTOR_UNAVAILABLE"},
+	}
+	for name, testCase := range cases {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(root, ".specify"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, ".specify", "feature.json"), []byte(testCase.selector), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := SelectFeatureDirectory(root, "test"); err == nil || !strings.Contains(err.Error(), testCase.want) {
+				t.Fatalf("error=%v; want %s", err, testCase.want)
+			}
+		})
+	}
+}
+
+func TestSelectFeatureDirectoryRejectsExplicitSelectorSymlink(t *testing.T) {
+	root, outside := t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "specs"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "specs", "006-selected")); err != nil {
+		t.Skip(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".specify"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".specify", "feature.json"), []byte(`{"feature_directory":"specs/006-selected"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SelectFeatureDirectory(root, "test"); err == nil || !strings.Contains(err.Error(), "SPECIFICATION_SELECTOR_INVALID") {
+		t.Fatalf("symlink selector error=%v", err)
+	}
+}
+
+func TestSelectFeatureDirectoryRetainsNoSelectorAmbiguity(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"001-first", "002-second"} {
+		directory := filepath.Join(root, "specs", name)
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(directory, "tasks.md"), []byte("tasks"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := SelectFeatureDirectory(root, "test"); err == nil || !strings.Contains(err.Error(), "SPECIFICATION_AMBIGUOUS") {
+		t.Fatalf("no-selector ambiguity error=%v", err)
 	}
 }
 

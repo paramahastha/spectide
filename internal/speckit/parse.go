@@ -2,6 +2,7 @@ package speckit
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -51,6 +52,24 @@ func DiscoverFeatureDirectory(projectRoot string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	if selected, explicit, selectorErr := selectedFeatureDirectory(root); selectorErr != nil {
+		return "", selectorErr
+	} else if explicit {
+		state, inspectErr := InspectArtifacts(selected)
+		if inspectErr != nil {
+			return "", inspectErr
+		}
+		for _, name := range []string{"spec", "plan", "tasks"} {
+			if !state.Present[name] {
+				return "", fmt.Errorf("SPECIFICATION_ARTIFACT_MISSING: %s", name)
+			}
+		}
+		return selected, nil
+	}
 	entries, err := os.ReadDir(filepath.Join(root, "specs"))
 	if err != nil {
 		return "", fmt.Errorf("SPECIFICATION_NOT_FOUND: %w", err)
@@ -99,6 +118,11 @@ func SelectFeatureDirectory(projectRoot, prompt string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if selected, explicit, selectorErr := selectedFeatureDirectory(root); selectorErr != nil {
+		return "", selectorErr
+	} else if explicit {
+		return selected, nil
+	}
 	specsRoot := filepath.Join(root, "specs")
 	entries, err := os.ReadDir(specsRoot)
 	if err != nil && !os.IsNotExist(err) {
@@ -136,6 +160,58 @@ func SelectFeatureDirectory(projectRoot, prompt string) (string, error) {
 	return filepath.Join(specsRoot, name), nil
 }
 
+// selectedFeatureDirectory validates Spec-Kit's canonical active-feature
+// declaration. Its value is deliberately constrained to a direct, real child
+// of specs so a repository-controlled selector cannot widen workflow scope.
+func selectedFeatureDirectory(root string) (string, bool, error) {
+	selectorPath := filepath.Join(root, ".specify", "feature.json")
+	contents, err := os.ReadFile(selectorPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("SPECIFICATION_SELECTOR_UNREADABLE: %w", err)
+	}
+	var selector struct {
+		FeatureDirectory string `json:"feature_directory"`
+	}
+	if err = json.Unmarshal(contents, &selector); err != nil {
+		return "", true, fmt.Errorf("SPECIFICATION_SELECTOR_INVALID: malformed .specify/feature.json")
+	}
+	value := selector.FeatureDirectory
+	if value == "" || filepath.IsAbs(value) || filepath.ToSlash(filepath.Clean(value)) != value {
+		return "", true, fmt.Errorf("SPECIFICATION_SELECTOR_INVALID: feature_directory must be canonical specs/<feature>")
+	}
+	parts := strings.Split(value, "/")
+	if len(parts) != 2 || parts[0] != "specs" || parts[1] == "" || parts[1] == "." || parts[1] == ".." {
+		return "", true, fmt.Errorf("SPECIFICATION_SELECTOR_INVALID: feature_directory must be a direct child of specs")
+	}
+	specsRoot := filepath.Join(root, "specs")
+	target := filepath.Join(root, filepath.FromSlash(value))
+	info, statErr := os.Stat(target)
+	if statErr != nil {
+		if os.IsNotExist(statErr) {
+			return "", true, fmt.Errorf("SPECIFICATION_SELECTOR_UNAVAILABLE: selected feature directory does not exist")
+		}
+		return "", true, fmt.Errorf("SPECIFICATION_SELECTOR_UNAVAILABLE: %w", statErr)
+	}
+	if !info.IsDir() {
+		return "", true, fmt.Errorf("SPECIFICATION_SELECTOR_INVALID: feature_directory is not a directory")
+	}
+	resolved, resolveErr := filepath.EvalSymlinks(target)
+	if resolveErr != nil {
+		return "", true, fmt.Errorf("SPECIFICATION_SELECTOR_UNAVAILABLE: %w", resolveErr)
+	}
+	if filepath.Clean(resolved) != filepath.Clean(target) {
+		return "", true, fmt.Errorf("SPECIFICATION_SELECTOR_INVALID: feature_directory must not be a symlink")
+	}
+	rel, relErr := filepath.Rel(specsRoot, resolved)
+	if relErr != nil || rel != parts[1] || filepath.IsAbs(rel) {
+		return "", true, fmt.Errorf("SPECIFICATION_SELECTOR_INVALID: feature_directory escapes project specs")
+	}
+	return resolved, true, nil
+}
+
 // EnsureFeatureDirectory creates the selected directory only after workflow
 // routing and workspace ownership have been validated.
 func EnsureFeatureDirectory(projectRoot, featureDir string) error {
@@ -169,8 +245,9 @@ func EnsureFeatureDirectory(projectRoot, featureDir string) error {
 	return nil
 }
 
-// ValidateUniqueFeatureDirectory verifies that the selected directory is the
-// only feature scope containing a product spec, plan, or task ledger.
+// ValidateUniqueFeatureDirectory verifies that the selected directory remains
+// the one active feature scope. An explicit Spec-Kit selector is authoritative;
+// without one, legacy workspaces must still have exactly one artifact scope.
 func ValidateUniqueFeatureDirectory(projectRoot, featureDir string) error {
 	root, err := filepath.EvalSymlinks(projectRoot)
 	if err != nil {
@@ -183,6 +260,14 @@ func ValidateUniqueFeatureDirectory(projectRoot, featureDir string) error {
 	selected, err = filepath.Abs(selected)
 	if err != nil {
 		return err
+	}
+	if configured, explicit, selectorErr := selectedFeatureDirectory(root); selectorErr != nil {
+		return selectorErr
+	} else if explicit {
+		if configured != selected {
+			return fmt.Errorf("SPECIFICATION_SCOPE_NOT_SELECTED")
+		}
+		return nil
 	}
 	entries, err := os.ReadDir(filepath.Join(root, "specs"))
 	if err != nil {

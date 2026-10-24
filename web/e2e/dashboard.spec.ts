@@ -222,7 +222,7 @@ test('ready route preview, profile empty states, and profile readiness are acces
   await page.getByRole('button', { name: /Preview routes/ }).click()
   await expect(page.getByRole('status', { name: 'Ready route preview' })).toContainText('NOT_RUN')
   await expect(page.getByRole('status', { name: 'Ready route preview' })).toContainText('No workflow or repository transfer occurred.')
-  await expect(page.locator('.route-preview-results .route-list > div')).toHaveCount(12)
+  await expect(page.locator('.route-preview-results .route-list > li')).toHaveCount(12)
   await saveScreenshot(page, 'route-preview-desktop')
   await scan(page, 'route-preview')
 
