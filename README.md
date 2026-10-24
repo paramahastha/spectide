@@ -2,13 +2,26 @@
 
 **Orchestrate. Implement. Converge.**
 
-SpecTide is a local control plane for evidence-backed, profile-aware Spec-Kit workflows. It stores run history in SQLite and provides a CLI plus a loopback dashboard with live event replay. It can route work to Claude Code, Codex, or OpenCode after it has verified the selected local profile and its capabilities.
+SpecTide is a local control plane for evidence-backed, profile-aware Spec-Kit workflows. It gives you a CLI and a local dashboard for setting up projects, checking coding-agent readiness, starting workflows, and reviewing durable run evidence.
 
-The built-in offline demo is deterministic and visibly **SIMULATED**. A provider that is missing, unauthenticated, or lacks a required capability produces a durable `BLOCKED` result; SpecTide never presents it as a completed live run.
+Everything runs on your machine. The dashboard listens only on a loopback address, and provider credentials remain in the provider's own CLI tooling—not in SpecTide configuration.
 
-## Install SpecTide
+## What you can do
 
-Requirements: Go 1.27, Node.js 26, and npm.
+- Keep several repositories in one local workspace and see them together in the dashboard.
+- Use a deterministic offline demo before connecting an AI provider.
+- Configure a scoped Claude Code, Codex, or OpenCode profile, then verify its local capabilities before a workflow begins.
+- Inspect workflow stages, events, routing decisions, quality gates, and reports after a run.
+
+## Requirements
+
+To build and run the checked-in application, install **Go 1.27 or newer**. To modify, build, or test the dashboard, also install **Node.js 26** and npm.
+
+You do not need a coding-agent account to try the offline demo.
+
+## Install
+
+Clone the repository and build the local binary:
 
 ```sh
 git clone https://github.com/paramahastha/spectide.git
@@ -16,87 +29,110 @@ cd spectide
 make build
 ```
 
-The binary is now `./bin/spectide`. Check the local environment:
+The executable is available at `./bin/spectide`. Confirm that your environment is ready:
 
 ```sh
 ./bin/spectide doctor
 ```
 
-## Five-minute tutorial
+For the full contributor check—including Go tests, dashboard tests, browser tests, and the smoke test—run `make verify`. It requires Node.js and npm.
 
-This path runs entirely on your machine and needs no provider account. It is the quickest way to see the complete lifecycle and dashboard.
+## Quick start: try the offline demo
 
-1. Build SpecTide, then start the local dashboard in one terminal:
+The demo is the fastest, safest way to see SpecTide working. It never contacts an AI provider and is clearly labelled `SIMULATED`.
+
+1. Add the included demo repository to your local workspace:
 
    ```sh
-   ./bin/spectide serve
+   ./bin/spectide add ./examples/fake-provider-demo
    ```
 
-2. Open [http://127.0.0.1:4747](http://127.0.0.1:4747).
+2. Start the local dashboard. This command starts a verified background dashboard if one is not already running:
 
-3. In a second terminal, run the deterministic demo:
+   ```sh
+   ./bin/spectide dashboard
+   ```
+
+3. Open [http://127.0.0.1:4747](http://127.0.0.1:4747), then run the demo in a second terminal:
 
    ```sh
    ./bin/spectide demo --project ./examples/fake-provider-demo
    ```
 
-4. Return to the dashboard. Open the completed run to inspect its stages, event stream, quality gates, routing decision, and persisted report.
-
-5. Inspect the same evidence from the terminal:
+4. Return to the dashboard and open the completed run. You can also inspect it in the terminal:
 
    ```sh
-    ./bin/spectide list
-    ./bin/spectide workflow list
-    ./bin/spectide workflow explain
-    ./bin/spectide report RUN_ID
+   ./bin/spectide list
+   ./bin/spectide workflow list
+   ./bin/spectide workflow explain
+   ./bin/spectide report RUN_ID
    ```
 
-The terminal should finish with `SIMULATED run completed with fixture evidence`. That label is expected: this tutorial proves the local workflow without contacting an AI provider.
+The demo finishes with `SIMULATED run completed with fixture evidence`. This proves the local workflow, dashboard, and reporting path without requiring credentials.
+
+## Set up your own repository
+
+Run these commands from the root of the repository you want SpecTide to manage:
+
+```sh
+/path/to/spectide/bin/spectide setup
+```
+
+`setup` shows the canonical path and asks for confirmation before it creates a missing `.spectide/config.json`, registers the project in the shared workspace, reports its readiness, and starts or verifies the dashboard. On the first run it can also offer to import a former local database; the source is retained and an import creates a private backup.
+
+To add another existing repository without creating or changing its configuration, use:
+
+```sh
+/path/to/spectide/bin/spectide add /absolute/path/to/another/repository
+/path/to/spectide/bin/spectide projects
+```
+
+The dashboard starts at [http://127.0.0.1:4747](http://127.0.0.1:4747) and shows an all-projects view. To run a workflow for a registered project, use:
+
+```sh
+/path/to/spectide/bin/spectide run "Describe the change you want to make"
+```
+
+You can pass `--project /absolute/path/to/repository` when running from another directory or in scripts.
 
 ## Connect a coding agent
 
-Install and sign in to one provider first. Keep credentials in that provider's own tooling; do not place API keys or tokens in `.spectide/config.json`.
+Install and sign in to one provider first. Keep credentials in that provider's own tooling; never put API keys or tokens in `.spectide/config.json`.
 
-| Provider | Install the provider CLI | Authenticate | SpecTide profile |
+| Provider | Install the provider CLI | Authenticate | SpecTide provider |
 | --- | --- | --- | --- |
 | Claude Code | `npm install -g @anthropic-ai/claude-code` | Run `claude` and complete its sign-in flow. | `claude` |
 | Codex | `npm install -g @openai/codex@latest` | Run `codex` and complete its sign-in flow. | `codex` |
 | OpenCode | `npm install -g @opencode/cli` | Run `opencode`, then use `/connect`. | `opencode` |
 
-The installation commands and login flows above come from the official [Claude Code guide](https://docs.anthropic.com/en/docs/claude-code/getting-started), [Codex documentation](https://developers.openai.com/learn/codex), and [OpenCode documentation](https://dev.opencode.ai/v2/docs). Provider CLIs change independently, so use `--help` and let SpecTide's probe establish what the installed version can safely do.
+Provider CLIs change independently. Consult the official [Claude Code guide](https://docs.anthropic.com/en/docs/claude-code/getting-started), [Codex documentation](https://developers.openai.com/learn/codex), or [OpenCode documentation](https://dev.opencode.ai/v2/docs), then use `--help` and SpecTide's probe to verify what is installed locally.
 
-From the project you want SpecTide to manage, register and probe exactly one provider. Replace `NAME` and `PROVIDER` with the row you chose above. The scope is the project root and prevents that profile from being used outside this repository.
+From the target repository, register one provider profile and probe it. Replace `NAME` and `PROVIDER` with your choice from the table:
 
 ```sh
 PROJECT_ROOT="$PWD"
-./bin/spectide profiles add NAME \
+/path/to/spectide/bin/spectide profiles add NAME \
   --provider PROVIDER \
   --executable PROVIDER \
   --scope "$PROJECT_ROOT"
-./bin/spectide profiles probe NAME
+/path/to/spectide/bin/spectide profiles probe NAME
 ```
 
 For example, a Codex profile named `my-codex` is:
 
 ```sh
-./bin/spectide profiles add my-codex \
+/path/to/spectide/bin/spectide profiles add my-codex \
   --provider codex \
   --executable codex \
   --scope "$PWD"
-./bin/spectide profiles probe my-codex
+/path/to/spectide/bin/spectide profiles probe my-codex
 ```
 
-`probe` saves non-secret capability evidence, including the executable identity and any safely observable authentication and execution controls. Review its JSON before proceeding. `doctor` only checks whether executables exist; it does not prove that a profile is ready.
+The probe stores non-secret capability evidence. Review its JSON before continuing; `doctor` only finds executables and does not establish that a profile is ready.
 
-### Configure a project route
+### Choose the project's route
 
-Initialize the project's configuration, then replace its default fake route with your verified profile:
-
-```sh
-./bin/spectide init --project "$PWD"
-```
-
-Edit `.spectide/config.json` so its route names your provider and profile. This Codex example omits model and effort overrides, letting the verified CLI defaults apply:
+`setup` creates a default simulated route. To use your verified profile, edit `.spectide/config.json` and replace the default route. This example uses the Codex profile above and leaves model and effort at the verified CLI defaults:
 
 ```json
 {
@@ -113,33 +149,38 @@ Edit `.spectide/config.json` so its route names your provider and profile. This 
 
 For Claude Code or OpenCode, change only `provider` and `profile` to match the registered profile. Use absolute paths in `project` and `allowed_scopes`.
 
-Preview before starting anything:
+Preview the route before it creates any work:
 
 ```sh
-./bin/spectide config validate --file .spectide/config.json
-./bin/spectide config preview --file .spectide/config.json \
+/path/to/spectide/bin/spectide config validate --file .spectide/config.json
+/path/to/spectide/bin/spectide config preview --file .spectide/config.json \
   --project "$PWD" \
   --prompt "Describe the change you want to make"
 ```
 
-`preview` is read-only and creates no run. When it reports a ready route, start the workflow:
+`preview` is read-only and creates no run. Once it reports a ready route, start the workflow:
 
 ```sh
-./bin/spectide run --project "$PWD" "Describe the change you want to make"
+/path/to/spectide/bin/spectide run "Describe the change you want to make"
 ```
 
-Live routes also require an installed, verified Spec-Kit agent integration for the repository. If that integration or a required provider capability is unavailable, the run is persisted as `BLOCKED` with the reason. Current OpenCode support has no verified read-only invocation policy, so read-only stages correctly block; use the demo or a profile whose probe satisfies the requested route until that support lands.
+Live routes also require an installed, verified Spec-Kit agent integration for the repository. If it is missing or a required provider capability is unavailable, SpecTide persists a `BLOCKED` result rather than reporting a false success. OpenCode currently has no verified read-only invocation policy, so read-only stages correctly block until that support is available.
 
-## Everyday workflow
+## Everyday commands
 
-1. Start `./bin/spectide serve` and use the dashboard at `127.0.0.1:4747` to follow one run.
-2. Add a provider profile once per approved project scope, then run `profiles probe` whenever its executable or login state changes.
-3. Use `config preview` after each route change.
-4. Start work with `spectide run`, then inspect `spectide report RUN_ID` for its durable evidence.
+```sh
+spectide projects                 # list workspace projects and readiness
+spectide dashboard                # start or reuse the local dashboard
+spectide config preview ...       # confirm a route without starting work
+spectide run "..."                # start a configured workflow
+spectide list                     # list durable runs
+spectide report RUN_ID            # show evidence for one run
+spectide pause RUN_ID             # pause safely at a stage boundary
+spectide resume RUN_ID            # continue a paused run
+spectide cancel RUN_ID            # cancel an active run
+```
 
-Read the [local user guide](docs/user-guide.md), [configuration reference](docs/configuration.md), [provider readiness](docs/providers.md), [recovery guidance](docs/recovery.md), and [local API contract](docs/api.md).
-
-For local macOS/Linux release artifact preparation, checksums, and verification steps, see [release preparation](docs/release-preparation.md). This workflow prepares files only; it does not publish them.
+Use `spectide --help` or `spectide COMMAND --help` for every option. Read the [local user guide](docs/user-guide.md), [configuration reference](docs/configuration.md), [provider readiness](docs/providers.md), [recovery guidance](docs/recovery.md), and [local API contract](docs/api.md) for more detail. For local macOS/Linux release artifacts and verification, see [release preparation](docs/release-preparation.md).
 
 ## Security status
 
