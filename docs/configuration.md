@@ -4,6 +4,10 @@ SpecTide reads non-secret JSON settings from the user-global file and the projec
 
 The user-global file is `spectide/config.json` under the operating system's user configuration directory. On macOS this is typically `~/Library/Application Support/spectide/config.json`; the CLI's `config` command prints the effective settings.
 
+The shared workspace database is separate from this settings file and project-local `.spectide/config.json`. Its default is under the platform's application data directory (macOS Application Support; Linux `$XDG_DATA_HOME/spectide` or `~/.local/share/spectide`). `spectide setup` displays the canonical repository path and asks before creating a missing project configuration. `spectide add ABSOLUTE_PATH` registers another existing directory without copying routes, profiles, or permissions.
+
+On first setup, SpecTide checks only the former config-directory database location. If it exists and the new workspace destination is empty, setup shows both paths and asks separately before importing. The import creates a mode-`0600` SQLite backup beside the new database, restores from that backup, keeps the source, validates the resulting database, and records the destination workspace ID and lifecycle events. An existing destination is never overwritten. Explicit `--db` use bypasses default-workspace import.
+
 Example project configuration:
 
 ```json

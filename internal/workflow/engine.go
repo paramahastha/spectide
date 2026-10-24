@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 	"sync"
 	"time"
@@ -75,6 +74,9 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 		return model.Run{}, false, fmt.Errorf("PROJECT_REQUIRED")
 	}
 	project = workspace
+	if _, err = e.store.ProjectByPath(ctx, workspace); err != nil {
+		return model.Run{}, false, fmt.Errorf("PROJECT_NOT_REGISTERED: run spectide add %s", workspace)
+	}
 	projectConfigPath, err := config.SafeProjectPath(workspace)
 	if err != nil {
 		return model.Run{}, false, err
@@ -141,9 +143,6 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 			}
 		}
 		decisions[stage] = decision
-	}
-	if err = e.store.RegisterProject(ctx, workspace, path.Base(workspace), []string{workspace}); err != nil {
-		return model.Run{}, false, err
 	}
 	if err = e.store.RecoverAbandonedRuns(ctx, time.Now().UTC()); err != nil {
 		return model.Run{}, false, err

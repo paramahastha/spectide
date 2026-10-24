@@ -22,3 +22,5 @@ Do not treat jsdom snapshots as browser screenshots. The archived images were ge
 | [200% page scale](workflow-200-percent-page-scale.png) | CSS page-scale reflow emulation at desktop viewport |
 
 The browser acceptance tests are in [`web/e2e/dashboard.spec.ts`](../../web/e2e/dashboard.spec.ts), with setup in [`web/playwright.config.ts`](../../web/playwright.config.ts). The screenshot set is fixture-backed; live account execution remains `NOT_RUN`.
+
+The dashboard screenshots reflect the shared-workspace UI: the scope selector opens at **All projects**, displays the server-reported run count, and the add-project form accepts an absolute path. The two-project filtering, selected-run event isolation, keyboard operation, and third-project form are exercised by browser tests; screenshots remain deterministic mock fixtures rather than live workspace data.

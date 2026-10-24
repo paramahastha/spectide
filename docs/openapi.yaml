@@ -29,6 +29,22 @@ paths:
       operationId: version
       responses:
         '200': { description: Version and provider readiness }
+  /api/v1/workspace/status:
+    get:
+      operationId: getWorkspaceStatus
+      responses:
+        '200':
+          description: Browser-safe local workspace identity and dashboard status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workspace_id, version, dashboard_url, local_only]
+                properties:
+                  workspace_id: { type: string, format: uuid }
+                  version: { type: string }
+                  dashboard_url: { type: string, format: uri }
+                  local_only: { type: boolean, const: true }
   /api/v1/capabilities:
     get:
       operationId: listPersistedCapabilities
@@ -93,6 +109,7 @@ paths:
       parameters:
         - { in: query, name: limit, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 100 } }
         - { in: query, name: offset, required: false, schema: { type: integer, minimum: 0, maximum: 1000000, default: 0 } }
+        - { in: query, name: project_id, required: false, description: Stable ID of a registered project, schema: { type: string } }
       responses:
         '200':
           description: Bounded page of persisted runs, newest first
@@ -125,10 +142,14 @@ paths:
           application/json:
             schema:
               type: object
-              required: [project, prompt]
+              oneOf:
+                - required: [project_id]
+                - required: [project]
+              required: [prompt]
               additionalProperties: false
               properties:
                 project: { type: string, minLength: 1 }
+                project_id: { type: string, minLength: 1 }
                 prompt: { type: string, minLength: 1 }
                 dry_run: { type: boolean, default: false }
       responses:
@@ -290,13 +311,26 @@ paths:
     get:
       operationId: listProjects
       responses:
-        '200': { description: Registered canonical local projects }
+        '200': { description: Registered canonical local projects with computed readiness }
     post:
       operationId: registerProject
       parameters:
         - { in: header, name: X-SpecTide-CSRF, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              additionalProperties: false
+              properties:
+                path: { type: string, format: path, description: Absolute local directory path }
+                name: { type: string }
       responses:
-        '201': { description: Project registered }
+        '201': { description: Project newly registered }
+        '200': { description: Project already registered }
+        '400': { $ref: '#/components/responses/ContractError' }
         '422': { description: Project path rejected }
   /api/v1/projects/{id}/config:
     get:

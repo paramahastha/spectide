@@ -238,6 +238,7 @@ func TestEngineCompletesVerifiedMixedRunWithApplicableEvidence(t *testing.T) {
 			Commands: commands, CommandFiles: commandFiles, CommandHashes: commandHashes,
 		}, nil
 	}
+	registerProject(t, state, project)
 	run, err := engine.Start(ctx, project, "implement a bounded cache")
 	if err != nil {
 		t.Fatal(err)

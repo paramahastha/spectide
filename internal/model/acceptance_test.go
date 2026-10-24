@@ -1,6 +1,38 @@
 package model
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestSharedWorkspaceProjectionsSerializeStableSafeFields(t *testing.T) {
+	stamp := time.Date(2026, 10, 24, 1, 2, 3, 0, time.UTC)
+	values := []any{
+		WorkspaceStatus{WorkspaceID: "ws-1", Version: "test", DashboardURL: "http://127.0.0.1:4747", LocalOnly: true},
+		Project{ID: "project-1", CanonicalPath: "/tmp/project", DisplayName: "project", Readiness: ProjectReadiness{Status: "MISSING_ROUTE", Reason: "configure a project route"}},
+		Run{ID: "run-1", ProjectID: "project-1"},
+		WorkspaceImport{ID: "import-1", SourceWorkspaceID: "legacy-1", DestinationWorkspaceID: "ws-1", Status: "COMPLETED", BackupReference: "/private/backup.db", CreatedAt: stamp, UpdatedAt: stamp},
+		WorkspaceImportEvent{ID: "event-1", ImportID: "import-1", Sequence: 1, Status: "DETECTED", OccurredAt: stamp},
+	}
+	for _, value := range values {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(encoded), "OPENAI_API_KEY") {
+			t.Fatalf("unexpected credential in projection: %s", encoded)
+		}
+		var decoded map[string]any
+		if err = json.Unmarshal(encoded, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		if len(decoded) == 0 {
+			t.Fatalf("empty projection for %T", value)
+		}
+	}
+}
 
 func TestReleaseGateTaxonomyIsStableAndMissingEvidenceIsNotRun(t *testing.T) {
 	gates := []Gate{{Key: "analyze_clean", Verdict: "PASS", Evidence: "analysis report"}, {Key: "required_tests", Verdict: "FAIL", Evidence: "test command exited 1"}}

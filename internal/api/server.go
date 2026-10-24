@@ -11,6 +11,7 @@ import (
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/events"
 	"github.com/spectide/spectide/internal/model"
+	projectsvc "github.com/spectide/spectide/internal/projects"
 	"github.com/spectide/spectide/internal/routing"
 	"github.com/spectide/spectide/internal/security"
 	"github.com/spectide/spectide/internal/store"
@@ -29,9 +30,10 @@ import (
 )
 
 type Server struct {
-	Store  *store.Store
-	Engine *workflow.Engine
-	CSRF   string
+	Store        *store.Store
+	Engine       *workflow.Engine
+	CSRF         string
+	DashboardURL string
 }
 
 func New(s *store.Store, e *workflow.Engine) *Server {
@@ -39,7 +41,7 @@ func New(s *store.Store, e *workflow.Engine) *Server {
 	if _, err := rand.Read(token); err != nil {
 		panic("secure random source unavailable: " + err.Error())
 	}
-	return &Server{Store: s, Engine: e, CSRF: hex.EncodeToString(token)}
+	return &Server{Store: s, Engine: e, CSRF: hex.EncodeToString(token), DashboardURL: "http://127.0.0.1:4747"}
 }
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -47,6 +49,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/healthz", s.health)
 	mux.HandleFunc("/api/v1/readyz", s.health)
 	mux.HandleFunc("/api/v1/version", s.version)
+	mux.HandleFunc("/api/v1/workspace/status", s.workspaceStatus)
 	mux.HandleFunc("/api/v1/capabilities", s.capabilities)
 	mux.HandleFunc("/api/v1/providers/capabilities", s.capabilities)
 	mux.HandleFunc("/api/v1/config/validate", s.validateConfig)
@@ -67,6 +70,23 @@ func (s *Server) Handler() http.Handler {
 	assets, _ := fs.Sub(webassets.Static, "static")
 	mux.Handle("/", http.FileServer(http.FS(assets)))
 	return s.secure(mux)
+}
+
+func (s *Server) workspaceStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		apiError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+		return
+	}
+	id, err := s.Store.WorkspaceID(r.Context())
+	if err != nil {
+		apiError(w, http.StatusInternalServerError, "STORE_ERROR", "workspace status unavailable")
+		return
+	}
+	url := s.DashboardURL
+	if url == "" {
+		url = "http://127.0.0.1:4747"
+	}
+	jsonOut(w, http.StatusOK, model.WorkspaceStatus{WorkspaceID: id, Version: buildinfo.Version, DashboardURL: url, LocalOnly: true})
 }
 
 func (s *Server) profile(w http.ResponseWriter, r *http.Request) {
@@ -222,6 +242,9 @@ func (s *Server) previewProject(ctx context.Context, project, prompt string) (ma
 	if err != nil {
 		return nil, err
 	}
+	if _, err = s.Store.ProjectByPath(ctx, root); err != nil {
+		return nil, fmt.Errorf("PROJECT_NOT_REGISTERED")
+	}
 	configPath, err := safeProjectConfigPath(root)
 	if err != nil {
 		return nil, err
@@ -313,47 +336,31 @@ func (s *Server) projects(w http.ResponseWriter, r *http.Request) {
 			apiError(w, 500, "STORE_ERROR", err.Error())
 			return
 		}
+		service := projectsvc.Service{Store: s.Store}
+		for i := range projects {
+			projects[i].Readiness = service.Readiness(r.Context(), projects[i])
+		}
 		jsonOut(w, 200, projects)
 	case http.MethodPost:
 		var input struct {
 			Path string `json:"path"`
 			Name string `json:"name"`
 		}
-		if err := decodeRequest(w, r, 16<<10, &input); err != nil || strings.TrimSpace(input.Path) == "" || strings.TrimSpace(input.Name) == "" {
-			apiError(w, 400, "INVALID_REQUEST", "project path and name are required")
+		if err := decodeRequest(w, r, 16<<10, &input); err != nil || strings.TrimSpace(input.Path) == "" || !filepath.IsAbs(input.Path) {
+			apiError(w, 400, "INVALID_REQUEST", "an absolute project path is required")
 			return
 		}
-		abs, err := filepath.Abs(input.Path)
+		project, created, err := (projectsvc.Service{Store: s.Store}).Register(r.Context(), input.Path, strings.TrimSpace(input.Name))
 		if err != nil {
-			apiError(w, 400, "INVALID_PROJECT_PATH", err.Error())
-			return
-		}
-		canonical, err := filepath.EvalSymlinks(abs)
-		if err != nil {
-			apiError(w, 422, "PROJECT_PATH_UNAVAILABLE", err.Error())
-			return
-		}
-		info, err := os.Stat(canonical)
-		if err != nil || !info.IsDir() {
-			apiError(w, 422, "PROJECT_NOT_DIRECTORY", canonical)
-			return
-		}
-		if err = s.Store.RegisterProject(r.Context(), canonical, strings.TrimSpace(input.Name), []string{canonical}); err != nil {
 			apiError(w, 422, "PROJECT_INVALID", err.Error())
 			return
 		}
-		projects, err := s.Store.Projects(r.Context())
-		if err != nil {
-			apiError(w, 500, "STORE_ERROR", err.Error())
-			return
+		project.Readiness = (projectsvc.Service{Store: s.Store}).Readiness(r.Context(), project)
+		status := http.StatusOK
+		if created {
+			status = http.StatusCreated
 		}
-		for _, project := range projects {
-			if project.CanonicalPath == canonical {
-				jsonOut(w, http.StatusCreated, project)
-				return
-			}
-		}
-		apiError(w, 500, "PROJECT_NOT_PERSISTED", "registered project could not be read")
+		jsonOut(w, status, project)
 	default:
 		apiError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 	}
@@ -453,8 +460,8 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "GET":
 		for key := range r.URL.Query() {
-			if key != "limit" && key != "offset" {
-				apiError(w, http.StatusBadRequest, "INVALID_PAGE", "only limit and offset are supported")
+			if key != "limit" && key != "offset" && key != "project_id" {
+				apiError(w, http.StatusBadRequest, "INVALID_PAGE", "only limit, offset, and project_id are supported")
 				return
 			}
 		}
@@ -468,7 +475,18 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 			apiError(w, http.StatusBadRequest, "INVALID_PAGE", "offset must be between 0 and 1000000")
 			return
 		}
-		rs, e := s.Store.RunsPage(r.Context(), limit, offset)
+		projectID := strings.TrimSpace(r.URL.Query().Get("project_id"))
+		var rs []model.Run
+		var e error
+		if projectID != "" {
+			if _, err := s.Store.Project(r.Context(), projectID); err != nil {
+				apiError(w, http.StatusBadRequest, "INVALID_PROJECT_ID", "project_id must identify a registered project")
+				return
+			}
+			rs, e = s.Store.RunsPageForProject(r.Context(), projectID, limit, offset)
+		} else {
+			rs, e = s.Store.RunsPage(r.Context(), limit, offset)
+		}
 		if e != nil {
 			apiError(w, http.StatusInternalServerError, "STORE_ERROR", e.Error())
 			return
@@ -476,7 +494,12 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 		if rs == nil {
 			rs = []model.Run{}
 		}
-		total, e := s.Store.RunCount(r.Context())
+		var total int
+		if projectID != "" {
+			total, e = s.Store.RunCountForProject(r.Context(), projectID)
+		} else {
+			total, e = s.Store.RunCount(r.Context())
+		}
 		if e != nil {
 			apiError(w, http.StatusInternalServerError, "STORE_ERROR", e.Error())
 			return
@@ -493,16 +516,26 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var in struct {
-			Project string `json:"project"`
-			Prompt  string `json:"prompt"`
-			DryRun  bool   `json:"dry_run"`
+			ProjectID string `json:"project_id"`
+			Project   string `json:"project"`
+			Prompt    string `json:"prompt"`
+			DryRun    bool   `json:"dry_run"`
 		}
-		if e := decodeRequest(w, r, 32<<10, &in); e != nil || strings.TrimSpace(in.Project) == "" || strings.TrimSpace(in.Prompt) == "" {
-			apiError(w, http.StatusBadRequest, "INVALID_REQUEST", "project and prompt are required")
+		if e := decodeRequest(w, r, 32<<10, &in); e != nil || (strings.TrimSpace(in.ProjectID) == "") == (strings.TrimSpace(in.Project) == "") || strings.TrimSpace(in.Prompt) == "" {
+			apiError(w, http.StatusBadRequest, "INVALID_REQUEST", "exactly one project_id or project and a prompt are required")
 			return
 		}
+		projectPath := in.Project
+		if in.ProjectID != "" {
+			resolved, resolveErr := (projectsvc.Service{Store: s.Store}).ResolveID(r.Context(), strings.TrimSpace(in.ProjectID))
+			if resolveErr != nil {
+				apiError(w, http.StatusUnprocessableEntity, "PROJECT_NOT_REGISTERED", "project_id does not identify an available registered project")
+				return
+			}
+			projectPath = resolved.CanonicalPath
+		}
 		if in.DryRun {
-			preview, err := s.previewProject(r.Context(), in.Project, in.Prompt)
+			preview, err := s.previewProject(r.Context(), projectPath, in.Prompt)
 			if err != nil {
 				apiPreviewBlocked(w, "ROUTE_PREVIEW_BLOCKED", err.Error())
 				return
@@ -510,9 +543,13 @@ func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 			jsonOut(w, http.StatusOK, preview)
 			return
 		}
-		run, reused, e := s.Engine.StartIdempotent(r.Context(), idempotencyKey, in.Project, in.Prompt)
+		run, reused, e := s.Engine.StartIdempotent(r.Context(), idempotencyKey, projectPath, in.Prompt)
 		if e != nil {
-			apiError(w, http.StatusUnprocessableEntity, "RUN_REJECTED", e.Error())
+			code := "RUN_REJECTED"
+			if strings.HasPrefix(e.Error(), "PROJECT_NOT_REGISTERED:") {
+				code = "PROJECT_NOT_REGISTERED"
+			}
+			apiError(w, http.StatusUnprocessableEntity, code, e.Error())
 			return
 		}
 		status := http.StatusAccepted

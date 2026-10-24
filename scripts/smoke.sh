@@ -97,6 +97,7 @@ printf 'Build command: make build (go build -o bin/spectide ./cmd/spectide)\n'
 printf 'Process start to first HTTP 200 /healthz: %s ms (monotonic clock)\n' "${elapsed_ms}"
 echo "health endpoint ready within the 2s startup threshold"
 echo "embedded dashboard index and JavaScript asset served successfully"
+"${binary}" --db "${state_db}" add "${repo_root}/examples/fake-provider-demo"
 output="$("${binary}" --db "${state_db}" demo --project "${repo_root}/examples/fake-provider-demo")"
 printf '%s\n' "${output}"
 grep -q 'SIMULATED run completed' <<<"${output}"

@@ -7,6 +7,7 @@ const screenshotDir = resolve(import.meta.dirname, '../../docs/screenshots')
 const stageKeys = ['constitution', 'specify', 'clarify', 'plan', 'checklist', 'tasks', 'analyze', 'implement', 'tests', 'converge', 'final_review', 'report']
 const run = {
   id: 'browser-run-001',
+  project_id: 'browser-project-001',
   project: '/workspace/demo',
   prompt: 'Verify the browser workflow',
   state: 'COMPLETED',
@@ -49,9 +50,17 @@ const profile = {
   capability: { provider: 'codex', executable_found: true, version: '1.2.3', authenticated: 'AUTHENTICATED', read_only_execution: true, workspace_write: true },
 }
 
-type FixtureOptions = { runs?: unknown[]; profiles?: unknown[]; error?: string; versionError?: boolean; report?: unknown }
+type FixtureOptions = { runs?: unknown[]; profiles?: unknown[]; error?: string; versionError?: boolean; report?: unknown; previewError?: string }
+
+const projectFixture = { id: 'browser-project-001', canonical_path: '/workspace/demo', display_name: 'Browser demo', readiness: { status: 'READY', reason: 'Fixture configuration is ready.' } }
+const secondProjectFixture = { id: 'browser-project-002', canonical_path: '/workspace/second', display_name: 'Second project', readiness: { status: 'READY', reason: 'Fixture configuration is ready.' } }
+
+async function selectProject(page: Page) {
+  await page.locator('#project-scope-select').selectOption(projectFixture.id)
+}
 
 async function installAPI(page: Page, options: FixtureOptions = {}) {
+  const projects = [projectFixture, secondProjectFixture]
   await page.route('**/api/v1/**', async (route: Route) => {
     const url = new URL(route.request().url())
     const path = url.pathname
@@ -63,22 +72,36 @@ async function installAPI(page: Page, options: FixtureOptions = {}) {
       if (options.error === 'profiles') return route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"profile store unavailable"}' })
       return route.fulfill({ contentType: 'application/json', body: JSON.stringify(options.profiles ?? []) })
     }
+    if (path === '/api/v1/projects' && route.request().method() === 'POST') {
+      const added = { id: 'browser-project-003', canonical_path: '/workspace/third', display_name: 'Third project', readiness: { status: 'MISSING_CONFIGURATION', reason: 'No configuration.' } }
+      projects.push(added)
+      return route.fulfill({ status: 201, contentType: 'application/json', body: JSON.stringify(added) })
+    }
+    if (path === '/api/v1/projects') return route.fulfill({ contentType: 'application/json', body: JSON.stringify(projects) })
+    if (path === '/api/v1/workspace/status') return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ workspace_id: 'browser-workspace-001', version: 'test', dashboard_url: 'http://127.0.0.1:4747', local_only: true }) })
     if (path === '/api/v1/runs' && route.request().method() === 'POST') {
-      const body = route.request().postDataJSON() as { dry_run?: boolean; project?: string }
+      const body = route.request().postDataJSON() as { dry_run?: boolean; project_id?: string }
       if (body.dry_run) {
-        if (body.project?.includes('missing')) return route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: { code: 'ROUTE_PREVIEW_BLOCKED', message: 'PROJECT_PATH_UNAVAILABLE' }, execution: 'NOT_RUN' }) })
+        if (options.previewError) return route.fulfill({ status: 422, contentType: 'application/json', body: JSON.stringify({ error: { code: 'ROUTE_PREVIEW_BLOCKED', message: options.previewError }, execution: 'NOT_RUN' }) })
         return route.fulfill({ contentType: 'application/json', body: JSON.stringify(readyPreview) })
       }
       return route.fulfill({ status: 409, contentType: 'application/json', body: '{"error":"unexpected run creation in browser acceptance"}' })
     }
     if (path === '/api/v1/runs') {
       if (options.error === 'runs') return route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"run store unavailable"}' })
-      return route.fulfill({ contentType: 'application/json', body: JSON.stringify(options.runs ?? [run]) })
+      const items = options.runs ?? [run]
+      const projectID = url.searchParams.get('project_id')
+      return route.fulfill({ contentType: 'application/json', headers: { 'X-Total-Count': String(projectID ? items.filter((item) => (item as typeof run).project_id === projectID).length : items.length) }, body: JSON.stringify(projectID ? items.filter((item) => (item as typeof run).project_id === projectID) : items) })
     }
-    if (path === `/api/v1/runs/${run.id}`) return route.fulfill({ contentType: 'application/json', body: JSON.stringify(options.report ?? report) })
-    if (path === `/api/v1/runs/${run.id}/events`) {
-      const event = { run_id: run.id, seq: 1, type: 'provider.event', stage: 'implement', payload: { summary: 'fixture activity' } }
+    if (/^\/api\/v1\/runs\/[^/]+\/events$/.test(path)) {
+      const runID = path.split('/')[4]
+      const event = { run_id: runID, seq: 1, type: 'provider.event', stage: 'implement', payload: { summary: `${runID} fixture activity` } }
       return route.fulfill({ status: 200, contentType: 'text/event-stream; charset=utf-8', body: `event: provider.event\ndata: ${JSON.stringify(event)}\n\n` })
+    }
+    if (/^\/api\/v1\/runs\/[^/]+$/.test(path)) {
+      const runID = path.split('/')[4]
+      const selected = (options.runs ?? [run]).find((item) => (item as typeof run).id === runID) as typeof run | undefined
+      return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ ...(options.report ?? report), run: selected ?? run }) })
     }
     return route.fulfill({ status: 404, contentType: 'application/json', body: '{"error":"not found"}' })
   })
@@ -121,8 +144,28 @@ test('run history and detail render with accessible status labels', async ({ pag
   await scan(page, 'run-detail')
 })
 
+test('project scope filters by stable ID and adds a third project from one absolute path', async ({ page }) => {
+  const runA = { ...run, id: 'project-a-run', project_id: projectFixture.id, prompt: 'Project A workflow' }
+  const runB = { ...run, id: 'project-b-run', project_id: secondProjectFixture.id, prompt: 'Project B workflow' }
+  await open(page, { runs: [runA, runB] })
+  await expect(page.getByText('Project A workflow')).toBeVisible()
+  await expect(page.getByText('Project B workflow')).toBeVisible()
+  await selectProject(page)
+  await expect(page.getByText('Project A workflow')).toBeVisible()
+  await expect(page.getByText('Project B workflow')).toHaveCount(0)
+  await page.getByRole('button', { name: /Project A workflow/ }).click()
+  await expect(page.getByText('project-a-run fixture activity')).toBeVisible()
+  await expect(page.getByText('project-b-run fixture activity')).toHaveCount(0)
+  await page.locator('#add-project-path').focus()
+  await page.keyboard.type('/workspace/third')
+  await page.keyboard.press('Tab')
+  await page.keyboard.press('Enter')
+  await expect(page.locator('#project-scope-select')).toContainText('Third project')
+  await expect(page.getByText('No configuration.')).toBeVisible()
+})
+
 test('empty, failed, and disconnected dashboard surfaces are labeled and accessible', async ({ page }) => {
-  await open(page, { runs: [] })
+  await open(page, { runs: [], previewError: 'PROJECT_PATH_UNAVAILABLE' })
   await expect(page.getByText('Select a run to inspect its stages, routes, and evidence.')).toBeVisible()
   await saveScreenshot(page, 'workflow-empty-desktop')
   await scan(page, 'empty-workflow-detail')
@@ -131,8 +174,7 @@ test('empty, failed, and disconnected dashboard surfaces are labeled and accessi
   await scan(page, 'empty-run-list')
 
   await page.getByRole('button', { name: /Route preview/ }).click()
-  await page.getByRole('button', { name: /Preview routes/ }).click()
-  await page.getByLabel('Project path').fill('./missing-project')
+  await selectProject(page)
   await page.getByRole('button', { name: /Preview routes/ }).click()
   await expect(page.getByRole('alert', { name: 'error state' })).toContainText('PROJECT_PATH_UNAVAILABLE')
   await saveScreenshot(page, 'route-preview-blocked-desktop')
@@ -156,6 +198,7 @@ test('empty, failed, and disconnected dashboard surfaces are labeled and accessi
 test('ready route preview, profile empty states, and profile readiness are accessible', async ({ page }) => {
   await open(page)
   await page.getByRole('button', { name: /Route preview/ }).click()
+  await selectProject(page)
   await page.getByRole('button', { name: /Preview routes/ }).click()
   await expect(page.getByRole('status', { name: 'Ready route preview' })).toContainText('NOT RUN')
   await expect(page.locator('.route-preview-results .route-list > div')).toHaveCount(12)
@@ -265,10 +308,11 @@ test('all 26 required dashboard page and state pairs pass Axe', async ({ page, c
 
   await page.reload()
   await page.getByRole('button', { name: /Route preview/ }).click()
+  await selectProject(page)
   await page.getByRole('button', { name: /Preview routes/ }).click()
   await expect(page.getByRole('status', { name: 'Ready route preview' })).toBeVisible()
   await scan(page, 'route-preview-ready')
-  await page.getByLabel('Project path').fill('./missing-project')
+  options.previewError = 'PROJECT_PATH_UNAVAILABLE'
   await page.getByRole('button', { name: /Preview routes/ }).click()
   await scan(page, 'route-preview-blocked')
   const disconnectedPreview = await context.newPage()

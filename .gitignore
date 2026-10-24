@@ -5,6 +5,15 @@
 /web/playwright-report/
 /web/dist/
 /.taste-skill/
+node_modules/
+build/
+*.log
+.env*
+*.tmp
+*.swp
+Thumbs.db
+.vscode/
+.idea/
 *.db
 *.db-shm
 *.db-wal

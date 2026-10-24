@@ -2,11 +2,26 @@ export type RunState = 'CREATED' | 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'BLOCKED
 
 export interface Run {
   id: string
+  project_id?: string
   project: string
   prompt: string
   state: RunState
   execution?: 'SIMULATED' | 'LIVE' | 'MIXED' | 'UNKNOWN'
   created_at: string
+}
+
+export interface Project {
+  id: string
+  canonical_path: string
+  display_name: string
+  readiness?: { status: string; reason: string; action?: string }
+}
+
+export interface WorkspaceStatus {
+  workspace_id: string
+  version: string
+  dashboard_url: string
+  local_only: boolean
 }
 
 export interface Stage {

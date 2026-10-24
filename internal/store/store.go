@@ -56,6 +56,12 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) Close() error { return s.DB.Close() }
 
+func (s *Store) WorkspaceID(ctx context.Context) (string, error) {
+	var id string
+	err := s.DB.QueryRowContext(ctx, `SELECT workspace_id FROM workspace_metadata WHERE singleton=1`).Scan(&id)
+	return id, err
+}
+
 func (s *Store) migrate() error {
 	tx, err := s.DB.Begin()
 	if err != nil {
@@ -174,6 +180,25 @@ func (s *Store) migrate() error {
 			return err
 		}
 	}
+	if version < 13 {
+		if _, err = tx.Exec(schemaV13); err != nil {
+			return fmt.Errorf("apply schema migration 13: %w", err)
+		}
+		if _, err = tx.Exec(`INSERT INTO schema_migrations(version,applied_at) VALUES(13,?)`, now().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+	}
+	if version < 14 {
+		if _, err = tx.Exec(schemaV14); err != nil {
+			return fmt.Errorf("apply schema migration 14: %w", err)
+		}
+		if _, err = tx.Exec(`INSERT INTO schema_migrations(version,applied_at) VALUES(14,?)`, now().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+	}
+	if _, err = tx.Exec(`INSERT OR IGNORE INTO workspace_metadata(singleton,workspace_id,created_at) VALUES(1,?,?)`, uuid.NewString(), now().Format(time.RFC3339Nano)); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -238,6 +263,12 @@ var schemaV11 string
 
 //go:embed migrations/012_retention_detail.sql
 var schemaV12 string
+
+//go:embed migrations/013_shared_workspace.sql
+var schemaV13 string
+
+//go:embed migrations/014_workspace_import_events.sql
+var schemaV14 string
 
 func now() time.Time { return time.Now().UTC().Round(0) }
 func parse(v string) *time.Time {
@@ -326,7 +357,14 @@ func (s *Store) createRunWithConfiguration(ctx context.Context, key, project, pr
 	if err = reserveRunDetailSlot(ctx, tx, t); err != nil {
 		return model.Run{}, false, err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO runs(id,project,prompt,state,created_at,started_at,ended_at) VALUES(?,?,?,?,?,?,?)`, r.ID, r.Project, r.Prompt, r.State, t.Format(time.RFC3339Nano), nil, nil)
+	var projectID any
+	if lookupErr := tx.QueryRowContext(ctx, `SELECT id FROM projects WHERE canonical_path=?`, r.Project).Scan(&projectID); lookupErr != nil && lookupErr != sql.ErrNoRows {
+		return r, false, lookupErr
+	}
+	if projectID != nil {
+		r.ProjectID = projectID.(string)
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO runs(id,project,prompt,state,created_at,started_at,ended_at,project_id) VALUES(?,?,?,?,?,?,?,?)`, r.ID, r.Project, r.Prompt, r.State, t.Format(time.RFC3339Nano), nil, nil, projectID)
 	if err != nil {
 		return r, false, err
 	}
@@ -529,8 +567,19 @@ func (s *Store) RegisterProject(ctx context.Context, path, name string, scopes [
 	if err != nil {
 		return err
 	}
-	_, err = s.DB.ExecContext(ctx, `INSERT INTO projects(id,canonical_path,display_name,allowed_scopes_json,created_at) VALUES(?,?,?,?,?) ON CONFLICT(canonical_path) DO UPDATE SET display_name=excluded.display_name,allowed_scopes_json=excluded.allowed_scopes_json`, uuid.NewString(), path, name, string(b), now().Format(time.RFC3339Nano))
+	_, err = s.DB.ExecContext(ctx, `INSERT INTO projects(id,canonical_path,display_name,allowed_scopes_json,created_at) VALUES(?,?,?,?,?) ON CONFLICT(canonical_path) DO NOTHING`, uuid.NewString(), path, name, string(b), now().Format(time.RFC3339Nano))
 	return err
+}
+
+func (s *Store) ProjectByPath(ctx context.Context, canonicalPath string) (model.Project, error) {
+	var project model.Project
+	var scopes string
+	err := s.DB.QueryRowContext(ctx, `SELECT id,canonical_path,display_name,allowed_scopes_json FROM projects WHERE canonical_path=?`, canonicalPath).Scan(&project.ID, &project.CanonicalPath, &project.DisplayName, &scopes)
+	if err != nil {
+		return project, err
+	}
+	err = json.Unmarshal([]byte(scopes), &project.AllowedScopes)
+	return project, err
 }
 
 func (s *Store) Projects(ctx context.Context) ([]model.Project, error) {
@@ -774,7 +823,7 @@ func scanRun(row interface{ Scan(...any) error }) (model.Run, error) {
 func (s *Store) GetRun(ctx context.Context, id string) (model.Run, error) {
 	var run model.Run
 	var state, created, started, ended, encoded, routingProviders, stageProviders string
-	err := s.DB.QueryRowContext(ctx, `SELECT r.id,r.project,r.prompt,r.state,r.created_at,COALESCE(r.started_at,''),COALESCE(r.ended_at,''),COALESCE(c.config_json,''),COALESCE((SELECT group_concat(provider, ',') FROM routing_decisions d WHERE d.run_id=r.id),''),COALESCE((SELECT group_concat(provider, ',') FROM stages st WHERE st.run_id=r.id),'') FROM runs r LEFT JOIN run_configurations c ON c.run_id=r.id WHERE r.id=?`, id).Scan(&run.ID, &run.Project, &run.Prompt, &state, &created, &started, &ended, &encoded, &routingProviders, &stageProviders)
+	err := s.DB.QueryRowContext(ctx, `SELECT r.id,COALESCE(r.project_id,''),r.project,r.prompt,r.state,r.created_at,COALESCE(r.started_at,''),COALESCE(r.ended_at,''),COALESCE(c.config_json,''),COALESCE((SELECT group_concat(provider, ',') FROM routing_decisions d WHERE d.run_id=r.id),''),COALESCE((SELECT group_concat(provider, ',') FROM stages st WHERE st.run_id=r.id),'') FROM runs r LEFT JOIN run_configurations c ON c.run_id=r.id WHERE r.id=?`, id).Scan(&run.ID, &run.ProjectID, &run.Project, &run.Prompt, &state, &created, &started, &ended, &encoded, &routingProviders, &stageProviders)
 	if err != nil {
 		return run, err
 	}
@@ -811,17 +860,27 @@ func (s *Store) RunsPage(ctx context.Context, limit, offset int) ([]model.Run, e
 	return s.runs(ctx, limit, offset)
 }
 
+func (s *Store) RunsPageForProject(ctx context.Context, projectID string, limit, offset int) ([]model.Run, error) {
+	if limit < 1 || limit > 100 || offset < 0 || offset > 1_000_000 {
+		return nil, fmt.Errorf("RUN_PAGE_INVALID")
+	}
+	return s.runsForProject(ctx, projectID, limit, offset)
+}
+
 func (s *Store) RunCount(ctx context.Context) (int, error) {
 	var count int
 	err := s.DB.QueryRowContext(ctx, `SELECT count(*) FROM runs`).Scan(&count)
 	return count, err
 }
 
-func (s *Store) runs(ctx context.Context, limit, offset int) ([]model.Run, error) {
-	if limit == 0 {
-		limit = -1
-	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT r.id,r.project,r.prompt,r.state,r.created_at,COALESCE(r.started_at,''),COALESCE(r.ended_at,''),COALESCE(c.config_json,''),COALESCE((SELECT group_concat(provider, ',') FROM routing_decisions d WHERE d.run_id=r.id),''),COALESCE((SELECT group_concat(provider, ',') FROM stages st WHERE st.run_id=r.id),'') FROM runs r LEFT JOIN run_configurations c ON c.run_id=r.id ORDER BY r.created_at DESC,r.id DESC LIMIT ? OFFSET ?`, limit, offset)
+func (s *Store) RunCountForProject(ctx context.Context, projectID string) (int, error) {
+	var count int
+	err := s.DB.QueryRowContext(ctx, `SELECT count(*) FROM runs WHERE project_id=?`, projectID).Scan(&count)
+	return count, err
+}
+
+func (s *Store) runsForProject(ctx context.Context, projectID string, limit, offset int) ([]model.Run, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT r.id,r.project_id,r.project,r.prompt,r.state,r.created_at,COALESCE(r.started_at,''),COALESCE(r.ended_at,''),COALESCE(c.config_json,''),COALESCE((SELECT group_concat(provider, ',') FROM routing_decisions d WHERE d.run_id=r.id),''),COALESCE((SELECT group_concat(provider, ',') FROM stages st WHERE st.run_id=r.id),'') FROM runs r LEFT JOIN run_configurations c ON c.run_id=r.id WHERE r.project_id=? ORDER BY r.created_at DESC,r.id DESC LIMIT ? OFFSET ?`, projectID, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -830,7 +889,36 @@ func (s *Store) runs(ctx context.Context, limit, offset int) ([]model.Run, error
 	for rows.Next() {
 		var r model.Run
 		var state, created, started, ended, encoded, routingProviders, stageProviders string
-		if err = rows.Scan(&r.ID, &r.Project, &r.Prompt, &state, &created, &started, &ended, &encoded, &routingProviders, &stageProviders); err != nil {
+		if err = rows.Scan(&r.ID, &r.ProjectID, &r.Project, &r.Prompt, &state, &created, &started, &ended, &encoded, &routingProviders, &stageProviders); err != nil {
+			return nil, err
+		}
+		r.State = model.RunState(state)
+		r.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+		if err != nil {
+			return nil, err
+		}
+		r.StartedAt = parse(started)
+		r.EndedAt = parse(ended)
+		r.Execution = executionFromRouteEvidence(encoded, routingProviders, stageProviders)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) runs(ctx context.Context, limit, offset int) ([]model.Run, error) {
+	if limit == 0 {
+		limit = -1
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT r.id,COALESCE(r.project_id,''),r.project,r.prompt,r.state,r.created_at,COALESCE(r.started_at,''),COALESCE(r.ended_at,''),COALESCE(c.config_json,''),COALESCE((SELECT group_concat(provider, ',') FROM routing_decisions d WHERE d.run_id=r.id),''),COALESCE((SELECT group_concat(provider, ',') FROM stages st WHERE st.run_id=r.id),'') FROM runs r LEFT JOIN run_configurations c ON c.run_id=r.id ORDER BY r.created_at DESC,r.id DESC LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []model.Run
+	for rows.Next() {
+		var r model.Run
+		var state, created, started, ended, encoded, routingProviders, stageProviders string
+		if err = rows.Scan(&r.ID, &r.ProjectID, &r.Project, &r.Prompt, &state, &created, &started, &ended, &encoded, &routingProviders, &stageProviders); err != nil {
 			return nil, err
 		}
 		r.State = model.RunState(state)

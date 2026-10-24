@@ -1,17 +1,24 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/spectide/spectide/internal/app"
 	"github.com/spectide/spectide/internal/buildinfo"
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
@@ -19,14 +26,256 @@ import (
 )
 
 func executeCLI(t *testing.T, db string, args ...string) (string, error) {
+	return executeCLIInput(t, db, "", args...)
+}
+
+func executeCLIInput(t *testing.T, db, input string, args ...string) (string, error) {
 	t.Helper()
 	root := Root()
 	var output bytes.Buffer
 	root.SetOut(&output)
 	root.SetErr(&output)
+	root.SetIn(strings.NewReader(input))
 	root.SetArgs(append([]string{"--db", db}, args...))
 	err := root.Execute()
 	return output.String(), err
+}
+
+func TestLegacyImportDeclineDoesNotCopyOrChangeSource(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "legacy.db")
+	destination := filepath.Join(dir, "new", "workspace.db")
+	original := []byte("legacy source must remain untouched")
+	if err := os.WriteFile(source, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	confirmed, err := confirmLegacyImport(bufio.NewReader(strings.NewReader("no\n")), &output, source, destination)
+	if err != nil || confirmed {
+		t.Fatalf("declined import confirmed=%v err=%v", confirmed, err)
+	}
+	if !strings.Contains(output.String(), source) || !strings.Contains(output.String(), destination) {
+		t.Fatalf("confirmation prompt omitted paths: %s", output.String())
+	}
+	got, err := os.ReadFile(source)
+	if err != nil || !bytes.Equal(got, original) {
+		t.Fatalf("decline changed source: %q err=%v", got, err)
+	}
+	if _, err = os.Lstat(destination); !os.IsNotExist(err) {
+		t.Fatalf("decline modified destination: %v", err)
+	}
+}
+
+func TestSetupDeclinedLeavesProjectConfigAndWorkspaceUnchanged(t *testing.T) {
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := t.TempDir()
+	if err = os.Chdir(project); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWD) })
+	db := filepath.Join(t.TempDir(), "workspace.db")
+	_, err = executeCLIInput(t, db, "no\n", "setup")
+	if err == nil || !strings.Contains(err.Error(), "SETUP_DECLINED") {
+		t.Fatalf("declined setup error=%v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(project, ".spectide", "config.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("declined setup created configuration: %v", statErr)
+	}
+	if _, statErr := os.Stat(db); !os.IsNotExist(statErr) {
+		t.Fatalf("declined setup created workspace: %v", statErr)
+	}
+}
+
+func TestSetupConfirmsConfigThenReusesDashboardAndIsIdempotent(t *testing.T) {
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := t.TempDir()
+	if err = os.Chdir(project); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWD) })
+	db := filepath.Join(t.TempDir(), "workspace.db")
+	legacyState, err := store.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyState.Close()
+	state, err := app.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	statusServer := httptest.NewServer(state.API.Handler())
+	previousURL := app.DefaultDashboardURL
+	app.DefaultDashboardURL = statusServer.URL
+	state.API.DashboardURL = statusServer.URL
+	t.Cleanup(func() { app.DefaultDashboardURL = previousURL; statusServer.Close() })
+	output, err := executeCLIInput(t, db, "yes\n", "setup")
+	if err != nil || !strings.Contains(output, "SpecTide dashboard ready: "+statusServer.URL) {
+		t.Fatalf("setup output=%s err=%v", output, err)
+	}
+	canonical, err := filepath.EvalSymlinks(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := config.ProjectPath(canonical)
+	firstConfig, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("confirmed setup did not create project config: %v", err)
+	}
+	output, err = executeCLIInput(t, db, "yes\n", "setup")
+	if err != nil || !strings.Contains(output, "SpecTide dashboard ready") {
+		t.Fatalf("repeat setup output=%s err=%v", output, err)
+	}
+	secondConfig, err := os.ReadFile(configPath)
+	if err != nil || string(firstConfig) != string(secondConfig) {
+		t.Fatalf("repeat setup changed project config: %v", err)
+	}
+	projects, err := state.Store.Projects(context.Background())
+	if err != nil || len(projects) != 1 {
+		t.Fatalf("repeat setup project count=%d err=%v", len(projects), err)
+	}
+}
+
+func TestServePublishesActualBoundLoopbackURL(t *testing.T) {
+	if os.Getenv("SPECTIDE_SERVE_URL_HELPER") == "1" {
+		root := Root()
+		root.SetArgs([]string{"--db", os.Getenv("SPECTIDE_SERVE_URL_DB"), "serve", "--port", "0"})
+		if err := root.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	db := filepath.Join(t.TempDir(), "serve.db")
+	command := exec.Command(os.Args[0], "-test.run=^TestServePublishesActualBoundLoopbackURL$")
+	command.Env = append(os.Environ(), "SPECTIDE_SERVE_URL_HELPER=1", "SPECTIDE_SERVE_URL_DB="+db)
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if command.ProcessState == nil {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+		}
+	}()
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	if err != nil {
+		t.Fatalf("serve did not publish its URL: %q err=%v", line, err)
+	}
+	const prefix = "SpecTide listening at http://127.0.0.1:"
+	if !strings.HasPrefix(line, prefix) {
+		t.Fatalf("serve URL line=%q", line)
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(line, prefix)))
+	if err != nil || port < 1 || port > 65535 {
+		t.Fatalf("serve published invalid port in %q: %v", line, err)
+	}
+	response, err := http.Get("http://127.0.0.1:" + strconv.Itoa(port) + "/healthz")
+	if err != nil {
+		t.Fatalf("published URL is unreachable: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("published URL returned status %d", response.StatusCode)
+	}
+}
+
+func TestServeCustomPortCollisionExplainsIsolation(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+	output, err := executeCLI(t, filepath.Join(t.TempDir(), "serve.db"), "serve", "--port", strconv.Itoa(port))
+	if err == nil || !strings.Contains(err.Error(), "CUSTOM_PORT_OCCUPIED") || !strings.Contains(err.Error(), "choose another loopback port") {
+		t.Fatalf("custom port collision output=%s err=%v", output, err)
+	}
+}
+
+func TestSecondDefaultServeReportsMatchingWorkspaceDashboard(t *testing.T) {
+	blocker, bindErr := net.Listen("tcp", "127.0.0.1:4747")
+	if bindErr == nil {
+		defer blocker.Close()
+	} else if !strings.Contains(strings.ToLower(bindErr.Error()), "address already in use") {
+		t.Skipf("cannot prepare default-port collision fixture: %v", bindErr)
+	}
+	db := filepath.Join(t.TempDir(), "serve.db")
+	state, err := app.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	statusServer := httptest.NewServer(state.API.Handler())
+	previousURL := app.DefaultDashboardURL
+	app.DefaultDashboardURL = statusServer.URL
+	state.API.DashboardURL = statusServer.URL
+	t.Cleanup(func() { app.DefaultDashboardURL = previousURL; statusServer.Close() })
+	output, err := executeCLI(t, db, "serve")
+	if err != nil || !strings.Contains(output, "already has a verified dashboard at "+statusServer.URL) || !strings.Contains(output, "spectide dashboard") {
+		t.Fatalf("second serve output=%s err=%v", output, err)
+	}
+}
+
+func TestDashboardReusesVerifiedWorkspaceForOneHundredInvocations(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "state.db")
+	previousURL := app.DefaultDashboardURL
+	state, err := app.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	var statusRequests atomic.Int64
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/workspace/status" {
+			statusRequests.Add(1)
+		}
+		state.API.Handler().ServeHTTP(w, r)
+	})
+	server := httptest.NewServer(handler)
+	app.DefaultDashboardURL = server.URL
+	state.API.DashboardURL = server.URL
+	t.Cleanup(func() { app.DefaultDashboardURL = previousURL; server.Close() })
+
+	timings := make([]time.Duration, 0, 100)
+	for i := 0; i < 100; i++ {
+		start := time.Now()
+		output, runErr := executeCLI(t, db, "dashboard")
+		timings = append(timings, time.Since(start))
+		if runErr != nil || !strings.Contains(output, server.URL) {
+			t.Fatalf("invocation %d output=%q err=%v", i+1, output, runErr)
+		}
+	}
+	underFiveSeconds := 0
+	var total, fastest, slowest time.Duration
+	for _, duration := range timings {
+		total += duration
+		if fastest == 0 || duration < fastest {
+			fastest = duration
+		}
+		if duration > slowest {
+			slowest = duration
+		}
+		if duration < 5*time.Second {
+			underFiveSeconds++
+		}
+	}
+	if underFiveSeconds < 99 {
+		t.Fatalf("%d/100 dashboard invocations reused the verified URL within five seconds", underFiveSeconds)
+	}
+	if got := statusRequests.Load(); got != 100 {
+		t.Fatalf("verified status probes=%d; want 100 (an invocation may have attempted an unnecessary launch)", got)
+	}
+	t.Logf("dashboard invocations=100 reused=%d failures=%d under_5s=%d duplicate_launches=0 min=%s mean=%s max=%s", statusRequests.Load(), 0, underFiveSeconds, fastest, total/100, slowest)
 }
 
 func TestServeStartupReconcilesAbandonedRunWithoutStartingAnother(t *testing.T) {
@@ -315,6 +564,15 @@ func TestUnprobedLiveRouteIsDeniedBeforeRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err = state.SaveProfile(context.Background(), model.Profile{Name: "local-codex", Provider: "codex", Executable: "codex", AllowedScopes: []string{project}}); err != nil {
+		state.Close()
+		t.Fatal(err)
+	}
+	canonical, canonErr := filepath.EvalSymlinks(project)
+	if canonErr != nil {
+		state.Close()
+		t.Fatal(canonErr)
+	}
+	if err = state.RegisterProject(context.Background(), canonical, filepath.Base(canonical), []string{canonical}); err != nil {
 		state.Close()
 		t.Fatal(err)
 	}

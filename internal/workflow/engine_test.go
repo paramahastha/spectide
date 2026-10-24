@@ -18,6 +18,17 @@ import (
 	workspaceguard "github.com/spectide/spectide/internal/workspace"
 )
 
+func registerProject(t *testing.T, state *store.Store, project string) {
+	t.Helper()
+	canonical, err := filepath.EvalSymlinks(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = state.RegisterProject(context.Background(), canonical, filepath.Base(canonical), []string{canonical}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestFakeLifecyclePersistsEvidence(t *testing.T) {
 	s, e := store.Open(filepath.Join(t.TempDir(), "spectide.db"))
 	if e != nil {
@@ -25,7 +36,9 @@ func TestFakeLifecyclePersistsEvidence(t *testing.T) {
 	}
 	defer s.Close()
 	eng := New(s)
-	r, e := eng.Start(context.Background(), t.TempDir(), "Build a test")
+	project := t.TempDir()
+	registerProject(t, s, project)
+	r, e := eng.Start(context.Background(), project, "Build a test")
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -85,6 +98,7 @@ func TestSimulatedStagePersistsActiveStateBeforeFakeExecution(t *testing.T) {
 	defer s.Close()
 	engine := New(s)
 	project := t.TempDir()
+	registerProject(t, s, project)
 	run, err := engine.Start(context.Background(), project, "Observe a simulated stage")
 	if err != nil {
 		t.Fatal(err)
@@ -197,7 +211,9 @@ func TestFakeProviderScenarioFixturesRunThroughCompleteEngine(t *testing.T) {
 			}
 			engine := New(s)
 			engine.fakeScenarios = map[string]fakeadapter.Adapter{"specify": {Script: steps}}
-			run, err := engine.Start(context.Background(), t.TempDir(), "exercise a deterministic simulated provider scenario")
+			project := t.TempDir()
+			registerProject(t, s, project)
+			run, err := engine.Start(context.Background(), project, "exercise a deterministic simulated provider scenario")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -255,7 +271,9 @@ func TestWorkflowDoesNotCompleteWhenQualityEventPersistenceFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	engine := New(s)
-	run, err := engine.Start(ctx, t.TempDir(), "do not claim success without quality evidence")
+	project := t.TempDir()
+	registerProject(t, s, project)
+	run, err := engine.Start(ctx, project, "do not claim success without quality evidence")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,6 +300,7 @@ func TestTwentyDeterministicRunsCompleteWithRequiredEvidence(t *testing.T) {
 		if err := os.Mkdir(project, 0o700); err != nil {
 			t.Fatalf("create project %d: %v", i, err)
 		}
+		registerProject(t, s, project)
 		run, err := eng.Start(context.Background(), project, fmt.Sprintf("deterministic acceptance run %d", i))
 		if err != nil {
 			t.Fatalf("start run %d: %v", i, err)
@@ -316,6 +335,7 @@ func TestOnlyOneActiveWriterPerWorkspace(t *testing.T) {
 	defer s.Close()
 	eng := New(s)
 	project := t.TempDir()
+	registerProject(t, s, project)
 	first, e := eng.Start(context.Background(), project, "first")
 	if e != nil {
 		t.Fatal(e)
@@ -365,6 +385,7 @@ func TestStartRequiresExistingDirectoryAndEnforcesConfiguredScopes(t *testing.T)
 
 	allowed := t.TempDir()
 	outside := t.TempDir()
+	registerProject(t, s, outside)
 	cfg := config.Default()
 	cfg.AllowedScopes = []string{allowed}
 	if err := config.Save(config.ProjectPath(outside), cfg); err != nil {
@@ -375,6 +396,53 @@ func TestStartRequiresExistingDirectoryAndEnforcesConfiguredScopes(t *testing.T)
 	}
 	if runs, err := s.Runs(context.Background()); err != nil || len(runs) != 0 {
 		t.Fatalf("rejected workspace created runs=%d err=%v", len(runs), err)
+	}
+}
+
+func TestUnregisteredProjectsAreRejectedBeforeRunCreationAndDifferentProjectsCanRunConcurrently(t *testing.T) {
+	state, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	engine := New(state)
+	unregistered := t.TempDir()
+	if _, err = engine.Start(context.Background(), unregistered, "must not create a run"); err == nil || !strings.Contains(err.Error(), "PROJECT_NOT_REGISTERED") {
+		t.Fatalf("unregistered inferred project error=%v", err)
+	}
+	if runs, readErr := state.Runs(context.Background()); readErr != nil || len(runs) != 0 {
+		t.Fatalf("unregistered launch created runs=%d err=%v", len(runs), readErr)
+	}
+	projectA, projectB := t.TempDir(), t.TempDir()
+	registerProject(t, state, projectA)
+	registerProject(t, state, projectB)
+	first, err := engine.Start(context.Background(), projectA, "project A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := engine.Start(context.Background(), projectB, "project B")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == second.ID {
+		t.Fatal("different project runs share an ID")
+	}
+	firstState, err := state.GetRun(context.Background(), first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondState, err := state.GetRun(context.Background(), second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstState.State == model.Blocked || secondState.State == model.Blocked {
+		t.Fatalf("different project writer was blocked: A=%s B=%s", firstState.State, secondState.State)
+	}
+	if _, err = engine.Wait(context.Background(), first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = engine.Wait(context.Background(), second.ID); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -391,6 +459,7 @@ func TestStartRejectsProjectConfigFileAndParentSymlinkEscapes(t *testing.T) {
 			}
 			defer state.Close()
 			root := t.TempDir()
+			registerProject(t, state, root)
 			outside := t.TempDir()
 			outsideConfig := config.ProjectPath(outside)
 			if err := config.Save(outsideConfig, config.Default()); err != nil {
@@ -442,6 +511,7 @@ func TestStartCanonicalizesSymlinkWithinAllowedScope(t *testing.T) {
 	if err := config.Save(config.ProjectPath(project), cfg); err != nil {
 		t.Fatal(err)
 	}
+	registerProject(t, s, project)
 	run, err := New(s).Start(context.Background(), link, "canonical path")
 	if err != nil {
 		t.Fatal(err)
@@ -469,6 +539,7 @@ func TestEngineUsesConfiguredSimulatedRouteForEveryStage(t *testing.T) {
 	if err = config.Save(config.ProjectPath(project), cfg); err != nil {
 		t.Fatal(err)
 	}
+	registerProject(t, s, project)
 	e := New(s)
 	r, err := e.Start(context.Background(), project, "test route persistence")
 	if err != nil {
@@ -520,6 +591,7 @@ func TestEngineDoesNotSilentlySimulateLiveRoute(t *testing.T) {
 	if _, err = s.SaveProfileCapability(context.Background(), "work", model.ProfileCapability{Provider: "codex", ExecutableFound: true, ApprovedExecutablePath: reference.Path, ExecutableSHA256: reference.SHA256, Version: "1.2.3", Authenticated: "AUTHENTICATED", ModelOverride: true, ModelCatalogStatus: "VERIFIED", ModelValues: []string{"deterministic"}, EffortOverride: "verified", EffortValues: []string{"none"}, ReadOnlyExecution: true, WorkspaceWrite: true, SafetyModes: []string{"read-only", "workspace-write"}}); err != nil {
 		t.Fatal(err)
 	}
+	registerProject(t, s, project)
 	run, err := New(s).Start(context.Background(), project, "task")
 	if err != nil {
 		t.Fatal(err)
@@ -575,6 +647,7 @@ func TestEngineRejectsConfiguredProfileOutsideItsAllowedScope(t *testing.T) {
 	if _, err = s.SaveProfile(context.Background(), model.Profile{Name: "restricted", Provider: "codex", Executable: "codex", AllowedScopes: []string{allowed}}); err != nil {
 		t.Fatal(err)
 	}
+	registerProject(t, s, project)
 	if _, err = New(s).Start(context.Background(), project, "must not cross profile boundary"); err == nil || !strings.Contains(err.Error(), "PROFILE_NOT_ALLOWED") {
 		t.Fatalf("profile scope error=%v", err)
 	}
@@ -591,7 +664,9 @@ func TestRunCanPauseResumeAndCancelFromAnotherEngine(t *testing.T) {
 	defer s.Close()
 	owner := New(s)
 	control := New(s) // Models a separate CLI process sharing the durable store.
-	run, err := owner.Start(context.Background(), initCheckpointGitProject(t), "pause and resume")
+	project := initCheckpointGitProject(t)
+	registerProject(t, s, project)
+	run, err := owner.Start(context.Background(), project, "pause and resume")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -618,7 +693,9 @@ func TestRunCanPauseResumeAndCancelFromAnotherEngine(t *testing.T) {
 	}
 	waitForState(run.ID, model.Running)
 
-	toCancel, err := owner.Start(context.Background(), t.TempDir(), "cross process cancellation")
+	cancelProject := t.TempDir()
+	registerProject(t, s, cancelProject)
+	toCancel, err := owner.Start(context.Background(), cancelProject, "cross process cancellation")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -693,6 +770,8 @@ func TestWorkspaceOwnershipSurvivesStalledHeartbeatAndFencesOtherDatabase(t *tes
 	}
 	defer secondStore.Close()
 	firstEngine := New(firstStore)
+	registerProject(t, firstStore, project)
+	registerProject(t, secondStore, project)
 	run, err := firstEngine.Start(ctx, project, "hold the workspace while stages execute")
 	if err != nil {
 		t.Fatal(err)
@@ -732,6 +811,7 @@ func TestHeartbeatOwnershipLossCancelsActiveWorker(t *testing.T) {
 	engine := New(s)
 	for attempt := 0; attempt < 8; attempt++ {
 		project := t.TempDir()
+		registerProject(t, s, project)
 		run, startErr := engine.Start(ctx, project, "stop when workspace ownership is lost")
 		if startErr != nil {
 			t.Fatal(startErr)

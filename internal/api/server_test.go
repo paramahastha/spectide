@@ -32,6 +32,16 @@ func testServer(t *testing.T) *Server {
 	t.Cleanup(func() { s.Close() })
 	return New(s, workflow.New(s))
 }
+func registerProjectFixture(t *testing.T, server *Server, project string) {
+	t.Helper()
+	canonical, err := filepath.EvalSymlinks(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = server.Store.RegisterProject(context.Background(), canonical, filepath.Base(canonical), []string{canonical}); err != nil {
+		t.Fatal(err)
+	}
+}
 func TestRejectsNonLoopbackHost(t *testing.T) {
 	s := testServer(t)
 	r := httptest.NewRequest(http.MethodGet, "http://attacker.example/api/v1/healthz", nil)
@@ -60,9 +70,39 @@ func TestVersionEndpointUsesSharedBuildVersion(t *testing.T) {
 	}
 }
 
+func TestWorkspaceStatusReturnsOnlySafeIdentityFields(t *testing.T) {
+	s := testServer(t)
+	s.DashboardURL = "http://127.0.0.1:5481"
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/v1/workspace/status", nil)
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"workspace_id", "version", "dashboard_url", "local_only"} {
+		if _, ok := got[key]; !ok {
+			t.Fatalf("status omitted %s: %v", key, got)
+		}
+	}
+	for _, key := range []string{"database", "path", "runtime", "provider_config", "secret"} {
+		if _, ok := got[key]; ok {
+			t.Fatalf("status exposed unsafe field %s", key)
+		}
+	}
+	if got["dashboard_url"] != s.DashboardURL {
+		t.Fatalf("workspace status URL=%v want %s", got["dashboard_url"], s.DashboardURL)
+	}
+}
+
 func TestSimulatedActiveStageIsVisibleThroughReportAPI(t *testing.T) {
 	server := testServer(t)
-	run, err := server.Engine.Start(context.Background(), t.TempDir(), "Observe the active simulated stage")
+	project := t.TempDir()
+	registerProjectFixture(t, server, project)
+	run, err := server.Engine.Start(context.Background(), project, "Observe the active simulated stage")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,6 +237,119 @@ func TestRunHistoryPaginationIsBoundedAndReportsMetadata(t *testing.T) {
 	}
 }
 
+func TestProjectIDRunFilterUsesRegisteredIdentityAndFilteredCounts(t *testing.T) {
+	s := testServer(t)
+	projectA, projectB := t.TempDir(), t.TempDir()
+	registerProjectFixture(t, s, projectA)
+	registerProjectFixture(t, s, projectB)
+	canonicalA, err := filepath.EvalSymlinks(projectA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalB, err := filepath.EvalSymlinks(projectB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fixture := range []struct{ path, prompt string }{
+		{canonicalA, "a-1"}, {canonicalA, "a-2"}, {canonicalB, "b-1"},
+	} {
+		if _, err := s.Store.CreateRun(context.Background(), fixture.path, fixture.prompt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err = s.Store.CreateRun(context.Background(), t.TempDir(), "unassigned legacy run"); err != nil {
+		t.Fatal(err)
+	}
+	project, err := s.Store.ProjectByPath(context.Background(), canonicalA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := func(target string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodGet, "http://127.0.0.1"+target, nil)
+		r.Host = "127.0.0.1"
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		return w
+	}
+	page := call("/api/v1/runs?project_id=" + project.ID + "&limit=1&offset=1")
+	var runs []model.Run
+	if err = json.Unmarshal(page.Body.Bytes(), &runs); err != nil {
+		t.Fatal(err)
+	}
+	if page.Code != http.StatusOK || len(runs) != 1 || runs[0].ProjectID != project.ID || runs[0].Prompt == "b-1" || page.Header().Get("X-Total-Count") != "2" || page.Header().Get("X-Has-More") != "false" {
+		t.Fatalf("filtered page status=%d runs=%+v headers=%v body=%s", page.Code, runs, page.Header(), page.Body.String())
+	}
+	if invalid := call("/api/v1/runs?project_id=unknown"); invalid.Code != http.StatusBadRequest {
+		t.Fatalf("unknown project selector status=%d body=%s", invalid.Code, invalid.Body.String())
+	}
+	if invalid := call("/api/v1/runs?project_id=" + project.ID + "&limit=1000000"); invalid.Code != http.StatusBadRequest {
+		t.Fatalf("oversized selector page status=%d", invalid.Code)
+	}
+	if invalid := call("/api/v1/runs?project_id=" + project.ID + "&offset=1000001"); invalid.Code != http.StatusBadRequest {
+		t.Fatalf("uncapped selector offset status=%d", invalid.Code)
+	}
+	unfiltered := call("/api/v1/runs")
+	if unfiltered.Code != http.StatusOK || unfiltered.Header().Get("X-Total-Count") != "4" || !strings.Contains(unfiltered.Body.String(), "unassigned legacy run") {
+		t.Fatalf("unfiltered legacy history status=%d headers=%v body=%s", unfiltered.Code, unfiltered.Header(), unfiltered.Body.String())
+	}
+}
+
+func TestRunCreateRequiresExactlyOneProjectSelector(t *testing.T) {
+	s := testServer(t)
+	project := t.TempDir()
+	registerProjectFixture(t, s, project)
+	project, err := filepath.EvalSymlinks(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := s.Store.ProjectByPath(context.Background(), project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, payload := range []string{
+		`{"project_id":"` + stored.ID + `","project":"` + project + `","prompt":"both"}`,
+		`{"prompt":"neither"}`,
+	} {
+		r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs", strings.NewReader(payload))
+		r.Host = "127.0.0.1"
+		r.Header.Set("X-SpecTide-CSRF", s.CSRF)
+		r.Header.Set("Idempotency-Key", "selector-test-001")
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("selector payload status=%d body=%s", w.Code, w.Body.String())
+		}
+	}
+	if runs, err := s.Store.Runs(context.Background()); err != nil || len(runs) != 0 {
+		t.Fatalf("invalid selector payloads created %d runs: %v", len(runs), err)
+	}
+}
+
+func TestProjectRegistrationRequiresAbsoluteDirectoryAndIsIdempotent(t *testing.T) {
+	s := testServer(t)
+	project := t.TempDir()
+	call := func(path string) *httptest.ResponseRecorder {
+		payload, _ := json.Marshal(map[string]string{"path": path})
+		r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/projects", strings.NewReader(string(payload)))
+		r.Host = "127.0.0.1"
+		r.Header.Set("X-SpecTide-CSRF", s.CSRF)
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		return w
+	}
+	if relative := call("relative/project"); relative.Code != http.StatusBadRequest {
+		t.Fatalf("relative project path status=%d", relative.Code)
+	}
+	created := call(project)
+	if created.Code != http.StatusCreated || !strings.Contains(created.Body.String(), `"readiness"`) {
+		t.Fatalf("create response status=%d body=%s", created.Code, created.Body.String())
+	}
+	existing := call(project)
+	if existing.Code != http.StatusOK {
+		t.Fatalf("idempotent response status=%d body=%s", existing.Code, existing.Body.String())
+	}
+}
+
 func TestCapabilitiesEndpointExposesOnlyPersistedNonSecretEvidence(t *testing.T) {
 	s := testServer(t)
 	profile := model.Profile{Name: "safe-codex", Provider: "codex", Executable: "/bin/sh", AllowedScopes: []string{"/workspace"}}
@@ -223,6 +376,7 @@ func TestCapabilitiesEndpointExposesOnlyPersistedNonSecretEvidence(t *testing.T)
 func TestConfigurationValidationEndpointUsesRoutePreviewWithoutRunCreation(t *testing.T) {
 	s := testServer(t)
 	project := t.TempDir()
+	registerProjectFixture(t, s, project)
 	r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/config/validate", strings.NewReader(`{"project":"`+project+`","prompt":"inspect"}`))
 	r.Host = "127.0.0.1"
 	r.Header.Set("X-SpecTide-CSRF", s.CSRF)
@@ -329,6 +483,7 @@ func TestRejectsInvalidEventCursor(t *testing.T) {
 func TestCreateRun(t *testing.T) {
 	s := testServer(t)
 	project := t.TempDir()
+	registerProjectFixture(t, s, project)
 	body, err := json.Marshal(map[string]string{"project": project, "prompt": "test"})
 	if err != nil {
 		t.Fatal(err)
@@ -377,10 +532,36 @@ func TestCreateRun(t *testing.T) {
 	_ = context.Background()
 }
 
+func TestUnregisteredProjectCreateAndPreviewAreRejectedWithoutRecords(t *testing.T) {
+	s := testServer(t)
+	project := t.TempDir()
+	for _, dryRun := range []bool{false, true} {
+		body, _ := json.Marshal(map[string]any{"project": project, "prompt": "must not start", "dry_run": dryRun})
+		r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs", strings.NewReader(string(body)))
+		r.Host = "127.0.0.1"
+		r.Header.Set("X-SpecTide-CSRF", s.CSRF)
+		r.Header.Set("Idempotency-Key", "unregistered-request-123")
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		if w.Code != http.StatusUnprocessableEntity || !strings.Contains(w.Body.String(), "PROJECT_NOT_REGISTERED") {
+			t.Fatalf("dry_run=%v status=%d body=%s", dryRun, w.Code, w.Body.String())
+		}
+	}
+	runs, err := s.Store.Runs(context.Background())
+	if err != nil || len(runs) != 0 {
+		t.Fatalf("unregistered requests created runs=%d err=%v", len(runs), err)
+	}
+	projects, err := s.Store.Projects(context.Background())
+	if err != nil || len(projects) != 0 {
+		t.Fatalf("unregistered requests registered projects=%d err=%v", len(projects), err)
+	}
+}
+
 func TestSecretPromptIsRedactedAcrossRunAPIReportAndSSE(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	server := testServer(t)
 	project := t.TempDir()
+	registerProjectFixture(t, server, project)
 	secret := "synthetic-api-token-1234567890"
 	prompt := "Build a status page with api_key=" + secret
 	body, err := json.Marshal(map[string]string{"project": project, "prompt": prompt})
@@ -500,6 +681,7 @@ func TestRestartResumeDriftIsBlockedThroughAPI(t *testing.T) {
 func TestDryRunPreviewsConfiguredRoutesWithoutCreatingRun(t *testing.T) {
 	s := testServer(t)
 	project := t.TempDir()
+	registerProjectFixture(t, s, project)
 	r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/runs", strings.NewReader(`{"project":"`+project+`","prompt":"inspect","dry_run":true}`))
 	r.Host = "127.0.0.1"
 	r.Header.Set("X-SpecTide-CSRF", s.CSRF)
@@ -518,6 +700,7 @@ func TestDryRunPreviewsConfiguredRoutesWithoutCreatingRun(t *testing.T) {
 func TestDryRunRejectsProjectConfigSymlinkEscape(t *testing.T) {
 	s := testServer(t)
 	project, outside := t.TempDir(), t.TempDir()
+	registerProjectFixture(t, s, project)
 	if err := config.Save(config.ProjectPath(outside), config.Default()); err != nil {
 		t.Fatal(err)
 	}
@@ -541,6 +724,7 @@ func TestDryRunRejectsProjectConfigSymlinkEscape(t *testing.T) {
 func TestDryRunRejectsWorkspaceOutsideConfiguredScopes(t *testing.T) {
 	s := testServer(t)
 	project, allowed := t.TempDir(), t.TempDir()
+	registerProjectFixture(t, s, project)
 	cfg := config.Default()
 	cfg.AllowedScopes = []string{allowed}
 	if err := config.Save(config.ProjectPath(project), cfg); err != nil {
@@ -568,6 +752,7 @@ func TestDryRunRejectsWorkspaceOutsideConfiguredScopes(t *testing.T) {
 func TestDryRunBlocksLiveRouteWithoutAuthorizedStoredProfile(t *testing.T) {
 	s := testServer(t)
 	project := t.TempDir()
+	registerProjectFixture(t, s, project)
 	cfg := config.Default()
 	cfg.DefaultRoute = config.Route{Provider: "codex", Profile: "missing-profile"}
 	if err := config.Save(config.ProjectPath(project), cfg); err != nil {
@@ -602,6 +787,7 @@ func TestDryRunBlocksLiveRouteWithoutAuthorizedStoredProfile(t *testing.T) {
 func TestDryRunRejectsLiveProfileWithoutPersistedCapability(t *testing.T) {
 	s := testServer(t)
 	project := t.TempDir()
+	registerProjectFixture(t, s, project)
 	cfg := config.Default()
 	cfg.DefaultRoute = config.Route{Provider: "codex", Profile: "local-codex"}
 	if err := config.Save(config.ProjectPath(project), cfg); err != nil {
@@ -631,6 +817,7 @@ func TestDryRunRejectsLiveProfileWithoutPersistedCapability(t *testing.T) {
 func TestDryRunRejectsFallbackOutsideProjectBoundaryWithoutCreatingRun(t *testing.T) {
 	s := testServer(t)
 	project := t.TempDir()
+	registerProjectFixture(t, s, project)
 	outside := t.TempDir()
 	cfg := config.Default()
 	cfg.DefaultRoute = config.Route{

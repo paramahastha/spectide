@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -21,10 +22,12 @@ import (
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/events"
 	"github.com/spectide/spectide/internal/model"
+	projectsvc "github.com/spectide/spectide/internal/projects"
 	"github.com/spectide/spectide/internal/quality"
 	"github.com/spectide/spectide/internal/routing"
 	"github.com/spectide/spectide/internal/security"
 	"github.com/spectide/spectide/internal/speckit"
+	"github.com/spectide/spectide/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -43,6 +46,15 @@ func commandOutput(c *cobra.Command) io.Writer {
 		return io.Discard
 	}
 	return c.OutOrStdout()
+}
+
+func confirmLegacyImport(reader *bufio.Reader, output io.Writer, source, destination string) (bool, error) {
+	fmt.Fprintf(output, "Legacy state: %s\nNew workspace: %s\nImport this state with a private backup? [y/N] ", source, destination)
+	answer, err := reader.ReadString('\n')
+	if err != nil && len(answer) == 0 {
+		return false, err
+	}
+	return strings.EqualFold(strings.TrimSpace(answer), "y") || strings.EqualFold(strings.TrimSpace(answer), "yes"), nil
 }
 
 func persistedCapability(c adapters.Capability) model.ProfileCapability {
@@ -73,6 +85,115 @@ func Root() *cobra.Command {
 		}
 	}
 	open := func() (*app.App, error) { return app.Open(db) }
+	register := func(c *cobra.Command, raw string) error {
+		a, err := open()
+		if err != nil {
+			return err
+		}
+		defer a.Close()
+		project, created, err := a.Projects.Register(c.Context(), raw, "")
+		if err != nil {
+			return err
+		}
+		if created {
+			fmt.Fprintf(commandOutput(c), "Added %s (%s)\n", project.DisplayName, project.CanonicalPath)
+		} else {
+			fmt.Fprintf(commandOutput(c), "Already added %s (%s)\n", project.DisplayName, project.CanonicalPath)
+		}
+		return nil
+	}
+	root.AddCommand(&cobra.Command{Use: "add [PATH]", Args: cobra.MaximumNArgs(1), Short: "Add an existing project to the shared workspace", RunE: func(c *cobra.Command, args []string) error {
+		path := "."
+		if len(args) > 0 {
+			path = args[0]
+		}
+		return register(c, path)
+	}})
+	root.AddCommand(&cobra.Command{Use: "setup", Args: cobra.NoArgs, Short: "Set up the current project in the shared workspace", RunE: func(c *cobra.Command, _ []string) error {
+		canonical, err := projectsvc.Canonical(".")
+		if err != nil {
+			return err
+		}
+		reader := bufio.NewReader(c.InOrStdin())
+		fmt.Fprintf(commandOutput(c), "Project: %s\nAdd this repository to the shared workspace? [y/N] ", canonical)
+		answer, err := reader.ReadString('\n')
+		if err != nil && len(answer) == 0 {
+			return err
+		}
+		if strings.ToLower(strings.TrimSpace(answer)) != "y" && strings.ToLower(strings.TrimSpace(answer)) != "yes" {
+			return fmt.Errorf("SETUP_DECLINED")
+		}
+		if db == "" {
+			legacy := app.LegacyDBPath()
+			if legacy != "" {
+				legacyInfo, legacyErr := os.Lstat(legacy)
+				if legacyErr == nil {
+					destination, absErr := filepath.Abs(app.DefaultDBPath())
+					if absErr != nil {
+						return absErr
+					}
+					if !legacyInfo.Mode().IsRegular() || legacyInfo.Mode()&os.ModeSymlink != 0 {
+						return fmt.Errorf("LEGACY_IMPORT_SOURCE_INVALID: %s", legacy)
+					}
+					if _, destinationErr := os.Lstat(destination); destinationErr == nil {
+						fmt.Fprintf(commandOutput(c), "Legacy state found at %s; destination already exists at %s, so no import was attempted.\n", legacy, destination)
+					} else if !os.IsNotExist(destinationErr) {
+						return fmt.Errorf("LEGACY_IMPORT_DESTINATION_UNAVAILABLE")
+					} else {
+						confirmed, confirmErr := confirmLegacyImport(reader, commandOutput(c), legacy, destination)
+						if confirmErr != nil {
+							return confirmErr
+						}
+						if confirmed {
+							backup, importErr := store.ImportLegacyWorkspace(c.Context(), legacy, destination, true)
+							if importErr != nil {
+								return importErr
+							}
+							fmt.Fprintf(commandOutput(c), "Legacy state imported; source retained. Private backup: %s\n", backup)
+						} else {
+							fmt.Fprintln(commandOutput(c), "Legacy state import declined; the source was left unchanged.")
+						}
+					}
+				} else if !os.IsNotExist(legacyErr) {
+					return fmt.Errorf("LEGACY_IMPORT_SOURCE_UNAVAILABLE")
+				}
+			}
+		}
+		projectConfig, err := config.SafeProjectPath(canonical)
+		if err != nil {
+			return err
+		}
+		if _, statErr := os.Stat(projectConfig); os.IsNotExist(statErr) {
+			if err = config.Save(projectConfig, config.Default()); err != nil {
+				return fmt.Errorf("PROJECT_CONFIG_CREATE_FAILED: %w", err)
+			}
+		} else if statErr != nil {
+			return fmt.Errorf("PROJECT_CONFIG_UNAVAILABLE")
+		}
+		a, err := open()
+		if err != nil {
+			return err
+		}
+		defer a.Close()
+		project, created, err := a.Projects.Register(c.Context(), canonical, "")
+		if err != nil {
+			return err
+		}
+		readiness := a.Projects.Readiness(c.Context(), project)
+		url, dashboardErr := a.EnsureDashboard(c.Context(), db)
+		if created {
+			fmt.Fprintf(commandOutput(c), "Added %s (%s)\n", project.DisplayName, project.CanonicalPath)
+		}
+		fmt.Fprintf(commandOutput(c), "Readiness: %s — %s\n", readiness.Status, readiness.Reason)
+		if readiness.Action != "" {
+			fmt.Fprintf(commandOutput(c), "Next: %s\n", readiness.Action)
+		}
+		if dashboardErr != nil {
+			return dashboardErr
+		}
+		fmt.Fprintf(commandOutput(c), "SpecTide dashboard ready: %s\n", url)
+		return nil
+	}})
 	root.AddCommand(&cobra.Command{Use: "version", Run: func(c *cobra.Command, _ []string) { fmt.Fprintf(commandOutput(c), "spectide %s\n", buildinfo.Version) }})
 	root.AddCommand(&cobra.Command{Use: "doctor", Short: "Report local provider and Spec-Kit readiness", RunE: func(c *cobra.Command, _ []string) error {
 		providers := map[string]string{"fake": "SIMULATED_READY", "claude": probe("claude"), "codex": probe("codex"), "opencode": probe("opencode")}
@@ -106,9 +227,18 @@ func Root() *cobra.Command {
 		addr := netJoin(host, port)
 		listener, e := net.Listen("tcp", addr)
 		if e != nil {
-			return e
+			if port == 4747 {
+				url, reuseErr := a.EnsureDashboard(c.Context(), db)
+				if reuseErr != nil {
+					return reuseErr
+				}
+				fmt.Fprintf(commandOutput(c), "This workspace already has a verified dashboard at %s; use `spectide dashboard` to open it.\n", url)
+				return nil
+			}
+			return fmt.Errorf("CUSTOM_PORT_OCCUPIED: cannot bind %s; choose another loopback port: %w", addr, e)
 		}
 		defer listener.Close()
+		a.API.DashboardURL = "http://" + listener.Addr().String()
 		fmt.Fprintf(commandOutput(c), "SpecTide listening at http://%s\n", listener.Addr().String())
 		return http.Serve(listener, a.API.Handler())
 	}}
@@ -254,8 +384,18 @@ func Root() *cobra.Command {
 		fmt.Fprintf(commandOutput(c), "Run %s completed with durable evidence\n", result.ID)
 		return nil
 	}})
-	root.AddCommand(&cobra.Command{Use: "dashboard", Short: "Print the local dashboard URL", Run: func(c *cobra.Command, _ []string) {
-		fmt.Fprintln(commandOutput(c), "Start `spectide serve` then open http://127.0.0.1:4747")
+	root.AddCommand(&cobra.Command{Use: "dashboard", Short: "Open the verified dashboard for the shared workspace", RunE: func(c *cobra.Command, _ []string) error {
+		a, err := open()
+		if err != nil {
+			return err
+		}
+		defer a.Close()
+		url, err := a.EnsureDashboard(c.Context(), db)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(commandOutput(c), "SpecTide dashboard ready: %s\n", url)
+		return nil
 	}})
 	root.AddCommand(&cobra.Command{Use: "logs RUN_ID", Args: cobra.ExactArgs(1), RunE: func(c *cobra.Command, args []string) error {
 		a, e := open()
@@ -279,6 +419,9 @@ func Root() *cobra.Command {
 		if e != nil {
 			return e
 		}
+		for i := range v {
+			v[i].Readiness = a.Projects.Readiness(c.Context(), v[i])
+		}
 		return writeJSON(commandOutput(c), v)
 	}}
 	projects.AddCommand(&cobra.Command{Use: "list", Short: "List registered local projects", RunE: projects.RunE})
@@ -300,19 +443,11 @@ func Root() *cobra.Command {
 			return e
 		}
 		defer a.Close()
-		if e = a.Store.RegisterProject(c.Context(), canonical, filepath.Base(canonical), []string{canonical}); e != nil {
-			return e
-		}
-		registered, e := a.Store.Projects(c.Context())
+		project, _, e := a.Projects.Register(c.Context(), canonical, filepath.Base(canonical))
 		if e != nil {
 			return e
 		}
-		for _, project := range registered {
-			if project.CanonicalPath == canonical {
-				return writeJSON(commandOutput(c), project)
-			}
-		}
-		return fmt.Errorf("registered project was not returned by the store")
+		return writeJSON(commandOutput(c), project)
 	}})
 	root.AddCommand(projects)
 	approvals := &cobra.Command{Use: "approvals", Short: "Manage durable run approvals"}

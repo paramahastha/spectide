@@ -30,8 +30,118 @@ const preview = {
   mode: 'hybrid',
   decisions: [{ stage: 'implement', route: { provider: 'fake', profile: 'offline', model: 'fixture-model', effort: 'high' }, explanation: 'deterministic offline route' }],
 }
+const projectFixture = { id: 'project-fixture', canonical_path: '/workspace/demo', display_name: 'demo' }
+let savedProjectSelection = ''
+const installProjectPreference = (value: string) => {
+  savedProjectSelection = value
+  vi.stubGlobal('localStorage', {
+    getItem: () => savedProjectSelection,
+    setItem: (_key: string, value: string) => { savedProjectSelection = value },
+    removeItem: () => { savedProjectSelection = '' },
+  })
+}
+const selectProjectFixture = () => installProjectPreference(projectFixture.id)
 
 describe('FR-026 dashboard page and state matrix', () => {
+  it('defaults to All projects, filters server activity by project ID, and adds only an absolute path', async () => {
+    const second = { id: 'project-second', canonical_path: '/workspace/second', display_name: 'second' }
+    const third = { id: 'project-third', canonical_path: '/workspace/third', display_name: 'third' }
+    const firstRun = { ...run('COMPLETED', 'run-first'), prompt: 'first project workflow', project_id: projectFixture.id }
+    const secondRun = { ...run('COMPLETED', 'run-second'), prompt: 'second project workflow', project_id: second.id }
+    const requests: Array<{ url: string; body?: string }> = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input); requests.push({ url, body: init?.body?.toString() })
+      if (url.endsWith('/api/v1/version')) return json({ csrf_token: 'csrf-fixture' })
+      if (url.endsWith('/api/v1/projects') && init?.method === 'POST') return json(third, 201)
+      if (url.endsWith('/api/v1/projects')) return json([projectFixture, second])
+      if (url.endsWith('/api/v1/workspace/status')) return json({ workspace_id: 'workspace-fixture', version: 'test', dashboard_url: 'http://127.0.0.1:4747', local_only: true })
+      if (url.endsWith('/api/v1/profiles')) return json([])
+      if (url.includes('/api/v1/runs?project_id=')) return json(url.includes(projectFixture.id) ? [firstRun] : [secondRun])
+      if (url.endsWith('/api/v1/runs')) return json([firstRun, secondRun])
+      return json({}, 404)
+    }))
+    vi.stubGlobal('EventSource', class { close() {} addEventListener() {} })
+    installProjectPreference('')
+    render(<App />)
+    await screen.findByRole('option', { name: /demo/ })
+    expect((document.querySelector('#project-scope-select') as HTMLSelectElement).value).toBe('')
+    expect(await screen.findByText('first project workflow')).toBeTruthy()
+    expect(screen.getByText('second project workflow')).toBeTruthy()
+    fireEvent.change(document.querySelector('#project-scope-select')!, { target: { value: projectFixture.id } })
+    expect(await screen.findByText('first project workflow')).toBeTruthy()
+    await waitFor(() => expect(requests.some((request) => request.url.includes(`project_id=${projectFixture.id}`))).toBe(true))
+    await waitFor(() => expect(screen.queryByText('second project workflow')).toBeNull())
+    fireEvent.change(document.querySelector('#add-project-path')!, { target: { value: '/workspace/third' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add project' }))
+    await screen.findByRole('option', { name: /third/ })
+    expect(JSON.parse(requests.find((request) => request.url.endsWith('/api/v1/projects') && request.body)?.body ?? '{}')).toEqual({ path: '/workspace/third' })
+  })
+
+  it.each(['unknown-project-id', '{malformed-selection'])('clears stale saved project selection %s and falls back to All projects', async (saved) => {
+    installProjectPreference(saved)
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/version')) return json({ csrf_token: 'csrf-fixture' })
+      if (url.endsWith('/api/v1/projects')) return json([projectFixture])
+      if (url.endsWith('/api/v1/workspace/status')) return json({ workspace_id: 'workspace-fixture', version: 'test', dashboard_url: 'http://127.0.0.1:4747', local_only: true })
+      if (url.endsWith('/api/v1/profiles')) return json([])
+      if (url.endsWith('/api/v1/runs')) return json([])
+      return json({}, 404)
+    }))
+    vi.stubGlobal('EventSource', class { close() {} addEventListener() {} })
+    render(<App />)
+    await screen.findByRole('option', { name: /demo/ })
+    await waitFor(() => expect((document.querySelector('#project-scope-select') as HTMLSelectElement).value).toBe(''))
+    expect(savedProjectSelection).toBe('')
+  })
+
+  it('shows the selected project readiness and routes direct actions to configuration or profiles', async () => {
+    const second = { id: 'project-needs-profile', canonical_path: '/workspace/other', display_name: 'other', readiness: { status: 'PROFILE_NOT_AUTHORIZED', reason: 'A provider profile needs authorization.', action: 'Review the local provider profile.' } }
+    const first = { ...projectFixture, readiness: { status: 'MISSING_ROUTE', reason: 'No default route is configured.', action: 'Configure a route for this project.' } }
+    installProjectPreference('')
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/version')) return json({ csrf_token: 'csrf-fixture' })
+      if (url.endsWith('/api/v1/projects')) return json([first, second])
+      if (url.endsWith('/api/v1/workspace/status')) return json({ workspace_id: 'workspace-fixture', version: 'test', dashboard_url: 'http://127.0.0.1:4747', local_only: true })
+      if (url.endsWith('/api/v1/profiles')) return json([])
+      if (url.endsWith('/api/v1/runs')) return json([])
+      return json({}, 404)
+    }))
+    vi.stubGlobal('EventSource', class { close() {} addEventListener() {} })
+    render(<App />)
+    await screen.findByRole('option', { name: /demo/ })
+    fireEvent.change(document.querySelector('#project-scope-select')!, { target: { value: projectFixture.id } })
+    expect(await screen.findByText('No default route is configured.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /Review route settings/ }))
+    expect(screen.getByRole('heading', { name: 'Route preview' })).toBeTruthy()
+    fireEvent.change(document.querySelector('#project-scope-select')!, { target: { value: second.id } })
+    expect(await screen.findByText('A provider profile needs authorization.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /Review provider profiles/ }))
+    expect(screen.getByRole('heading', { name: 'Profiles & models' })).toBeTruthy()
+  })
+
+  it('announces rejected add-project paths in the labeled form', async () => {
+    installProjectPreference('')
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/version')) return json({ csrf_token: 'csrf-fixture' })
+      if (url.endsWith('/api/v1/projects') && init?.method === 'POST') return json({ error: { code: 'PROJECT_INVALID', message: 'Project path is not an accessible directory.' } }, 422)
+      if (url.endsWith('/api/v1/projects')) return json([projectFixture])
+      if (url.endsWith('/api/v1/workspace/status')) return json({ workspace_id: 'workspace-fixture', version: 'test', dashboard_url: 'http://127.0.0.1:4747', local_only: true })
+      if (url.endsWith('/api/v1/profiles')) return json([])
+      if (url.endsWith('/api/v1/runs')) return json([])
+      return json({}, 404)
+    }))
+    vi.stubGlobal('EventSource', class { close() {} addEventListener() {} })
+    render(<App />)
+    await screen.findByRole('option', { name: /demo/ })
+    fireEvent.change(document.querySelector('#add-project-path')!, { target: { value: '/workspace/missing' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add project' }))
+    expect(await screen.findByRole('alert')).toBeTruthy()
+    expect(document.querySelector('#add-project-path')?.getAttribute('aria-describedby')).toBe('add-project-error')
+  })
+
   it.each(['RUNNING', 'PAUSED', 'BLOCKED', 'COMPLETED', 'CANCELLED', 'FAILED'] as RunState[])(
     'labels %s in the run-list surface', (state) => {
       render(<RunList runs={[run(state)]} selected="" onSelect={() => undefined} />)
@@ -107,22 +217,25 @@ describe('FR-026 dashboard page and state matrix', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (url.endsWith('/api/v1/version')) return json({ csrf_token: 'csrf-fixture' })
+      if (url.endsWith('/api/v1/projects')) return json([projectFixture])
+      if (url.endsWith('/api/v1/workspace/status')) return json({ workspace_id: 'workspace-fixture', version: 'test', dashboard_url: 'http://127.0.0.1:4747', local_only: true })
       if (url.endsWith('/api/v1/profiles')) return json([])
       if (url.endsWith('/api/v1/runs') && init?.method === 'POST') {
         requestBody = JSON.parse(String(init.body)) as Record<string, unknown>
         return json(preview)
       }
-      if (url.endsWith('/api/v1/runs')) return json([])
+      if (url.endsWith('/api/v1/runs') || url.includes('/api/v1/runs?project_id=')) return json([])
       return json({}, 404)
     }))
     vi.stubGlobal('EventSource', class { close() {} addEventListener() {} })
     Object.defineProperty(globalThis.crypto, 'randomUUID', { configurable: true, value: () => 'preview-key-12345678' })
+    selectProjectFixture()
     render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: /Route preview/ }))
     fireEvent.click(await screen.findByRole('button', { name: /Preview routes/ }))
     expect(await screen.findByText(/Ready · NOT RUN/)).toBeTruthy()
     expect(requestBody?.dry_run).toBe(true)
-    expect(requestBody?.project).toBe('./examples/fake-provider-demo')
+    expect(requestBody?.project_id).toBe(projectFixture.id)
   })
 
   it.each(['Project path', 'Task prompt'])('ignores a route preview that resolves after %s changes', async (field) => {
@@ -130,13 +243,16 @@ describe('FR-026 dashboard page and state matrix', () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (url.endsWith('/api/v1/version')) return json({ csrf_token: 'csrf-fixture' })
+      if (url.endsWith('/api/v1/projects')) return json([projectFixture])
+      if (url.endsWith('/api/v1/workspace/status')) return json({ workspace_id: 'workspace-fixture', version: 'test', dashboard_url: 'http://127.0.0.1:4747', local_only: true })
       if (url.endsWith('/api/v1/profiles')) return json([])
       if (url.endsWith('/api/v1/runs') && init?.method === 'POST') return new Promise<Response>((resolve) => { resolvePreview = resolve })
-      if (url.endsWith('/api/v1/runs')) return json([])
+      if (url.endsWith('/api/v1/runs') || url.includes('/api/v1/runs?project_id=')) return json([])
       return json({}, 404)
     }))
     vi.stubGlobal('EventSource', class { close() {} addEventListener() {} })
     Object.defineProperty(globalThis.crypto, 'randomUUID', { configurable: true, value: () => 'preview-key-delayed' })
+    selectProjectFixture()
     render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: /Route preview/ }))
     fireEvent.click(await screen.findByRole('button', { name: /Preview routes/ }))
@@ -242,13 +358,16 @@ describe('FR-026 dashboard page and state matrix', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       if (url.endsWith('/api/v1/version')) return json({ csrf_token: 'csrf-fixture' })
+      if (url.endsWith('/api/v1/projects')) return json([projectFixture])
+      if (url.endsWith('/api/v1/workspace/status')) return json({ workspace_id: 'workspace-fixture', version: 'test', dashboard_url: 'http://127.0.0.1:4747', local_only: true })
       if (url.endsWith('/api/v1/profiles')) return json([])
       if (url.endsWith('/api/v1/runs') && init?.method === 'POST') return json(preview)
-      if (url.endsWith('/api/v1/runs')) return json([])
+      if (url.endsWith('/api/v1/runs') || url.includes('/api/v1/runs?project_id=')) return json([])
       return json({}, 404)
     }))
     vi.stubGlobal('EventSource', class { close() {} addEventListener() {} })
     Object.defineProperty(globalThis.crypto, 'randomUUID', { configurable: true, value: () => 'preview-key-12345678' })
+    selectProjectFixture()
     render(<App />)
     fireEvent.click(await screen.findByRole('button', { name: /Route preview/ }))
     fireEvent.click(await screen.findByRole('button', { name: /Preview routes/ }))

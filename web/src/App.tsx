@@ -8,6 +8,8 @@ import {
   type QualityExecution,
   type Report,
   type Run,
+  type Project,
+  type WorkspaceStatus,
 } from './domain'
 
 type View = 'workflow' | 'history' | 'profiles' | 'routing' | 'readiness'
@@ -31,6 +33,13 @@ export function App() {
   const handshakeInFlight = useRef<Promise<string> | null>(null)
   const [appVersion, setAppVersion] = useState('0.1.0-dev')
   const [runs, setRuns] = useState<Run[]>([])
+  const [totalRunCount, setTotalRunCount] = useState<number | null>(null)
+  const [projects, setProjects] = useState<Project[]>([])
+  const [workspaceStatus, setWorkspaceStatus] = useState<WorkspaceStatus | null>(null)
+  const [activeProjectId, setActiveProjectId] = useState('')
+  const [newProjectPath, setNewProjectPath] = useState('')
+  const [addProjectError, setAddProjectError] = useState('')
+  const [addingProject, setAddingProject] = useState(false)
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [report, setReport] = useState<Report | null>(null)
   const [events, setEvents] = useState<LocalEvent[]>([])
@@ -98,6 +107,8 @@ export function App() {
       }
       throw new Error(body || `Request failed (${response.status})`)
     }
+    const totalCount = response.headers?.get?.('X-Total-Count')
+    if (totalCount !== null && Number.isFinite(Number(totalCount))) setTotalRunCount(Number(totalCount))
     return response.json() as Promise<T>
   }, [refreshHandshake])
 
@@ -105,12 +116,13 @@ export function App() {
     const request = ++refreshRequest.current
     const requestedSelection = selectedRef.current
     try {
-      const currentRuns = await api<Run[]>('/api/v1/runs')
+      const query = activeProjectId ? `?project_id=${encodeURIComponent(activeProjectId)}` : ''
+      const currentRuns = await api<Run[]>(`/api/v1/runs${query}`)
       if (request !== refreshRequest.current) return
       setRuns(currentRuns)
       setApiConnection('connected')
       const summary = summarizeRuns(currentRuns)
-      setMessage(`${summary.active} active · ${summary.completed} completed · ${summary.total} durable runs`)
+      setMessage(`${summary.active} active · ${summary.completed} completed · ${totalRunCount ?? summary.total} durable runs`)
       if (requestedSelection) {
         const next = await api<Report>(`/api/v1/runs/${encodeURIComponent(requestedSelection)}`)
         if (request === refreshRequest.current && selectedRef.current === requestedSelection) setReport(next)
@@ -120,7 +132,7 @@ export function App() {
       setMessage(`Unable to refresh local state: ${String(error)}`)
       setApiConnection('disconnected')
     }
-  }, [api])
+  }, [activeProjectId, api, totalRunCount])
 
   useEffect(() => {
     let alive = true
@@ -143,12 +155,38 @@ export function App() {
   useEffect(() => {
     if (!token) return
     void refresh()
+    const loadProjects = () => void api<Project[]>('/api/v1/projects').then((items) => {
+      const available = Array.isArray(items) ? items : []
+      setProjects(available)
+      const saved = localStorage.getItem('spectide.project-selection') ?? ''
+      const savedIsValid = saved !== '' && available.some((item) => item.id === saved)
+      if (saved && !savedIsValid) localStorage.removeItem('spectide.project-selection')
+      setActiveProjectId((current) => current && available.some((item) => item.id === current) ? current : savedIsValid ? saved : '')
+    }).catch(() => setProjects([]))
+    loadProjects()
+    void api<WorkspaceStatus>('/api/v1/workspace/status').then(setWorkspaceStatus).catch(() => setWorkspaceStatus(null))
     const loadProfiles = () => void api<Profile[]>('/api/v1/profiles').then((items) => { setProfiles(Array.isArray(items) ? items : []); setProfileError(''); setProfileConnection('connected') }).catch((error) => { setProfileError(String(error)); setProfileConnection('disconnected') })
     loadProfiles()
     const timer = window.setInterval(() => void refresh(), 1800)
     const profileTimer = window.setInterval(loadProfiles, 1800)
-    return () => { window.clearInterval(timer); window.clearInterval(profileTimer) }
+    const projectTimer = window.setInterval(loadProjects, 5000)
+    return () => { window.clearInterval(timer); window.clearInterval(profileTimer); window.clearInterval(projectTimer) }
   }, [api, refresh, token])
+
+  useEffect(() => {
+    if (activeProjectId && !projects.some((item) => item.id === activeProjectId)) {
+      setActiveProjectId('')
+      localStorage.removeItem('spectide.project-selection')
+      setSelected('')
+      setReport(null)
+      setEvents([])
+    } else if (activeProjectId) {
+      localStorage.setItem('spectide.project-selection', activeProjectId)
+      setSelected('')
+      setReport(null)
+      setEvents([])
+    }
+  }, [activeProjectId, projects])
 
   useEffect(() => {
     setReport(null)
@@ -250,15 +288,29 @@ export function App() {
   }, [connection, token, view])
 
   const selectedRun = useMemo(() => runs.find((run) => run.id === selected), [runs, selected])
-  async function startRun(nextPrompt = prompt, nextProject = project) {
-    if (!token || busy) return
+  const activeProject = projects.find((item) => item.id === activeProjectId)
+  async function addProject(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!newProjectPath.trim() || addingProject) return
+    setAddingProject(true); setAddProjectError('')
+    try {
+      const created = await api<Project>('/api/v1/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: newProjectPath.trim() }) })
+      setProjects((current) => current.some((item) => item.id === created.id) ? current : [...current, created])
+      setActiveProjectId(created.id)
+      setNewProjectPath('')
+      setMessage(`${created.display_name} is ready to configure`)
+    } catch (error) { setAddProjectError(String(error)) }
+    finally { setAddingProject(false) }
+  }
+  async function startRun(nextPrompt = prompt) {
+    if (!token || busy || !activeProjectId) { if (!activeProjectId) setMessage('Select a registered project before starting work'); return }
     setBusy(true)
     setMessage('Starting a workflow using the configured routes…')
     try {
       const created = await api<Run>('/api/v1/runs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
-        body: JSON.stringify({ project: nextProject, prompt: nextPrompt }),
+        body: JSON.stringify({ project_id: activeProjectId, prompt: nextPrompt }),
       })
       setSelected(created.id)
       setView('workflow')
@@ -317,18 +369,19 @@ export function App() {
     }
     setPreviewError('')
     const request = ++previewRequest.current
-    const intent = `${project}\u0000${prompt}`
+    if (!activeProjectId) { setPreviewState('blocked'); setPreviewError('Select a registered project before previewing routes.'); return }
+    const intent = `${activeProjectId}\u0000${prompt}`
     try {
       const result = await api<RoutePreview>('/api/v1/runs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
-        body: JSON.stringify({ project, prompt, dry_run: true }),
+        body: JSON.stringify({ project_id: activeProjectId, prompt, dry_run: true }),
       })
-      if (request !== previewRequest.current || intent !== `${project}\u0000${prompt}`) return
+      if (request !== previewRequest.current || intent !== `${activeProjectId}\u0000${prompt}`) return
       setPreview(result)
       setPreviewState('ready')
     } catch (error) {
-      if (request !== previewRequest.current || intent !== `${project}\u0000${prompt}`) return
+      if (request !== previewRequest.current || intent !== `${activeProjectId}\u0000${prompt}`) return
       const detail = String(error)
       setPreview(null)
       setPreviewError(detail)
@@ -354,8 +407,30 @@ export function App() {
       <main className="main">
         <header className="page-head">
           <div><div className="eyebrow">SPEC-KIT · LOCAL WORKSPACE</div><h1>{view === 'profiles' ? 'Profiles & models' : view === 'readiness' ? 'Profile readiness' : view === 'routing' ? 'Route preview' : view === 'history' ? 'Run history' : 'Workflow control'}</h1><p className="status-line" role="status"><span className={`status-dot ${connection === 'disconnected' ? 'offline' : ''}`} />{message}</p></div>
-          <button className="button button-primary" disabled={busy || !token} onClick={() => void startRun('Run deterministic offline verification', './examples/fake-provider-demo')}><span className="button-symbol">＋</span> Run offline demo</button>
+          <button className="button button-primary" disabled={busy || !token || !activeProjectId} onClick={() => void startRun('Run deterministic offline verification')}><span className="button-symbol">＋</span> Run offline demo</button>
         </header>
+
+        <section className="project-scope" aria-label="Project scope">
+          <label htmlFor="project-scope-select">Project scope</label>
+          <select id="project-scope-select" value={activeProjectId} onChange={(event) => setActiveProjectId(event.target.value)}>
+            <option value="">All projects</option>
+            {projects.map((item) => <option value={item.id} key={item.id}>{item.display_name} · {item.canonical_path}</option>)}
+          </select>
+          <span>{activeProjectId ? `Showing ${activeProject?.display_name ?? 'selected project'} · ${totalRunCount ?? runs.length} runs` : `Showing all projects · ${totalRunCount ?? runs.length} runs${workspaceStatus?.local_only ? ' · local only' : ''}`}</span>
+        </section>
+        <form className="add-project-form" onSubmit={(event) => void addProject(event)} aria-label="Add project">
+          <label htmlFor="add-project-path">Add an existing project</label>
+          <input id="add-project-path" type="text" autoComplete="off" placeholder="Absolute path to a project folder" value={newProjectPath} onChange={(event) => setNewProjectPath(event.target.value)} aria-describedby={addProjectError ? 'add-project-error' : undefined} />
+          <button className="button button-secondary" type="submit" disabled={addingProject || !token || !newProjectPath.trim()}>{addingProject ? 'Adding…' : 'Add project'}</button>
+          {addProjectError && <p id="add-project-error" className="form-error" role="alert">{addProjectError}</p>}
+        </form>
+        {activeProject && <div className={`project-readiness ${activeProject.readiness?.status === 'READY' ? 'ready' : ''}`} role="status">
+          <strong>{activeProject.display_name} · {activeProject.readiness?.status ?? 'READINESS UNKNOWN'}</strong>
+          <span>{activeProject.readiness?.reason ?? 'Refresh project status to assess configuration.'}</span>
+          {activeProject.readiness?.action && <span>{activeProject.readiness.action}</span>}
+          {activeProject.readiness?.status === 'MISSING_CONFIGURATION' || activeProject.readiness?.status === 'MISSING_ROUTE' ? <button className="text-button" onClick={() => setView('routing')}>Review route settings →</button> : null}
+          {activeProject.readiness?.status === 'MISSING_PROFILE' || activeProject.readiness?.status === 'PROFILE_NOT_AUTHORIZED' || activeProject.readiness?.status === 'CAPABILITY_NOT_VERIFIED' ? <button className="text-button" onClick={() => setView('profiles')}>Review provider profiles →</button> : null}
+        </div>}
 
         {connection === 'disconnected' && <SharedStateSurface state="disconnected" message="The local SpecTide API cannot be reached. Persisted dashboard data may be stale." />}
         {view === 'routing' ? (

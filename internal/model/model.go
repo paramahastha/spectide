@@ -29,6 +29,7 @@ const (
 
 type Run struct {
 	ID        string     `json:"id"`
+	ProjectID string     `json:"project_id,omitempty"`
 	Project   string     `json:"project"`
 	Prompt    string     `json:"prompt"`
 	State     RunState   `json:"state"`
@@ -379,8 +380,40 @@ type ProfileCapability struct {
 }
 
 type Project struct {
-	ID            string   `json:"id"`
-	CanonicalPath string   `json:"canonical_path"`
-	DisplayName   string   `json:"display_name"`
-	AllowedScopes []string `json:"allowed_scopes"`
+	ID            string           `json:"id"`
+	CanonicalPath string           `json:"canonical_path"`
+	DisplayName   string           `json:"display_name"`
+	AllowedScopes []string         `json:"allowed_scopes"`
+	Readiness     ProjectReadiness `json:"readiness,omitempty"`
+}
+
+type WorkspaceStatus struct {
+	WorkspaceID  string `json:"workspace_id"`
+	Version      string `json:"version"`
+	DashboardURL string `json:"dashboard_url"`
+	LocalOnly    bool   `json:"local_only"`
+}
+
+type WorkspaceImport struct {
+	ID                     string    `json:"id"`
+	SourceWorkspaceID      string    `json:"source_workspace_id"`
+	DestinationWorkspaceID string    `json:"destination_workspace_id"`
+	Status                 string    `json:"status"`
+	BackupReference        string    `json:"backup_reference"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
+}
+
+type WorkspaceImportEvent struct {
+	ID         string    `json:"id"`
+	ImportID   string    `json:"import_id"`
+	Sequence   int       `json:"sequence"`
+	Status     string    `json:"status"`
+	OccurredAt time.Time `json:"occurred_at"`
+}
+
+type ProjectReadiness struct {
+	Status string `json:"status"`
+	Reason string `json:"reason"`
+	Action string `json:"action,omitempty"`
 }
