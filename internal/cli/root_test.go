@@ -10,7 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/spectide/spectide/internal/buildinfo"
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
 	"github.com/spectide/spectide/internal/store"
@@ -25,6 +27,101 @@ func executeCLI(t *testing.T, db string, args ...string) (string, error) {
 	root.SetArgs(append([]string{"--db", db}, args...))
 	err := root.Execute()
 	return output.String(), err
+}
+
+func TestServeStartupReconcilesAbandonedRunWithoutStartingAnother(t *testing.T) {
+	if os.Getenv("SPECTIDE_SERVE_RECOVERY_HELPER") == "1" {
+		root := Root()
+		root.SetArgs([]string{"--db", os.Getenv("SPECTIDE_SERVE_RECOVERY_DB"), "serve", "--port", "0"})
+		if err := root.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	db := filepath.Join(t.TempDir(), "state.db")
+	project := t.TempDir()
+	state, err := store.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := state.CreateRun(context.Background(), project, "abandoned before daemon restart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = state.SetRunState(context.Background(), run.ID, model.Running); err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().UTC().Add(-store.RunOwnerLease - time.Second).Format(time.RFC3339Nano)
+	if _, err = state.DB.ExecContext(context.Background(), `INSERT INTO run_owners(run_id,owner_id,heartbeat_at) VALUES(?,?,?)`, run.ID, "terminated-owner", stale); err != nil {
+		t.Fatal(err)
+	}
+	pausedProject := t.TempDir()
+	pausedRun, err := state.CreateRun(context.Background(), pausedProject, "cancel a paused run after restart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = state.SetRunState(context.Background(), pausedRun.ID, model.Running); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = state.CreateWorkflowApprovalAndPause(context.Background(), pausedRun.ID, "implement", "write implementation changes"); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.AcquireWorkspaceLockOwned(context.Background(), pausedProject, pausedRun.ID, "terminated-paused-owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.RequestRunControl(context.Background(), pausedRun.ID, "cancel"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = state.DB.ExecContext(context.Background(), `UPDATE run_owners SET heartbeat_at=? WHERE run_id=?`, stale, pausedRun.ID); err != nil {
+		t.Fatal(err)
+	}
+	createdRun, reused, err := state.CreateRunWithConfigurationOwned(context.Background(), "created-before-worker", t.TempDir(), "recover a launch before RUNNING", []byte(`{}`), "terminated-launch-owner")
+	if err != nil || reused {
+		t.Fatalf("created launch=%+v reused=%v err=%v", createdRun, reused, err)
+	}
+	if _, err = state.DB.ExecContext(context.Background(), `UPDATE run_owners SET heartbeat_at=? WHERE run_id=?`, stale, createdRun.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = state.Close(); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(os.Args[0], "-test.run=^TestServeStartupReconcilesAbandonedRunWithoutStartingAnother$")
+	command.Env = append(os.Environ(), "SPECTIDE_SERVE_RECOVERY_HELPER=1", "SPECTIDE_SERVE_RECOVERY_DB="+db)
+	var output bytes.Buffer
+	command.Stdout = &output
+	command.Stderr = &output
+	if err = command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- command.Wait() }()
+	defer func() {
+		if command.ProcessState == nil {
+			_ = command.Process.Kill()
+			<-done
+		}
+	}()
+	reader, err := store.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		got, readErr := reader.GetRun(context.Background(), run.ID)
+		cancelled, cancelErr := reader.GetRun(context.Background(), pausedRun.ID)
+		created, createdErr := reader.GetRun(context.Background(), createdRun.ID)
+		if readErr == nil && got.State == model.Blocked && cancelErr == nil && cancelled.State == model.Cancelled && createdErr == nil && created.State == model.Blocked {
+			return
+		}
+		select {
+		case <-done:
+			t.Fatalf("serve exited before recovery: output=%s", output.String())
+		default:
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("serve startup did not recover abandoned run without a new run: output=%s", output.String())
 }
 
 func TestCLIJSONPresentationRedactsNestedSecretValues(t *testing.T) {
@@ -42,6 +139,16 @@ func TestCLIJSONPresentationRedactsNestedSecretValues(t *testing.T) {
 	}
 }
 
+func TestVersionCommandUsesSharedBuildVersion(t *testing.T) {
+	previous := buildinfo.Version
+	buildinfo.Version = "9.8.7-test"
+	t.Cleanup(func() { buildinfo.Version = previous })
+	output, err := executeCLI(t, filepath.Join(t.TempDir(), "version.db"), "version")
+	if err != nil || strings.TrimSpace(output) != "spectide 9.8.7-test" {
+		t.Fatalf("CLI version=%q err=%v", output, err)
+	}
+}
+
 func TestVerifyUsesProjectSpecificQualityDiscovery(t *testing.T) {
 	if _, err := exec.LookPath("npm"); err != nil {
 		t.Skip("npm is unavailable")
@@ -54,6 +161,21 @@ func TestVerifyUsesProjectSpecificQualityDiscovery(t *testing.T) {
 	output, err := executeCLI(t, filepath.Join(t.TempDir(), "cli.db"), "verify", "--project", project)
 	if err != nil || !strings.Contains(output, `"key":"node_tests"`) || strings.Contains(output, `"key":"unit_tests"`) {
 		t.Fatalf("verify did not use target project checks: output=%s err=%v", output, err)
+	}
+}
+
+func TestInitRejectsEscapedProjectMetadataDirectory(t *testing.T) {
+	project, outside := t.TempDir(), t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(project, ".spectide")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := executeCLI(t, filepath.Join(t.TempDir(), "cli.db"), "init", "--project", project)
+	if err == nil || !strings.Contains(err.Error(), "escapes canonical root") {
+		t.Fatalf("init accepted external metadata directory: %v", err)
+	}
+	entries, readErr := os.ReadDir(outside)
+	if readErr != nil || len(entries) != 0 {
+		t.Fatalf("init wrote outside project root: entries=%v err=%v", entries, readErr)
 	}
 }
 

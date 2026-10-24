@@ -73,3 +73,11 @@ func existingOwnerArtifact(projectRoot, featureDir, stage string) (string, bool,
 	}
 	return filepath.ToSlash(rel), true, nil
 }
+
+func stageCommandRequired(projectRoot, featureDir, stage string) (bool, error) {
+	_, present, err := existingOwnerArtifact(projectRoot, featureDir, stage)
+	if err != nil {
+		return false, err
+	}
+	return !present, nil
+}

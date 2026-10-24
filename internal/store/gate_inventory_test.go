@@ -207,6 +207,17 @@ func TestTerminalReportsPreserveRequiredGateMatrix(t *testing.T) {
 	if err = s.SetRunState(ctx, interrupted.ID, model.Running); err != nil {
 		t.Fatal(err)
 	}
+	activeStage := model.Stage{ID: "abandoned-active-stage", RunID: interrupted.ID, Key: "implement", Position: 1, State: model.Pending, Provider: "codex", Profile: "fixture", Attempt: 1}
+	if err = s.AddStage(ctx, activeStage); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SetStage(ctx, activeStage.ID, model.StageRun); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.StartExecutionAttempt(ctx, model.ExecutionAttempt{RunID: interrupted.ID, Stage: "implement", Phase: "implement", Provider: "codex", Profile: "fixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	stale := time.Now().UTC().Add(-RunOwnerLease - time.Second).Format(time.RFC3339Nano)
 	if _, err = s.DB.ExecContext(ctx, `UPDATE run_owners SET heartbeat_at=? WHERE run_id=?`, stale, interrupted.ID); err != nil {
 		t.Fatal(err)
@@ -217,6 +228,14 @@ func TestTerminalReportsPreserveRequiredGateMatrix(t *testing.T) {
 	assertInventory(interrupted.ID, map[string]string{"analyze_clean": "NOT_RUN", "required_tests": "NOT_RUN", "converged": "NOT_RUN", "final_review": "NOT_RUN", "simulated_e2e": "NOT_RUN", "workflow_execution": "BLOCKED"})
 	if report, err := s.Report(ctx, interrupted.ID); err != nil || report.Acceptance.Execution != "LIVE" || report.Acceptance.Verdict != "BLOCKED" {
 		t.Fatalf("interrupted report=%+v err=%v", report.Acceptance, err)
+	}
+	stages, err := s.Stages(ctx, interrupted.ID)
+	if err != nil || len(stages) != 1 || stages[0].State != model.StageFail {
+		t.Fatalf("interrupted stages=%+v err=%v", stages, err)
+	}
+	attempts, err := s.ExecutionAttempts(ctx, interrupted.ID)
+	if err != nil || len(attempts) != 1 || attempts[0].Result != "FAILED" || attempts[0].FinishedAt == nil {
+		t.Fatalf("interrupted attempts=%+v err=%v", attempts, err)
 	}
 
 	simulated := makeRun("successful simulation", false)

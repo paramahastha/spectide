@@ -22,6 +22,15 @@ import (
 	"github.com/spectide/spectide/internal/store"
 )
 
+func canonicalTestDirectory(t *testing.T, path string) string {
+	t.Helper()
+	canonical, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return canonical
+}
+
 type liveFixtureAdapter struct {
 	timeouts        []time.Duration
 	models, efforts []string
@@ -195,7 +204,7 @@ func TestEngineCompletesVerifiedMixedRunWithApplicableEvidence(t *testing.T) {
 	// Engine-owned tests/report inherit the live default route, but must run
 	// locally without requiring synthetic Spec-Kit provider commands.
 	cfg.DefaultRoute = config.Route{Provider: "codex", Profile: "fixture", Model: "fixture/model", Effort: "medium"}
-	cfg.Execution.StageTimeoutSeconds = map[string]int{"plan": 42}
+	cfg.Execution.StageTimeoutSeconds = map[string]int{"plan": 42, "final_review": 61}
 	cfg.StageRoutes = map[string]config.Route{
 		"constitution": {Provider: "codex", Profile: "fixture"},
 		"specify":      {Provider: "codex", Profile: "fixture"},
@@ -225,7 +234,7 @@ func TestEngineCompletesVerifiedMixedRunWithApplicableEvidence(t *testing.T) {
 	engine := NewWithAdapters(state, fixtureAdapter)
 	engine.discover = func(root string) (speckit.Installation, error) {
 		return speckit.Installation{
-			ProjectRoot: root, Verified: true,
+			ProjectRoot: canonicalTestDirectory(t, root), Verified: true,
 			Commands: commands, CommandFiles: commandFiles, CommandHashes: commandHashes,
 		}, nil
 	}
@@ -370,6 +379,16 @@ func TestEngineCompletesVerifiedMixedRunWithApplicableEvidence(t *testing.T) {
 	if !foundConfiguredPlanTimeout {
 		t.Fatalf("configured plan timeout was not delivered to provider adapter: %v", fixtureAdapter.timeouts)
 	}
+	foundConfiguredFinalReviewTimeout := false
+	for _, timeout := range fixtureAdapter.timeouts {
+		if timeout == 61*time.Second {
+			foundConfiguredFinalReviewTimeout = true
+			break
+		}
+	}
+	if !foundConfiguredFinalReviewTimeout {
+		t.Fatalf("configured final-review timeout was not delivered to provider adapter: %v", fixtureAdapter.timeouts)
+	}
 	for _, stage := range []string{"constitution", "specify"} {
 		foundProviderEvent := false
 		for _, event := range reportEvents(t, state, run.ID) {
@@ -506,7 +525,11 @@ func TestRunLiveStageUsesVerifiedCommandAndPersistsSanitizedEvidence(t *testing.
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256(command)
-	installation := speckit.Installation{ProjectRoot: project, Verified: true, Commands: map[string]string{"plan": "/speckit.plan"}, CommandFiles: map[string]string{"plan": rel}, CommandHashes: map[string]string{"plan": hex.EncodeToString(digest[:])}}
+	projectCanonical, err := filepath.EvalSymlinks(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installation := speckit.Installation{ProjectRoot: projectCanonical, Verified: true, Commands: map[string]string{"plan": "/speckit.plan"}, CommandFiles: map[string]string{"plan": rel}, CommandHashes: map[string]string{"plan": hex.EncodeToString(digest[:])}}
 	if _, err = state.SaveProfile(ctx, model.Profile{Name: "fixture", Provider: "codex", Executable: "/bin/sh", AllowedScopes: []string{project}}); err != nil {
 		t.Fatal(err)
 	}
@@ -615,6 +638,10 @@ func TestLiveStageRequiresChangedArtifactAndRejectsSymlinkEscape(t *testing.T) {
 	if err = os.Remove(planPath); err != nil {
 		t.Fatal(err)
 	}
+	removed, err := changedStageArtifacts(root, feature, "plan", before)
+	if err != nil || len(removed) != 1 || removed[0].Kind != "removed" || removed[0].SHA256 != removedArtifactSHA256() {
+		t.Fatalf("intentional artifact removal was not recorded: artifacts=%+v err=%v", removed, err)
+	}
 	missingBefore, err := captureStageArtifacts(root, feature, "plan")
 	if err != nil {
 		t.Fatal(err)
@@ -631,6 +658,32 @@ func TestLiveStageRequiresChangedArtifactAndRejectsSymlinkEscape(t *testing.T) {
 	}
 	if _, err = captureStageArtifacts(root, feature, "plan"); err == nil || !strings.Contains(err.Error(), "STAGE_ARTIFACT_PATH_ESCAPE") {
 		t.Fatalf("expected artifact symlink escape rejection, got %v", err)
+	}
+}
+
+func TestImplementationRenameRecordsRemovalAndNewArtifact(t *testing.T) {
+	root := t.TempDir()
+	oldPath := filepath.Join(root, "src", "old.go")
+	newPath := filepath.Join(root, "src", "new.go")
+	if err := os.MkdirAll(filepath.Dir(oldPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(oldPath, []byte("package src\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := captureStageArtifacts(root, "", "implement")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Rename(oldPath, newPath); err != nil {
+		t.Fatal(err)
+	}
+	after, err := changedStageArtifacts(root, "", "implement", before)
+	if err != nil || len(after) != 2 {
+		t.Fatalf("rename evidence incomplete: artifacts=%+v err=%v", after, err)
+	}
+	if after[0].Path != "src/new.go" || after[1].Path != "src/old.go" || after[1].Kind != "removed" || after[1].SHA256 != removedArtifactSHA256() {
+		t.Fatalf("rename did not preserve both path transitions: %+v", after)
 	}
 }
 

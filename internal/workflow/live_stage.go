@@ -33,6 +33,7 @@ func (e *Engine) runLiveStageWithControlPhase(ctx context.Context, run model.Run
 
 type liveStageOptions struct {
 	templateStage        string
+	timeoutStage         string
 	ownerPath            string
 	LoopCounts           LoopLimits
 	HasLoopCounts        bool
@@ -162,13 +163,25 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 	if err != nil {
 		return nil, err
 	}
+	option := liveStageOptions{}
+	if len(options) > 0 {
+		option = options[0]
+	}
+	timeoutStage := option.timeoutStage
+	if timeoutStage == "" {
+		timeoutStage = stage
+	}
+	stageTimeout := effectiveConfiguration.Execution.StageTimeoutSeconds[timeoutStage]
+	if stageTimeout == 0 {
+		return nil, fmt.Errorf("WORKSPACE_DRIFT: configured stage timeout is missing for %s", timeoutStage)
+	}
 	request := adapters.Request{
 		ProjectRoot:      installation.ProjectRoot,
 		FeatureDirectory: featureDir,
 		Prompt:           prompt,
 		Model:            route.Model,
 		Effort:           route.Effort,
-		Timeout:          time.Duration(effectiveConfiguration.Execution.StageTimeoutSeconds[stage]) * time.Second,
+		Timeout:          time.Duration(stageTimeout) * time.Second,
 		Profile: adapters.Profile{
 			Name: profile.Name, Provider: adapters.ProviderName(profile.Provider),
 			Executable: profile.Executable, ConfigDir: approvedConfig,
@@ -176,10 +189,6 @@ func (e *Engine) runLiveStagePromptPhase(ctx context.Context, run model.Run, sta
 			ApprovedExecutablePath: approvedExecutable.Path, ApprovedExecutableSHA256: approvedExecutable.SHA256,
 			ApprovedConfigDirectory: approvedConfig,
 		},
-	}
-	option := liveStageOptions{}
-	if len(options) > 0 {
-		option = options[0]
 	}
 	if stage == "implement" {
 		e.mu.Lock()
@@ -500,6 +509,38 @@ func (e *Engine) authorizeSensitiveInvocation(ctx context.Context, run model.Run
 	} else if approval.Status != model.ApprovalApproved {
 		return fmt.Errorf("SENSITIVE_ACTION_STATUS_INVALID")
 	}
+	e.mu.Lock()
+	processLock := e.processLocks[run.ID]
+	e.mu.Unlock()
+	if processLock != nil {
+		profiles, profileErr := e.store.Profiles(ctx)
+		if profileErr != nil {
+			return profileErr
+		}
+		var currentProfile *model.Profile
+		for i := range profiles {
+			if profiles[i].Name == profile.Name {
+				currentProfile = &profiles[i]
+				break
+			}
+		}
+		if currentProfile == nil {
+			return fmt.Errorf("PROFILE_NOT_FOUND: %s", profile.Name)
+		}
+		if _, err = workspaceguard.Canonical(projectRoot, currentProfile.AllowedScopes); err != nil {
+			return fmt.Errorf("PROFILE_NOT_ALLOWED: %s", profile.Name)
+		}
+		if _, _, err = e.validateProfileReferences(ctx, run.ID, *currentProfile); err != nil {
+			return err
+		}
+		if configuration, configErr := e.store.RunConfiguration(ctx, run.ID); configErr != nil {
+			return configErr
+		} else if effective, parseErr := parseEffectiveRunConfiguration(configuration.ConfigJSON); parseErr != nil {
+			return parseErr
+		} else if err = routing.ValidateRouteCapability(stage, effective.decisions()[stage].Route, *currentProfile); err != nil {
+			return err
+		}
+	}
 	return e.store.Event(ctx, run.ID, activeStage.Key, "approval.write_authorized", "info", map[string]any{"approval_id": approval.ID, "stage": stage, "phase": phase, "workspace_scope": workspaceScope, "provider": profile.Provider, "profile": profile.Name, "execution": "LIVE"})
 }
 
@@ -655,13 +696,30 @@ func changedStageArtifacts(projectRoot, featureDir, stage string, before map[str
 			paths = append(paths, path)
 		}
 	}
+	removed := make([]string, 0)
+	for path, file := range before {
+		if file.SHA256 != "" {
+			if _, exists := after[path]; !exists {
+				removed = append(removed, path)
+			}
+		}
+	}
 	sort.Strings(paths)
-	artifacts := make([]model.Artifact, 0, len(paths))
+	sort.Strings(removed)
+	artifacts := make([]model.Artifact, 0, len(paths)+len(removed))
 	for _, path := range paths {
 		file := after[path]
 		artifacts = append(artifacts, model.Artifact{Path: path, Kind: file.Kind, SHA256: file.SHA256})
 	}
+	for _, path := range removed {
+		artifacts = append(artifacts, model.Artifact{Path: path, Kind: "removed", SHA256: removedArtifactSHA256()})
+	}
 	return artifacts, nil
+}
+
+func removedArtifactSHA256() string {
+	digest := sha256.Sum256([]byte("spectide:artifact-removed:v1"))
+	return hex.EncodeToString(digest[:])
 }
 
 func artifactKind(path string) string {
@@ -772,6 +830,109 @@ func workspaceGitState(root string, excluded map[string]struct{}) (string, error
 	if err != nil {
 		return "", fmt.Errorf("WORKSPACE_GIT_HEAD_UNAVAILABLE: %w", err)
 	}
+	tracked, err := exec.Command("git", "-C", root, "ls-files", "-z").Output()
+	if err != nil {
+		return "", fmt.Errorf("WORKSPACE_GIT_INDEX_UNAVAILABLE: %w", err)
+	}
+	trackedHash := sha256.New()
+	for _, path := range strings.Split(string(tracked), "\x00") {
+		if path == "" {
+			continue
+		}
+		clean := filepath.ToSlash(filepath.Clean(path))
+		skip := false
+		for excludedPath := range excluded {
+			if clean == excludedPath || strings.HasPrefix(clean, excludedPath+"/") {
+				skip = true
+				break
+			}
+		}
+		if skip {
+			continue
+		}
+		absolute := filepath.Join(root, filepath.FromSlash(clean))
+		info, statErr := os.Lstat(absolute)
+		if statErr != nil {
+			if os.IsNotExist(statErr) {
+				_, _ = fmt.Fprintf(trackedHash, "missing:%s\n", clean)
+				continue
+			}
+			return "", statErr
+		}
+		_, _ = fmt.Fprintf(trackedHash, "%s:%d:%d:", clean, info.Mode(), info.Size())
+		if info.Mode().IsRegular() {
+			content, readErr := os.ReadFile(absolute)
+			if readErr != nil {
+				return "", readErr
+			}
+			digest := sha256.Sum256(content)
+			_, _ = trackedHash.Write(digest[:])
+		} else if info.Mode()&os.ModeSymlink != 0 {
+			target, readErr := os.Readlink(absolute)
+			if readErr != nil {
+				return "", readErr
+			}
+			_, _ = trackedHash.Write([]byte(target))
+		}
+		_, _ = trackedHash.Write([]byte{'\n'})
+	}
+	config, err := exec.Command("git", "-C", root, "config", "--local", "--null", "--list").Output()
+	if err != nil {
+		return "", fmt.Errorf("WORKSPACE_GIT_CONFIG_UNAVAILABLE: %w", err)
+	}
+	indexPath, err := exec.Command("git", "-C", root, "rev-parse", "--git-path", "index").Output()
+	if err != nil {
+		return "", fmt.Errorf("WORKSPACE_GIT_INDEX_UNAVAILABLE: %w", err)
+	}
+	indexFile := strings.TrimSpace(string(indexPath))
+	if !filepath.IsAbs(indexFile) {
+		indexFile = filepath.Join(root, indexFile)
+	}
+	indexContent, err := os.ReadFile(indexFile)
+	if err != nil {
+		return "", fmt.Errorf("WORKSPACE_GIT_INDEX_UNAVAILABLE: %w", err)
+	}
+	hooksPath, hooksConfigErr := exec.Command("git", "-C", root, "config", "--local", "--path", "core.hooksPath").Output()
+	if hooksConfigErr != nil {
+		hooksPath, err = exec.Command("git", "-C", root, "rev-parse", "--git-path", "hooks").Output()
+		if err != nil {
+			return "", fmt.Errorf("WORKSPACE_GIT_HOOKS_UNAVAILABLE: %w", err)
+		}
+	}
+	hooksDir := strings.TrimSpace(string(hooksPath))
+	if !filepath.IsAbs(hooksDir) {
+		hooksDir = filepath.Join(root, hooksDir)
+	}
+	hooksHash := sha256.New()
+	err = filepath.WalkDir(hooksDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if os.IsNotExist(walkErr) {
+			return nil
+		}
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, statErr := entry.Info()
+		if statErr != nil {
+			return statErr
+		}
+		_, _ = fmt.Fprintf(hooksHash, "%s:%d:%d:", path, info.Mode(), info.Size())
+		if info.Mode().IsRegular() {
+			content, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			digest := sha256.Sum256(content)
+			_, _ = hooksHash.Write(digest[:])
+		}
+		_, _ = hooksHash.Write([]byte{'\n'})
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("WORKSPACE_GIT_HOOKS_UNAVAILABLE: %w", err)
+	}
 	var status strings.Builder
 	records := strings.Split(string(output), "\x00")
 	for i := 0; i < len(records); i++ {
@@ -805,7 +966,7 @@ func workspaceGitState(root string, excluded map[string]struct{}) (string, error
 			status.WriteByte(0)
 		}
 	}
-	return hashString(string(head) + "\n" + status.String()), nil
+	return hashString(string(head) + "\n" + status.String() + "\ntracked:" + hex.EncodeToString(trackedHash.Sum(nil)) + "\nconfig:" + hashString(string(config)) + "\nindex:" + hashString(string(indexContent)) + "\nhooks:" + hex.EncodeToString(hooksHash.Sum(nil))), nil
 }
 
 func hashString(value string) string {

@@ -130,10 +130,12 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 				blockedStage, blockedReason = stage, "LIVE_STAGE_UNSUPPORTED: no verified Spec-Kit command for "+stage
 			} else if installationErr != nil {
 				blockedStage, blockedReason = stage, installationErr.Error()
-			} else if !installation.Verified {
-				blockedStage, blockedReason = stage, "SPEC_KIT_INTEGRATION_UNVERIFIED"
-			} else if _, requireErr := speckit.RequireStage(installation, liveSpecKitStage(stage)); requireErr != nil {
-				blockedStage, blockedReason = stage, requireErr.Error()
+			} else if required, pathErr := stageCommandRequired(workspace, featureDir, stage); pathErr != nil {
+				blockedStage, blockedReason = stage, pathErr.Error()
+			} else if required {
+				if _, requireErr := speckit.RequireStage(installation, liveSpecKitStage(stage)); requireErr != nil {
+					blockedStage, blockedReason = stage, requireErr.Error()
+				}
 			} else if featureDir == "" {
 				blockedStage, blockedReason = stage, "SPECIFICATION_NOT_FOUND"
 			}
@@ -146,16 +148,27 @@ func (e *Engine) StartIdempotent(ctx context.Context, key, project, prompt strin
 	if err = e.store.RecoverAbandonedRuns(ctx, time.Now().UTC()); err != nil {
 		return model.Run{}, false, err
 	}
+	manifestHashBefore, manifestErr := qualityManifestHash(workspace)
+	if manifestErr != nil {
+		return model.Run{}, false, manifestErr
+	}
 	qualityRegistry, qualityErr := quality.Discover(workspace, nil)
 	if qualityErr != nil {
 		return model.Run{}, false, qualityErr
 	}
+	manifestHashAfter, manifestErr := qualityManifestHash(workspace)
+	if manifestErr != nil || manifestHashBefore != manifestHashAfter {
+		return model.Run{}, false, fmt.Errorf("QUALITY_CHECK_MANIFEST_DRIFT")
+	}
 	effective := buildEffectiveRunConfiguration(cfg, decisions, profiles, qualityRegistry)
+	if effective.QualitySelectionPolicy != "DISCOVER_AFTER_IMPLEMENTATION" {
+		effective.QualityManifestSHA256 = manifestHashAfter
+	}
 	configurationJSON, err := json.Marshal(effective)
 	if err != nil {
 		return model.Run{}, false, err
 	}
-	r, reused, err := e.store.CreateRunWithConfiguration(ctx, key, project, prompt, configurationJSON)
+	r, reused, err := e.store.CreateRunWithConfigurationOwned(ctx, key, project, prompt, configurationJSON, e.ownerID)
 	if err != nil {
 		return r, false, err
 	}
@@ -291,8 +304,11 @@ func (e *Engine) Cancel(ctx context.Context, id string) error {
 	e.mu.Lock()
 	c := e.cancels[id]
 	e.mu.Unlock()
+	if err := e.store.RequestRunControl(ctx, id, "cancel"); err != nil {
+		return err
+	}
 	if c == nil {
-		return e.store.RequestRunControl(ctx, id, "cancel")
+		return nil
 	}
 	c()
 	return nil
@@ -320,6 +336,11 @@ func (e *Engine) Resume(id string) error {
 	if run.State != model.Paused {
 		return fmt.Errorf("RUN_CONTROL_NOT_ALLOWED: resume for %s", run.State)
 	}
+	if action, controlErr := e.store.RunControl(context.Background(), id); controlErr != nil {
+		return controlErr
+	} else if action == "cancel" {
+		return fmt.Errorf("RUN_CANCEL_PENDING")
+	}
 	canonical, canonicalErr := canonicalWorkspace(run.Project)
 	if canonicalErr != nil || canonical != run.Project {
 		return e.blockUnverifiedRestart(run, fmt.Errorf("WORKSPACE_DRIFT: canonical workspace identity changed"))
@@ -344,12 +365,14 @@ func (e *Engine) Resume(id string) error {
 		return e.blockUnverifiedRestart(run, err)
 	}
 	if fresh {
-		if resume == nil {
-			return e.store.RequestRunControl(context.Background(), id, "resume")
+		if err = e.store.RequestRunControl(context.Background(), id, "resume"); err != nil {
+			return err
 		}
-		select {
-		case resume <- struct{}{}:
-		default:
+		if resume != nil {
+			select {
+			case resume <- struct{}{}:
+			default:
+			}
 		}
 		return nil
 	}
@@ -366,7 +389,7 @@ func (e *Engine) Resume(id string) error {
 		if checkpointState.FeatureDirectory != "" {
 			featureDir = filepath.Join(run.Project, filepath.FromSlash(checkpointState.FeatureDirectory))
 		}
-		installation, featureDir, discoverErr := e.resumeSpecKit(run.Project, decisions, featureDir)
+		installation, featureDir, discoverErr := e.resumeSpecKit(run.Project, decisions, featureDir, checkpointState.NextStage)
 		if discoverErr != nil {
 			return e.blockUnverifiedRestart(run, discoverErr)
 		}
@@ -386,6 +409,14 @@ func (e *Engine) Resume(id string) error {
 		}()
 		if err = e.store.ClaimExpiredPausedRun(context.Background(), id, canonical, e.ownerID, time.Now().UTC()); err != nil {
 			return err
+		}
+		if action, controlErr := e.store.RunControl(context.Background(), id); controlErr != nil {
+			return controlErr
+		} else if action == "cancel" {
+			if err = e.store.FinalizeClaimedPausedCancellation(context.Background(), id, e.ownerID, time.Now().UTC()); err != nil {
+				return err
+			}
+			return fmt.Errorf("RUN_CANCELLED")
 		}
 		if _, _, err = e.verifyRestartCheckpoint(context.Background(), run, configuration); err != nil {
 			return e.blockUnverifiedRestart(run, err)
@@ -441,7 +472,14 @@ func (e *Engine) Resume(id string) error {
 			_ = e.store.ReleaseWorkspaceLock(context.Background(), canonical, id)
 			return err
 		}
-		if err = e.store.ClearRunControl(context.Background(), id); err != nil {
+		if err = e.store.ClearRunControlUnlessCancelled(context.Background(), id); err != nil {
+			if err.Error() == "RUN_CANCEL_PENDING" {
+				if err = e.store.FinalizeClaimedPausedCancellation(context.Background(), id, e.ownerID, time.Now().UTC()); err != nil {
+					_ = e.store.ReleaseWorkspaceLock(context.Background(), canonical, id)
+					return err
+				}
+				return fmt.Errorf("RUN_CANCELLED")
+			}
 			_ = e.store.ReleaseWorkspaceLock(context.Background(), canonical, id)
 			return err
 		}
@@ -519,7 +557,7 @@ func (e *Engine) latestPausedStage(runID string) (string, error) {
 	return stage, nil
 }
 
-func (e *Engine) resumeSpecKit(project string, decisions map[string]config.Decision, featureDir string) (speckit.Installation, string, error) {
+func (e *Engine) resumeSpecKit(project string, decisions map[string]config.Decision, featureDir, nextStage string) (speckit.Installation, string, error) {
 	for _, stage := range stages {
 		if decisions[stage].Route.Provider == "fake" {
 			continue
@@ -531,9 +569,6 @@ func (e *Engine) resumeSpecKit(project string, decisions map[string]config.Decis
 		if err != nil {
 			return speckit.Installation{}, "", err
 		}
-		if !installation.Verified {
-			return speckit.Installation{}, "", fmt.Errorf("SPEC_KIT_INTEGRATION_UNVERIFIED")
-		}
 		if featureDir == "" {
 			return speckit.Installation{}, "", fmt.Errorf("WORKSPACE_DRIFT: checkpoint has no selected feature directory")
 		}
@@ -542,6 +577,16 @@ func (e *Engine) resumeSpecKit(project string, decisions map[string]config.Decis
 		}
 		for _, routedStage := range stages {
 			if decisions[routedStage].Route.Provider == "fake" || !officialStage(routedStage) {
+				continue
+			}
+			if indexOfStage(routedStage) < indexOfStage(nextStage) {
+				continue
+			}
+			required, pathErr := stageCommandRequired(project, featureDir, routedStage)
+			if pathErr != nil {
+				return speckit.Installation{}, "", pathErr
+			}
+			if !required {
 				continue
 			}
 			if _, err = speckit.RequireStage(installation, liveSpecKitStage(routedStage)); err != nil {
@@ -584,8 +629,16 @@ func (e *Engine) pauseUntilResume(ctx context.Context, runID, stage string, resu
 		case <-ctx.Done():
 			return false
 		case <-resume:
-			_ = e.store.ClearRunControl(ctx, runID)
-			return e.markResumed(ctx, runID, stage)
+			action, err := e.store.RunControl(ctx, runID)
+			if err != nil || action == "cancel" {
+				return false
+			}
+			if action == "resume" {
+				if err = e.store.ClearRunControlUnlessCancelled(ctx, runID); err != nil {
+					return false
+				}
+				return e.markResumed(ctx, runID, stage)
+			}
 		case <-ticker.C:
 			action, err := e.store.RunControl(ctx, runID)
 			if err != nil {
@@ -595,7 +648,9 @@ func (e *Engine) pauseUntilResume(ctx context.Context, runID, stage string, resu
 				return false
 			}
 			if action == "resume" {
-				_ = e.store.ClearRunControl(ctx, runID)
+				if err = e.store.ClearRunControlUnlessCancelled(ctx, runID); err != nil {
+					return false
+				}
 				return e.markResumed(ctx, runID, stage)
 			}
 		}
@@ -759,6 +814,21 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 	resume := e.resumes[r.ID]
 	e.mu.Unlock()
 	if err := e.store.SetRunState(ctx, r.ID, model.Running); err != nil {
+		if err.Error() == "RUN_CANCEL_PENDING" {
+			stageRows, stageErr := e.store.Stages(context.Background(), r.ID)
+			if stageErr == nil {
+				for _, stage := range stageRows {
+					if stage.State == model.StageRun {
+						_ = e.cancelRunWithReason(r.ID, stage.Key, stage.ID, "cancellation requested before workflow continuation")
+						e.finish(r.ID)
+						return
+					}
+				}
+			}
+			_ = e.cancelRunWithReason(r.ID, "", "", "cancellation requested before workflow continuation")
+			e.finish(r.ID)
+			return
+		}
 		e.failPersistence(ctx, r.ID)
 		return
 	}
@@ -842,6 +912,12 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 		if err := e.store.Event(ctx, r.ID, key, "stage.started", "info", map[string]any{"attempt": st.Attempt, "read_only": key == "analyze"}); err != nil {
 			e.failPersistence(ctx, r.ID)
 			return
+		}
+		if stageSimulated {
+			if err := e.store.SetStage(ctx, st.ID, model.StageRun); err != nil {
+				e.failPersistence(ctx, r.ID)
+				return
+			}
 		}
 		if d.Provider != "fake" {
 			ownerPath, present, inspectErr := existingOwnerArtifact(r.Project, featureDir, key)
@@ -1239,11 +1315,7 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			terminal = model.Failed
 			eventType = "run.failed"
 		}
-		if err := e.store.Event(ctx, r.ID, "", eventType, severity, map[string]any{"execution": acceptance.Execution, "verdict": acceptance.Verdict}); err != nil {
-			e.failPersistence(ctx, r.ID)
-			return
-		}
-		if err := e.store.SetRunState(ctx, r.ID, terminal); err != nil {
+		if err := e.store.FinalizeRunOutcome(ctx, r.ID, terminal, eventType, severity, map[string]any{"execution": acceptance.Execution, "verdict": acceptance.Verdict}); err != nil {
 			e.failPersistence(ctx, r.ID)
 			return
 		}
@@ -1269,11 +1341,7 @@ func (e *Engine) execute(ctx context.Context, r model.Run, decisions map[string]
 			terminal, eventType = model.Failed, "run.failed"
 		}
 	}
-	if err := e.store.Event(ctx, r.ID, "", eventType, severity, map[string]any{"execution": acceptance.Execution, "verdict": acceptance.Verdict}); err != nil {
-		e.failPersistence(ctx, r.ID)
-		return
-	}
-	if err := e.store.SetRunState(ctx, r.ID, terminal); err != nil {
+	if err := e.store.FinalizeRunOutcome(ctx, r.ID, terminal, eventType, severity, map[string]any{"execution": acceptance.Execution, "verdict": acceptance.Verdict}); err != nil {
 		e.failPersistence(ctx, r.ID)
 		return
 	}
@@ -1331,13 +1399,26 @@ func (e *Engine) waitForSensitiveApproval(ctx context.Context, runID, stage, sta
 			}
 			return false, nil
 		case <-ticker.C:
+			if action, controlErr := e.store.RunControl(ctx, runID); controlErr != nil {
+				return false, controlErr
+			} else if action == "cancel" {
+				if cancelErr := e.cancelRun(runID, stage, stageID); cancelErr != nil {
+					return false, cancelErr
+				}
+				return false, nil
+			}
 			current, err := e.store.Approval(ctx, runID, approval.ID)
 			if err != nil {
 				return false, err
 			}
 			switch current.Status {
 			case model.ApprovalApproved:
-				_ = e.store.ClearRunControl(ctx, runID)
+				if err = e.verifySensitiveApprovalContinuation(ctx, runID); err != nil {
+					return false, err
+				}
+				if err = e.store.ClearRunControlUnlessCancelled(ctx, runID); err != nil {
+					return false, err
+				}
 				run, err := e.store.GetRun(ctx, runID)
 				if err != nil {
 					return false, err
@@ -1357,19 +1438,32 @@ func (e *Engine) waitForSensitiveApproval(ctx context.Context, runID, stage, sta
 			if action, err := e.store.RunControl(ctx, runID); err != nil {
 				return false, err
 			} else if action == "cancel" {
-				if err = e.cancelRun(runID, stage, stageID); err != nil {
-					return false, err
+				if cancelErr := e.cancelRun(runID, stage, stageID); cancelErr != nil {
+					return false, cancelErr
 				}
 				return false, nil
 			}
 		case <-resume:
 			// Approval resolution is authoritative; this signal only shortens the polling interval.
+			if action, controlErr := e.store.RunControl(ctx, runID); controlErr != nil {
+				return false, controlErr
+			} else if action == "cancel" {
+				if cancelErr := e.cancelRun(runID, stage, stageID); cancelErr != nil {
+					return false, cancelErr
+				}
+				return false, nil
+			}
 			current, err := e.store.Approval(ctx, runID, approval.ID)
 			if err != nil {
 				return false, err
 			}
 			if current.Status == model.ApprovalApproved {
-				_ = e.store.ClearRunControl(ctx, runID)
+				if err = e.verifySensitiveApprovalContinuation(ctx, runID); err != nil {
+					return false, err
+				}
+				if err = e.store.ClearRunControlUnlessCancelled(ctx, runID); err != nil {
+					return false, err
+				}
 				run, err := e.store.GetRun(ctx, runID)
 				if err != nil {
 					return false, err
@@ -1389,6 +1483,40 @@ func (e *Engine) waitForSensitiveApproval(ctx context.Context, runID, stage, sta
 			}
 		}
 	}
+}
+
+func (e *Engine) verifySensitiveApprovalContinuation(ctx context.Context, runID string) error {
+	e.mu.Lock()
+	processLock := e.processLocks[runID]
+	e.mu.Unlock()
+	if processLock == nil {
+		// A restarted owner validates during Resume before installing its lock;
+		// direct authorization helpers without an active worker are not a launch.
+		return nil
+	}
+	run, err := e.store.GetRun(ctx, runID)
+	if err != nil {
+		return err
+	}
+	canonical, err := canonicalWorkspace(run.Project)
+	if err != nil || canonical != run.Project {
+		return fmt.Errorf("WORKSPACE_DRIFT: canonical workspace identity changed during approval")
+	}
+	if err = e.store.VerifyRunWorkspaceLock(ctx, canonical, runID); err != nil {
+		return err
+	}
+	configuration, err := e.store.RunConfiguration(ctx, runID)
+	if err != nil {
+		return err
+	}
+	_, state, err := e.verifyRestartCheckpoint(ctx, run, configuration)
+	if err != nil {
+		return err
+	}
+	if state.PendingOperation != "await_sensitive_approval" {
+		return fmt.Errorf("WORKSPACE_DRIFT: approval continuation no longer matches its checkpoint")
+	}
+	return nil
 }
 
 func (e *Engine) denySensitiveApproval(ctx context.Context, runID, stage, stageID string, approval model.Approval) error {
@@ -1417,7 +1545,11 @@ func acceptanceDecisions(decisions map[string]config.Decision) []model.RoutingDe
 // workspace location. It is not a content-integrity fingerprint and therefore
 // is insufficient to authorize restart resume on its own.
 func workspaceIdentityFingerprint(project string) string {
-	digest := sha256.Sum256([]byte(filepath.Clean(project)))
+	canonical, err := filepath.EvalSymlinks(project)
+	if err != nil {
+		canonical = filepath.Clean(project)
+	}
+	digest := sha256.Sum256([]byte(canonical))
 	return hex.EncodeToString(digest[:])
 }
 

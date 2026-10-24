@@ -110,19 +110,25 @@ func (s *Store) PruneRetention(ctx context.Context, at time.Time) error {
 	return tx.Commit()
 }
 
-// RunRetentionMaintenance keeps age-based expiration running even when no new
-// workflow is created. Errors are reported to onError and do not stop future
-// maintenance ticks.
+// RunRetentionMaintenance reconciles abandoned owners and keeps age-based
+// expiration running even when no new workflow is created. Errors are reported
+// to onError and do not stop future maintenance ticks.
 func (s *Store) RunRetentionMaintenance(ctx context.Context, interval time.Duration, onError func(error)) {
 	if interval <= 0 {
 		interval = time.Hour
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	recoveryTicker := time.NewTicker(time.Second)
+	defer recoveryTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case at := <-recoveryTicker.C:
+			if err := s.RecoverAbandonedRuns(ctx, at.UTC()); err != nil && onError != nil {
+				onError(err)
+			}
 		case at := <-ticker.C:
 			if err := s.PruneRetention(ctx, at.UTC()); err != nil && onError != nil {
 				onError(err)

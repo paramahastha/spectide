@@ -172,6 +172,15 @@ func workspaceCheckpointHashes(root, featureDir string, artifacts []model.Artifa
 		}
 	}
 	for path, artifact := range latestArtifacts {
+		if artifact.Kind == "removed" {
+			if artifact.SHA256 != removedArtifactSHA256() {
+				return nil, nil, "", "", fmt.Errorf("WORKSPACE_DRIFT: removal observation is invalid: %s", path)
+			}
+			if err = addWorkspaceFileHash(canonical, path, artifactHashes); err != nil || artifactHashes[path] != "MISSING" {
+				return nil, nil, "", "", fmt.Errorf("WORKSPACE_DRIFT: removed artifact reappeared: %s", path)
+			}
+			continue
+		}
 		if err = addWorkspaceFileHash(canonical, path, artifactHashes); err != nil {
 			return nil, nil, "", "", err
 		}

@@ -105,10 +105,10 @@ func (p Policy) allowed(stage string, r Route) error {
 			if r.Effort != "" && !hasCapability(capability.EffortValues, r.Effort) {
 				return fmt.Errorf("EFFORT_NOT_VERIFIED: %s", r.Profile)
 			}
-			if stage == "analyze" && (!capability.ReadOnlyExecution || !hasCapability(capability.SafetyModes, "read-only")) {
+			if !RequiresWorkspaceWrite(stage) && (!capability.ReadOnlyExecution || !hasCapability(capability.SafetyModes, "read-only")) {
 				return fmt.Errorf("READ_ONLY_EXECUTION_UNVERIFIED: %s", r.Profile)
 			}
-			if stage == "implement" && (!capability.WorkspaceWrite || !hasCapability(capability.SafetyModes, "workspace-write")) {
+			if RequiresWorkspaceWrite(stage) && (!capability.WorkspaceWrite || !hasCapability(capability.SafetyModes, "workspace-write")) {
 				return fmt.Errorf("WORKSPACE_WRITE_UNVERIFIED: %s", r.Profile)
 			}
 			return nil

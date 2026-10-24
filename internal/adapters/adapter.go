@@ -15,6 +15,7 @@ import (
 
 const maxEventLine = 1 << 20
 const maxStreamEvents = 10000
+const providerVersionProbeTimeout = 10 * time.Second
 
 type ProviderName string
 
@@ -276,11 +277,6 @@ func validateEventShape(provider ProviderName, typ string, record map[string]any
 			return NewProviderError("PROVIDER_EVENT_SHAPE_INVALID", "provider terminal result has an invalid payload")
 		}
 	}
-	if provider == Codex && typ == "turn.completed" {
-		if _, ok := record["last_agent_message"].(string); !ok {
-			return NewProviderError("PROVIDER_EVENT_SHAPE_INVALID", "provider terminal result has an invalid payload")
-		}
-	}
 	if provider == OpenCode && typ == "text" {
 		if _, ok := record["text"].(string); !ok {
 			return NewProviderError("PROVIDER_EVENT_SHAPE_INVALID", "provider text event has an invalid payload")
@@ -371,7 +367,7 @@ func ProbeBinary(p Profile) (Capability, error) {
 		return c, WrapProviderError("CONFIG_DIRECTORY_INVALID", "provider configuration reference is invalid", e)
 	}
 	c.ApprovedConfigDirectory = configDirectory
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), providerVersionProbeTimeout)
 	defer cancel()
 	result, err := runner.Run(ctx, runner.Invocation{Binary: reference.Path, Args: []string{"--version"}, ExpectedExecutablePath: reference.Path, ExpectedExecutableSHA256: reference.SHA256})
 	if err != nil {
@@ -536,11 +532,17 @@ func uniqueSorted(in []string) []string {
 	return out
 }
 func claudeAuthStatus(raw string, ok bool) string {
+	if !ok {
+		return "UNKNOWN"
+	}
 	var v struct {
-		LoggedIn bool `json:"loggedIn"`
+		LoggedIn *bool `json:"loggedIn"`
 	}
 	if json.Unmarshal([]byte(raw), &v) == nil {
-		if v.LoggedIn {
+		if v.LoggedIn == nil {
+			return "UNKNOWN"
+		}
+		if *v.LoggedIn {
 			return "AUTHENTICATED"
 		}
 		return "UNAUTHENTICATED"

@@ -56,6 +56,7 @@ func (localExecutor) Run(ctx context.Context, inv runner.Invocation) (runner.Res
 type Registry struct {
 	checks   []Check
 	executor Executor
+	root     string
 }
 
 func NewRegistry(executor Executor) *Registry {
@@ -64,6 +65,23 @@ func NewRegistry(executor Executor) *Registry {
 	}
 	return &Registry{executor: executor}
 }
+
+// PinWorkingDirectory binds all checks in this registry to a canonical root
+// captured during project discovery. The path is intentionally not resolved
+// again when a check runs.
+func (r *Registry) PinWorkingDirectory(root string) error {
+	if !filepath.IsAbs(root) || filepath.Clean(root) != root {
+		return fmt.Errorf("QUALITY_PROJECT_ROOT_NOT_CANONICAL")
+	}
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil || filepath.Clean(resolved) != root {
+		return fmt.Errorf("QUALITY_PROJECT_ROOT_NOT_CANONICAL")
+	}
+	r.root = root
+	return nil
+}
+
+func (r *Registry) WorkingDirectory() string { return r.root }
 
 func (r *Registry) Register(check Check) error {
 	if strings.TrimSpace(check.Key) == "" || strings.TrimSpace(check.Binary) == "" {
@@ -90,6 +108,7 @@ func (r *Registry) Checks() []Check {
 // results. It is used only by verified checkpoint continuation.
 func (r *Registry) Except(completed map[string]struct{}) *Registry {
 	filtered := NewRegistry(r.executor)
+	filtered.root = r.root
 	for _, check := range r.checks {
 		if _, skip := completed[check.Key]; !skip {
 			check.Args = append([]string(nil), check.Args...)
@@ -116,13 +135,26 @@ func DefaultRegistry(executor Executor) *Registry {
 // present at root. Unsupported or incomplete layouts get a visible blocked
 // check instead of running SpecTide-specific commands against them.
 func Discover(root string, executor Executor) (*Registry, error) {
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, fmt.Errorf("QUALITY_PROJECT_ROOT_INVALID")
+	}
+	root, err = filepath.Abs(root)
+	if err != nil {
+		return nil, fmt.Errorf("QUALITY_PROJECT_ROOT_INVALID")
+	}
 	info, err := os.Stat(root)
 	if err != nil || !info.IsDir() {
 		return nil, fmt.Errorf("QUALITY_PROJECT_ROOT_INVALID")
 	}
 	registry := NewRegistry(executor)
+	registry.root = root
 	checks := []Check{}
-	if exists(filepath.Join(root, "go.mod")) {
+	_, hasGo, err := readContainedManifest(root, "go.mod")
+	if err != nil {
+		return nil, err
+	}
+	if hasGo {
 		checks = append(checks,
 			Check{Key: "gofmt", Binary: "gofmt", Args: []string{"-l", "."}, Required: true, RequireEmptyOut: true},
 			Check{Key: "go_vet", Binary: "go", Args: []string{"vet", "./..."}, Required: true},
@@ -130,20 +162,31 @@ func Discover(root string, executor Executor) (*Registry, error) {
 			Check{Key: "go_build", Binary: "go", Args: []string{"build", "./..."}, Required: true},
 		)
 	}
-	if exists(filepath.Join(root, "package.json")) {
+	packageData, hasPackage, err := readContainedManifest(root, "package.json")
+	if err != nil {
+		return nil, err
+	}
+	if hasPackage {
 		var packageInfo struct {
 			Scripts map[string]string `json:"scripts"`
 		}
-		data, readErr := os.ReadFile(filepath.Join(root, "package.json"))
-		if readErr != nil || json.Unmarshal(data, &packageInfo) != nil {
+		if json.Unmarshal(packageData, &packageInfo) != nil {
 			checks = append(checks, Check{Key: "node_project", Binary: "npm", Required: true, UnavailableReason: "package.json is unreadable or invalid"})
 		} else if testScript, ok := packageInfo.Scripts["test"]; !ok || strings.TrimSpace(testScript) == "" {
 			checks = append(checks, Check{Key: "node_tests", Binary: "npm", Required: true, UnavailableReason: "package.json does not define a test script"})
 		} else {
 			manager, testArgs := "npm", []string{"test", "--", "--watch=false"}
-			if exists(filepath.Join(root, "pnpm-lock.yaml")) {
+			_, hasPNPM, manifestErr := readContainedManifest(root, "pnpm-lock.yaml")
+			if manifestErr != nil {
+				return nil, manifestErr
+			}
+			_, hasYarn, manifestErr := readContainedManifest(root, "yarn.lock")
+			if manifestErr != nil {
+				return nil, manifestErr
+			}
+			if hasPNPM {
 				manager = "pnpm"
-			} else if exists(filepath.Join(root, "yarn.lock")) {
+			} else if hasYarn {
 				manager, testArgs = "yarn", []string{"test", "--watch=false"}
 			}
 			checks = append(checks, Check{Key: "node_tests", Binary: manager, Args: testArgs, Required: true})
@@ -156,7 +199,15 @@ func Discover(root string, executor Executor) (*Registry, error) {
 			}
 		}
 	}
-	if exists(filepath.Join(root, "pyproject.toml")) || exists(filepath.Join(root, "pytest.ini")) {
+	_, hasPyproject, err := readContainedManifest(root, "pyproject.toml")
+	if err != nil {
+		return nil, err
+	}
+	_, hasPytest, err := readContainedManifest(root, "pytest.ini")
+	if err != nil {
+		return nil, err
+	}
+	if hasPyproject || hasPytest {
 		checks = append(checks, Check{Key: "python_tests", Binary: "python3", Args: []string{"-m", "pytest", "-q"}, Required: true})
 	}
 	if len(checks) == 0 {
@@ -170,7 +221,34 @@ func Discover(root string, executor Executor) (*Registry, error) {
 	return registry, nil
 }
 
-func exists(path string) bool { info, err := os.Stat(path); return err == nil && !info.IsDir() }
+func readContainedManifest(root, relative string) ([]byte, bool, error) {
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, false, err
+	}
+	path := filepath.Join(root, relative)
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return nil, false, fmt.Errorf("QUALITY_CHECK_MANIFEST_PATH_INVALID")
+	}
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, false, err
+	}
+	rel, err := filepath.Rel(canonicalRoot, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || !info.Mode().IsRegular() {
+		return nil, false, fmt.Errorf("QUALITY_CHECK_MANIFEST_PATH_INVALID: %s", relative)
+	}
+	data, err := os.ReadFile(resolved)
+	return data, true, err
+}
 
 func (r *Registry) Run(ctx context.Context, root string) []Evidence {
 	evidence, _ := r.RunControlled(ctx, root, nil, nil)
@@ -260,7 +338,11 @@ func (r *Registry) RunControlled(ctx context.Context, root string, control func(
 				args[2] = buildPath
 			}
 		}
-		result, err := r.executor.Run(checkCtx, runner.Invocation{Binary: check.Binary, Args: args, Dir: root, ExtraFiles: inheritedFiles})
+		invocation := runner.Invocation{Binary: check.Binary, Args: args, Dir: root, ExtraFiles: inheritedFiles}
+		if r.root != "" {
+			invocation.ExpectedWorkingDirectory = r.root
+		}
+		result, err := r.executor.Run(checkCtx, invocation)
 		contextErr := checkCtx.Err()
 		cancel()
 		<-monitorDone

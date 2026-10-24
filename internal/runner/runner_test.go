@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -152,5 +153,63 @@ func TestRunnerStreamsOnlyRetainedStdoutWhileProcessRuns(t *testing.T) {
 	}
 	if streamed.String() != "onetwo" || !strings.Contains(r.Stdout, "onetwo") || seenAt.IsZero() || !seenAt.Before(r.FinishedAt) {
 		t.Fatalf("stream=%q stdout=%q", streamed.String(), r.Stdout)
+	}
+}
+
+func TestRunnerPreservesExitCodeWhenStreamParserFails(t *testing.T) {
+	result, err := Run(context.Background(), Invocation{
+		Binary: "/bin/sh", Args: []string{"-c", "printf invalid; exit 7"},
+		StreamStdout: func([]byte) error { return fmt.Errorf("invalid provider stream") },
+	})
+	if err == nil || !strings.Contains(err.Error(), "PROVIDER_STREAM_INVALID") || result.ExitCode != 7 {
+		t.Fatalf("stream failure lost process result: result=%+v err=%v", result, err)
+	}
+}
+
+func TestRunnerPreservesProcessExitEvidenceOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	result, err := Run(ctx, Invocation{Binary: "/bin/sh", Args: []string{"-c", `trap 'exit 42' TERM; while :; do sleep 0.01; done`}})
+	if err == nil || !strings.Contains(err.Error(), "RUN_CANCELLED") {
+		t.Fatalf("expected cancellation, result=%+v err=%v", result, err)
+	}
+	if result.ExitCode == 0 {
+		t.Fatalf("cancellation lost the child exit status: %+v", result)
+	}
+}
+
+func TestRunnerPreservesExitCodeOnStageTimeout(t *testing.T) {
+	result, err := Run(context.Background(), Invocation{
+		Binary: "/bin/sh", Args: []string{"-c", `trap 'exit 43' TERM; while :; do sleep 0.01; done`}, Timeout: minStageTimeout,
+	})
+	if err == nil || !strings.Contains(err.Error(), "STAGE_TIMEOUT") || result.ExitCode != 43 {
+		t.Fatalf("timeout lost process exit status: result=%+v err=%v", result, err)
+	}
+}
+
+func TestRunnerRejectsWorkspacePathReplacedBeforeInvocation(t *testing.T) {
+	parent := t.TempDir()
+	approved := filepath.Join(parent, "workspace")
+	outside := t.TempDir()
+	marker := filepath.Join(outside, "ran")
+	if err := os.Mkdir(approved, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(approved, filepath.Join(parent, "renamed-workspace")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, approved); err != nil {
+		t.Fatal(err)
+	}
+	approvedCanonical, err := filepath.EvalSymlinks(filepath.Join(parent, "renamed-workspace"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Run(context.Background(), Invocation{Binary: "/usr/bin/touch", Args: []string{marker}, Dir: approved, ExpectedWorkingDirectory: approvedCanonical})
+	if err == nil || !strings.Contains(err.Error(), "WORKING_DIRECTORY_REFERENCE_DRIFT") {
+		t.Fatalf("replaced workspace launched: %v", err)
+	}
+	if _, err = os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("outside provider command ran: %v", err)
 	}
 }

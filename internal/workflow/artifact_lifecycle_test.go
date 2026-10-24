@@ -30,10 +30,16 @@ func TestExistingOwnerArtifactPreservesConstitutionAndPartialProductSpec(t *test
 		if err != nil || !present || path != expectedPath {
 			t.Fatalf("stage %s existing owner artifact=(%q,%v,%v), expected %q", stage, path, present, err, expectedPath)
 		}
+		if required, checkErr := stageCommandRequired(root, feature, stage); checkErr != nil || required {
+			t.Fatalf("preserved stage %s command required=%v err=%v", stage, required, checkErr)
+		}
 	}
 	for _, stage := range []string{"plan", "tasks"} {
 		if path, present, err := existingOwnerArtifact(root, feature, stage); err != nil || present {
 			t.Fatalf("absent %s owner artifact=(%q,%v,%v)", stage, path, present, err)
+		}
+		if required, checkErr := stageCommandRequired(root, feature, stage); checkErr != nil || !required {
+			t.Fatalf("missing stage %s command required=%v err=%v", stage, required, checkErr)
 		}
 	}
 }

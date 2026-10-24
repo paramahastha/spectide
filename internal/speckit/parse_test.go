@@ -1,8 +1,10 @@
 package speckit
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -38,6 +40,32 @@ func TestParseConvergenceReport(t *testing.T) {
 	appended, err := ParseConvergenceOutput("## Convergence Findings\nSummary\nOutcome: tasks_appended\n- [ ] T050 Add evidence per SC-008 (partial)\n")
 	if err != nil || len(appended.Appended) != 1 || !strings.HasPrefix(appended.Appended[0], "T050 ") {
 		t.Fatalf("result=%+v err=%v", appended, err)
+	}
+	withSummary, err := ParseConvergenceOutput("## Convergence Findings\n✅ Converged — all requirements satisfy acceptance.\n")
+	if err != nil || !withSummary.Converged {
+		t.Fatalf("summary plus clean marker=%+v err=%v", withSummary, err)
+	}
+}
+
+func TestParseInstalledAnalyzeCoverageSummary(t *testing.T) {
+	output := `## Specification Analysis Report
+| ID | Category | Severity | Location(s) | Summary | Recommendation |
+|---|---|---|---|---|---|
+| — | — | — | — | — | — |
+
+**Coverage Summary Table:**
+| Requirement Key | Has Task? | Task IDs | Notes |
+|---|---|---|---|
+| FR-001 | Yes | T001 | Covered |
+
+### Metrics
+- Total Requirements: 30
+- Total Tasks: 114
+- Coverage %: 100%
+`
+	parsed, err := ParseAnalysisOutput(output)
+	if err != nil || !parsed.Complete || parsed.Coverage != "100%" {
+		t.Fatalf("installed analyze output=%+v err=%v", parsed, err)
 	}
 }
 
@@ -140,12 +168,39 @@ func TestMasterLedgerIDsAndConvergencePlanTraceReferences(t *testing.T) {
 		t.Fatal(err)
 	}
 	ledger := string(master)
-	appended := ledger + "\n## Phase 10: Convergence\n- [ ] T107 Repair the stage cursor per plan: recovery and task traceability (partial)\n"
+	phase, taskID := nextConvergenceAppend(ledger)
+	appended := ledger + fmt.Sprintf("\n## Phase %d: Convergence\n- [ ] T%03d Repair the stage cursor per plan: recovery and task traceability (partial)\n", phase, taskID)
 	if err = ValidateAppendOnly(ledger, appended); err != nil {
 		t.Fatalf("master ledger suffix IDs or plan reference rejected: %v", err)
 	}
 	if _, err = ParseConvergenceOutput("## Convergence Findings\nOutcome: tasks_appended\n- [ ] T107 Repair stage recovery per plan: recovery and traceability (partial)\n"); err != nil {
 		t.Fatalf("installed converge plan source reference rejected: %v", err)
+	}
+}
+
+func nextConvergenceAppend(ledger string) (int, int) {
+	phase, task := 0, 0
+	for _, line := range strings.Split(ledger, "\n") {
+		if match := phaseLine.FindStringSubmatch(line); match != nil {
+			value, _ := strconv.Atoi(match[1])
+			if value > phase {
+				phase = value
+			}
+		}
+		if match := taskLine.FindStringSubmatch(line); match != nil {
+			value := taskNumber(match[2])
+			if value > task {
+				task = value
+			}
+		}
+	}
+	return phase + 1, task + 1
+}
+
+func TestNextConvergenceAppendDerivesMultiplePhasesAndSuffixedIDs(t *testing.T) {
+	phase, task := nextConvergenceAppend("# Tasks\n## Phase 3: First\n- [x] T009a Historical suffix\n## Phase 8: Convergence\n- [ ] T010 Existing append\n")
+	if phase != 9 || task != 11 {
+		t.Fatalf("next append = Phase %d/T%03d; want Phase 9/T011", phase, task)
 	}
 }
 

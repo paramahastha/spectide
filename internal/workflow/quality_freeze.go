@@ -28,9 +28,28 @@ type derivedQualityCheck struct {
 
 func (e *Engine) qualityRegistryForRun(ctx context.Context, run model.Run, effective effectiveRunConfiguration) (*quality.Registry, error) {
 	if effective.QualitySelectionPolicy != "DISCOVER_AFTER_IMPLEMENTATION" {
+		if effective.QualityManifestSHA256 != "" {
+			current, err := qualityManifestHash(run.Project)
+			if err != nil || current != effective.QualityManifestSHA256 {
+				return nil, fmt.Errorf("QUALITY_CHECK_MANIFEST_DRIFT")
+			}
+		}
 		return effective.qualityRegistry()
 	}
-	manifestHash, err := qualityManifestHash(run.Project)
+	root := effective.QualityWorkspaceRoot
+	var err error
+	if root == "" {
+		root, err = filepath.EvalSymlinks(run.Project)
+		if err != nil {
+			return nil, fmt.Errorf("QUALITY_PROJECT_ROOT_INVALID")
+		}
+	} else {
+		current, resolveErr := filepath.EvalSymlinks(run.Project)
+		if resolveErr != nil || filepath.Clean(current) != root {
+			return nil, fmt.Errorf("WORKING_DIRECTORY_REFERENCE_DRIFT")
+		}
+	}
+	manifestHash, err := qualityManifestHash(root)
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +71,7 @@ func (e *Engine) qualityRegistryForRun(ctx context.Context, run model.Run, effec
 		}
 	}
 	if len(frozen) == 0 {
-		registry, discoverErr := quality.Discover(run.Project, nil)
+		registry, discoverErr := quality.Discover(root, nil)
 		if discoverErr != nil {
 			return nil, discoverErr
 		}
@@ -70,6 +89,11 @@ func (e *Engine) qualityRegistryForRun(ctx context.Context, run model.Run, effec
 		frozen = checks
 	}
 	registry := quality.NewRegistry(nil)
+	if root != "" {
+		if err := registry.PinWorkingDirectory(root); err != nil {
+			return nil, fmt.Errorf("WORKSPACE_DRIFT: frozen quality workspace root is invalid")
+		}
+	}
 	for _, check := range frozen {
 		if check.TimeoutSeconds < 1 {
 			return nil, fmt.Errorf("WORKSPACE_DRIFT: derived quality check timeout is invalid")

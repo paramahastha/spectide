@@ -1300,6 +1300,73 @@ func TestCheckpointTracksLatestArtifactVersionsAndPreservesHistory(t *testing.T)
 	}
 }
 
+func TestCheckpointAcceptsObservedArtifactRemovalAndPreservesHistory(t *testing.T) {
+	ctx := context.Background()
+	project := initCheckpointGitProject(t)
+	feature := filepath.Join(project, "specs", "001-product")
+	if err := os.MkdirAll(feature, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"spec.md", "plan.md", "tasks.md"} {
+		if err := os.WriteFile(filepath.Join(feature, name), []byte("# Historical "+name+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	run, _, err := s.CreateRunWithConfiguration(ctx, "", project, "checkpoint an explicit removal", fakeRunConfiguration(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "generated/retired.txt"
+	abs := filepath.Join(project, filepath.FromSlash(path))
+	if err = os.MkdirAll(filepath.Dir(abs), 0700); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("historical evidence\n")
+	if err = os.WriteFile(abs, content, 0600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(content)
+	observed := time.Date(2026, 10, 23, 1, 0, 0, 0, time.UTC)
+	if _, err = s.SaveArtifact(ctx, model.Artifact{RunID: run.ID, Stage: "implement", Path: path, Kind: "text", SHA256: hex.EncodeToString(digest[:]), ObservedAt: observed}); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Remove(abs); err != nil {
+		t.Fatal(err)
+	}
+	configuration, err := s.RunConfiguration(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := New(s)
+	if err = engine.saveCursorCheckpoint(ctx, run, feature, "starting", stages[0], configuration.SHA256, "SIMULATED", LoopLimits{}); err == nil || !strings.Contains(err.Error(), "WORKSPACE_DRIFT") {
+		t.Fatalf("unapproved artifact deletion was checkpointed: %v", err)
+	}
+	if _, err = s.SaveArtifact(ctx, model.Artifact{RunID: run.ID, Stage: "implement", Path: path, Kind: "removed", SHA256: removedArtifactSHA256(), ObservedAt: observed.Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if err = engine.saveCursorCheckpoint(ctx, run, feature, "starting", stages[0], configuration.SHA256, "SIMULATED", LoopLimits{}); err != nil {
+		t.Fatalf("checkpoint rejected explicit removal: %v", err)
+	}
+	if _, _, err = engine.verifyRestartCheckpoint(ctx, run, configuration); err != nil {
+		t.Fatalf("checkpointed removal did not verify for restart: %v", err)
+	}
+	artifacts, err := s.Artifacts(ctx, run.ID)
+	if err != nil || len(artifacts) != 2 || artifacts[0].SHA256 != hex.EncodeToString(digest[:]) || artifacts[1].Kind != "removed" {
+		t.Fatalf("artifact history was not preserved: artifacts=%+v err=%v", artifacts, err)
+	}
+	if err = os.WriteFile(abs, []byte("unapproved recreation\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = engine.verifyRestartCheckpoint(ctx, run, configuration); err == nil || !strings.Contains(err.Error(), "WORKSPACE_DRIFT") {
+		t.Fatalf("artifact recreation after checkpoint was accepted: %v", err)
+	}
+}
+
 func TestCLISubprocessResumeWaitsForDurableTerminalEvidence(t *testing.T) {
 	ctx := context.Background()
 	project := initCheckpointGitProject(t)

@@ -261,6 +261,19 @@ func (s *Store) CreateRunIdempotent(ctx context.Context, key, project, prompt st
 }
 
 func (s *Store) CreateRunWithConfiguration(ctx context.Context, key, project, prompt string, configJSON []byte) (model.Run, bool, error) {
+	return s.createRunWithConfiguration(ctx, key, project, prompt, configJSON, "")
+}
+
+// CreateRunWithConfigurationOwned durably registers the launch owner in the
+// same transaction as the CREATED run and its idempotency identity.
+func (s *Store) CreateRunWithConfigurationOwned(ctx context.Context, key, project, prompt string, configJSON []byte, ownerID string) (model.Run, bool, error) {
+	if ownerID == "" {
+		return model.Run{}, false, fmt.Errorf("RUN_OWNER_REQUIRED")
+	}
+	return s.createRunWithConfiguration(ctx, key, project, prompt, configJSON, ownerID)
+}
+
+func (s *Store) createRunWithConfiguration(ctx context.Context, key, project, prompt string, configJSON []byte, ownerID string) (model.Run, bool, error) {
 	if security.Redact(project) != project {
 		return model.Run{}, false, fmt.Errorf("RUN_PROJECT_SECRET_REFERENCE_REJECTED")
 	}
@@ -316,6 +329,11 @@ func (s *Store) CreateRunWithConfiguration(ctx context.Context, key, project, pr
 	_, err = tx.ExecContext(ctx, `INSERT INTO runs(id,project,prompt,state,created_at,started_at,ended_at) VALUES(?,?,?,?,?,?,?)`, r.ID, r.Project, r.Prompt, r.State, t.Format(time.RFC3339Nano), nil, nil)
 	if err != nil {
 		return r, false, err
+	}
+	if ownerID != "" {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO run_owners(run_id,owner_id,heartbeat_at) VALUES(?,?,?)`, r.ID, ownerID, t.Format(time.RFC3339Nano)); err != nil {
+			return r, false, err
+		}
 	}
 	if len(configJSON) > 0 {
 		if _, err = tx.ExecContext(ctx, `INSERT INTO run_configurations(run_id,config_json,config_sha256,created_at) VALUES(?,?,?,?)`, r.ID, string(configJSON), configHash, t.Format(time.RFC3339Nano)); err != nil {
@@ -387,6 +405,19 @@ func (s *Store) SetRunState(ctx context.Context, id string, state model.RunState
 	if err = tx.QueryRowContext(ctx, `SELECT state FROM runs WHERE id=?`, id).Scan(&current); err != nil {
 		return err
 	}
+	var action string
+	controlErr := tx.QueryRowContext(ctx, `SELECT action FROM run_controls WHERE run_id=?`, id).Scan(&action)
+	if controlErr != nil && controlErr != sql.ErrNoRows {
+		return controlErr
+	}
+	if action == "cancel" {
+		if state == model.Running {
+			return fmt.Errorf("RUN_CANCEL_PENDING")
+		}
+		if state == model.Completed || state == model.Blocked || state == model.Failed {
+			state = model.Cancelled
+		}
+	}
 	if !validTransition(current, state) {
 		return fmt.Errorf("INVALID_RUN_TRANSITION: %s -> %s", current, state)
 	}
@@ -408,6 +439,55 @@ func (s *Store) SetRunState(ctx context.Context, id string, state model.RunState
 		}
 	}
 	if err = appendEvent(ctx, tx, id, "", "run."+string(state), "info", map[string]any{"state": state}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// FinalizeRunOutcome atomically records the proposed outcome and terminal
+// state, allowing an already accepted cancellation to win the same boundary.
+func (s *Store) FinalizeRunOutcome(ctx context.Context, id string, desired model.RunState, eventType, severity string, payload map[string]any) error {
+	if desired != model.Completed && desired != model.Blocked && desired != model.Failed && desired != model.Cancelled {
+		return fmt.Errorf("RUN_TERMINAL_STATE_REQUIRED")
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var current model.RunState
+	if err = tx.QueryRowContext(ctx, `SELECT state FROM runs WHERE id=?`, id).Scan(&current); err != nil {
+		return err
+	}
+	if !validTransition(current, desired) {
+		return fmt.Errorf("INVALID_RUN_TRANSITION: %s -> %s", current, desired)
+	}
+	var action string
+	controlErr := tx.QueryRowContext(ctx, `SELECT action FROM run_controls WHERE run_id=?`, id).Scan(&action)
+	if controlErr != nil && controlErr != sql.ErrNoRows {
+		return controlErr
+	}
+	terminal, finalType, finalSeverity := desired, eventType, severity
+	finalPayload := make(map[string]any, len(payload)+2)
+	for key, value := range payload {
+		finalPayload[key] = value
+	}
+	if action == "cancel" && desired != model.Cancelled {
+		terminal, finalType, finalSeverity = model.Cancelled, "run.cancelled", "warning"
+		finalPayload["verdict"] = "CANCELLED"
+		finalPayload["reason"] = "cancellation was accepted before terminal outcome"
+	}
+	if err = appendEvent(ctx, tx, id, "", finalType, finalSeverity, finalPayload); err != nil {
+		return err
+	}
+	at := now()
+	if _, err = tx.ExecContext(ctx, `UPDATE runs SET state=?,ended_at=? WHERE id=?`, terminal, at.Format(time.RFC3339Nano), id); err != nil {
+		return err
+	}
+	if err = finalizeTerminalGatesTx(ctx, tx, id, terminal); err != nil {
+		return err
+	}
+	if err = appendEvent(ctx, tx, id, "", "run."+string(terminal), "info", map[string]any{"state": terminal}); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -500,8 +580,16 @@ func (s *Store) AcquireWorkspaceLockOwned(ctx context.Context, path, runID, owne
 		return fmt.Errorf("WORKSPACE_LOCKED: %s", path)
 	}
 	if ownerID != "" {
-		if _, err = tx.ExecContext(ctx, `INSERT INTO run_owners(run_id,owner_id,heartbeat_at) VALUES(?,?,?)`, runID, ownerID, now().Format(time.RFC3339Nano)); err != nil {
-			return err
+		result, ownerErr := tx.ExecContext(ctx, `INSERT INTO run_owners(run_id,owner_id,heartbeat_at) VALUES(?,?,?) ON CONFLICT(run_id) DO UPDATE SET heartbeat_at=excluded.heartbeat_at WHERE run_owners.owner_id=excluded.owner_id`, runID, ownerID, now().Format(time.RFC3339Nano))
+		if ownerErr != nil {
+			return ownerErr
+		}
+		changed, ownerErr := result.RowsAffected()
+		if ownerErr != nil {
+			return ownerErr
+		}
+		if changed != 1 {
+			return fmt.Errorf("RUN_OWNER_NOT_REGISTERED")
 		}
 	}
 	return tx.Commit()

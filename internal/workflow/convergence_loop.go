@@ -135,7 +135,7 @@ func (e *Engine) runLiveFinalReviewLoop(ctx context.Context, run model.Run, deci
 		Convergence: convergence,
 		Review: func(ctx context.Context) ([]string, error) {
 			prompt := run.Prompt + "\n\nPerform a read-only final review of implementation against the canonical specification, plan, task ledger, and required quality gates. Return findings in the Spec-Kit Specification Analysis Report format. Do not edit files."
-			evidence, cancelled, err := e.runLiveStageWithControlPhase(ctx, run, "analyze", "final_review", decisions["final_review"].Route, prompt, installation, featureDir)
+			evidence, cancelled, err := e.runLiveStageWithControlOptions(ctx, run, "analyze", "final_review", decisions["final_review"].Route, prompt, installation, featureDir, liveStageOptions{timeoutStage: "final_review"})
 			if cancelled {
 				return nil, context.Canceled
 			}

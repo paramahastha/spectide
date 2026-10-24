@@ -5,9 +5,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spectide/spectide/internal/model"
 	"github.com/spectide/spectide/internal/security"
+	workspaceguard "github.com/spectide/spectide/internal/workspace"
 )
 
 func TestProfilesNeverStoreSecrets(t *testing.T) {
@@ -84,6 +86,316 @@ func TestRunStateTransitionsAndInterruptedRecovery(t *testing.T) {
 	}
 	if err = s.SetRunState(context.Background(), r.ID, model.Completed); err == nil {
 		t.Fatal("terminal state must be immutable")
+	}
+}
+
+func TestDaemonRestartReconcilesAbandonedRun(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "state.db")
+	project := t.TempDir()
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := s.CreateRun(ctx, project, "interrupted provider execution")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SetRunState(ctx, run.ID, model.Running); err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().UTC().Add(-RunOwnerLease - time.Second).Format(time.RFC3339Nano)
+	if _, err = s.DB.ExecContext(ctx, `INSERT INTO run_owners(run_id,owner_id,heartbeat_at) VALUES(?,?,?)`, run.ID, "dead-daemon", stale); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Opening the state store after a daemon process restart preserves the
+	// durable run for the daemon's startup recovery pass.
+	restarted, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	if err = restarted.RecoverAbandonedRuns(ctx, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := restarted.GetRun(ctx, run.ID)
+	if err != nil || got.State != model.Blocked {
+		t.Fatalf("abandoned run was not reconciled after restart: run=%+v err=%v", got, err)
+	}
+	events, err := restarted.Events(ctx, run.ID, 0)
+	if err != nil || len(events) == 0 || events[len(events)-1].Type != "run.interrupted" {
+		t.Fatalf("restart interruption evidence missing: events=%+v err=%v", events, err)
+	}
+}
+
+func TestAbandonedPausedRunKeepsVerifiedResumeReservation(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	project := t.TempDir()
+	run, err := s.CreateRun(ctx, project, "preserve a paused continuation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SetRunState(ctx, run.ID, model.Running); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SetRunState(ctx, run.ID, model.Paused); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.AcquireWorkspaceLockOwned(ctx, project, run.ID, "stopped-owner"); err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().UTC().Add(-RunOwnerLease - time.Second).Format(time.RFC3339Nano)
+	if _, err = s.DB.ExecContext(ctx, `UPDATE run_owners SET heartbeat_at=? WHERE run_id=?`, stale, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RecoverAbandonedRuns(ctx, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetRun(ctx, run.ID)
+	var locks int
+	if err == nil {
+		err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM workspace_locks WHERE run_id=?`, run.ID).Scan(&locks)
+	}
+	if err != nil || got.State != model.Paused || locks != 1 {
+		t.Fatalf("verified paused continuation was not retained: run=%+v locks=%d err=%v", got, locks, err)
+	}
+}
+
+func TestAbandonedPausedCancellationWaitsForProcessFenceThenFinalizes(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	project := t.TempDir()
+	run, err := s.CreateRun(ctx, project, "cancel an abandoned paused run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SetRunState(ctx, run.ID, model.Running); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SetRunState(ctx, run.ID, model.Paused); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.AcquireWorkspaceLockOwned(ctx, project, run.ID, "stopped-owner"); err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().UTC().Add(-RunOwnerLease - time.Second).Format(time.RFC3339Nano)
+	if _, err = s.DB.ExecContext(ctx, `UPDATE run_owners SET heartbeat_at=? WHERE run_id=?`, stale, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RequestRunControl(ctx, run.ID, "cancel"); err != nil {
+		t.Fatal(err)
+	}
+	processLock, err := workspaceguard.AcquireProcessLock(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RecoverAbandonedRuns(ctx, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	stillPaused, err := s.GetRun(ctx, run.ID)
+	if err != nil || stillPaused.State != model.Paused {
+		t.Fatalf("recovery crossed a live process fence: run=%+v err=%v", stillPaused, err)
+	}
+	if err = processLock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RecoverAbandonedRuns(ctx, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetRun(ctx, run.ID)
+	if err != nil || got.State != model.Cancelled {
+		t.Fatalf("abandoned cancellation was not finalized: run=%+v err=%v", got, err)
+	}
+	for _, table := range []string{"workspace_locks", "run_owners", "run_controls"} {
+		var count int
+		if err = s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table+` WHERE run_id=?`, run.ID).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("%s reservation survived terminal cancellation: count=%d err=%v", table, count, err)
+		}
+	}
+	events, err := s.Events(ctx, run.ID, 0)
+	if err != nil || len(events) < 2 || events[len(events)-1].Type != "run.cancelled" {
+		t.Fatalf("cancellation audit evidence missing: events=%+v err=%v", events, err)
+	}
+	if err = s.RequestRunControl(ctx, run.ID, "cancel"); err != nil {
+		t.Fatalf("repeated cancellation was not idempotent: %v", err)
+	}
+	reused, err := s.CreateRun(ctx, project, "reuse workspace after cancellation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.AcquireWorkspaceLockOwned(ctx, project, reused.ID, "new-owner"); err != nil {
+		t.Fatalf("terminal cancellation did not release workspace for reuse: %v", err)
+	}
+}
+
+func TestPendingCancellationCannotBeOverwrittenByResume(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	run, err := s.CreateRun(ctx, t.TempDir(), "keep cancellation sticky")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SetRunState(ctx, run.ID, model.Running); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SetRunState(ctx, run.ID, model.Paused); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RequestRunControl(ctx, run.ID, "cancel"); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RequestRunControl(ctx, run.ID, "resume"); err == nil || !strings.Contains(err.Error(), "RUN_CANCEL_PENDING") {
+		t.Fatalf("resume overwrote accepted cancellation: %v", err)
+	}
+}
+
+func TestAcceptedCancellationWinsTerminalCompletionRace(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	run, err := s.CreateRun(ctx, t.TempDir(), "cancel at the completion boundary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.SetRunState(ctx, run.ID, model.Running); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RequestRunControl(ctx, run.ID, "cancel"); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.FinalizeRunOutcome(ctx, run.ID, model.Completed, "run.completed", "info", map[string]any{"execution": "LIVE", "verdict": "PASS"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetRun(ctx, run.ID)
+	if err != nil || got.State != model.Cancelled {
+		t.Fatalf("accepted cancellation lost to completion: run=%+v err=%v", got, err)
+	}
+	events, err := s.Events(ctx, run.ID, 0)
+	requested, cancelled, terminal := -1, -1, -1
+	for i, event := range events {
+		if event.Type == "run.cancel_requested" {
+			requested = i
+		}
+		if event.Type == "run.cancelled" {
+			cancelled = i
+			if event.Payload["verdict"] != "CANCELLED" {
+				t.Fatalf("cancellation event retained successful verdict: %+v", event)
+			}
+		}
+		if event.Type == "run.CANCELLED" {
+			terminal = i
+		}
+		if event.Type == "run.completed" {
+			t.Fatalf("successful outcome event bypassed accepted cancellation: %+v", event)
+		}
+	}
+	if err != nil || requested < 0 || cancelled <= requested || terminal <= cancelled {
+		t.Fatalf("cancellation/completion events are not ordered: events=%+v err=%v", events, err)
+	}
+}
+
+func TestAbandonedCreatedRunIsRecoveredWithoutChangingIdempotencyIdentity(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	project := t.TempDir()
+	configuration := []byte(`{"route":"fake"}`)
+	run, reused, err := s.CreateRunWithConfigurationOwned(ctx, "launch-once", project, "recover before worker start", configuration, "launch-owner")
+	if err != nil || reused {
+		t.Fatalf("run=%+v reused=%v err=%v", run, reused, err)
+	}
+	stale := time.Now().UTC().Add(-RunOwnerLease - time.Second).Format(time.RFC3339Nano)
+	if _, err = s.DB.ExecContext(ctx, `UPDATE run_owners SET heartbeat_at=? WHERE run_id=?`, stale, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RequestRunControl(ctx, run.ID, "cancel"); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RecoverAbandonedRuns(ctx, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetRun(ctx, run.ID)
+	if err != nil || got.State != model.Cancelled {
+		t.Fatalf("abandoned created cancellation not recovered: run=%+v err=%v", got, err)
+	}
+	retried, reused, err := s.CreateRunWithConfigurationOwned(ctx, "launch-once", project, "recover before worker start", configuration, "retry-owner")
+	if err != nil || !reused || retried.ID != run.ID || retried.State != model.Cancelled {
+		t.Fatalf("idempotent retry changed or replayed the original launch: run=%+v reused=%v err=%v", retried, reused, err)
+	}
+	events, err := s.Events(ctx, run.ID, 0)
+	if err != nil || len(events) < 3 || events[len(events)-1].Type != "run.cancelled" {
+		t.Fatalf("created-run cancellation evidence missing: events=%+v err=%v", events, err)
+	}
+}
+
+func TestCreatedLaunchRecoveryWaitsForOwnerLeaseAndProcessFence(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	run, _, err := s.CreateRunWithConfigurationOwned(ctx, "healthy-launch", t.TempDir(), "keep healthy launch", []byte(`{}`), "active-launcher")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RecoverAbandonedRuns(ctx, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetRun(ctx, run.ID)
+	if err != nil || got.State != model.Created {
+		t.Fatalf("fresh launch lease was treated as abandoned: run=%+v err=%v", got, err)
+	}
+	projectRun, err := s.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := workspaceguard.AcquireProcessLock(projectRun.Project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().UTC().Add(-RunOwnerLease - time.Second).Format(time.RFC3339Nano)
+	if _, err = s.DB.ExecContext(ctx, `UPDATE run_owners SET heartbeat_at=? WHERE run_id=?`, stale, run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RecoverAbandonedRuns(ctx, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.GetRun(ctx, run.ID)
+	if err != nil || got.State != model.Created {
+		t.Fatalf("recovery crossed a healthy launch process fence: run=%+v err=%v", got, err)
+	}
+	if err = lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.RecoverAbandonedRuns(ctx, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.GetRun(ctx, run.ID)
+	if err != nil || got.State != model.Blocked {
+		t.Fatalf("expired launch owner was not blocked after its process exited: run=%+v err=%v", got, err)
 	}
 }
 

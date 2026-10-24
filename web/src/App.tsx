@@ -16,80 +16,138 @@ type PreviewState = 'idle' | 'ready' | 'blocked' | 'disconnected'
 type LocalEvent = { id?: string; run_id: string; seq: number; timestamp?: string; type: string; stage?: string; payload?: Record<string, unknown> }
 export type RoutePreview = { dry_run: boolean; execution: string; mode: string; decisions: Array<{ stage: string; route: { provider: string; profile: string; model?: string; effort?: string }; explanation: string }> }
 
+function isCsrfRequired(body: string): boolean {
+  try {
+    const response = JSON.parse(body) as { error?: { code?: string } }
+    return response.error?.code === 'CSRF_REQUIRED'
+  } catch {
+    return false
+  }
+}
+
 export function App() {
   const [token, setToken] = useState('')
+  const tokenRef = useRef('')
+  const handshakeInFlight = useRef<Promise<string> | null>(null)
+  const [appVersion, setAppVersion] = useState('0.1.0-dev')
   const [runs, setRuns] = useState<Run[]>([])
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [report, setReport] = useState<Report | null>(null)
   const [events, setEvents] = useState<LocalEvent[]>([])
   const lastEventSeq = useRef(0)
   const [selected, setSelected] = useState('')
+  const selectedRef = useRef('')
+  selectedRef.current = selected
+  const refreshRequest = useRef(0)
+  const previewRequest = useRef(0)
   const [view, setView] = useState<View>('workflow')
   const [project, setProject] = useState('./examples/fake-provider-demo')
   const [prompt, setPrompt] = useState('Validate the complete SpecTide workflow')
   const [busy, setBusy] = useState(false)
   const [approvalBusy, setApprovalBusy] = useState('')
   const [message, setMessage] = useState('Loading local run history…')
-  const [connection, setConnection] = useState<ConnectionState>('loading')
+  const [apiConnection, setApiConnection] = useState<ConnectionState>('loading')
+  const [profileConnection, setProfileConnection] = useState<ConnectionState>('loading')
+  const [streamConnection, setStreamConnection] = useState<ConnectionState>('loading')
   const [profileError, setProfileError] = useState('')
   const [preview, setPreview] = useState<RoutePreview | null>(null)
   const [previewState, setPreviewState] = useState<PreviewState>('idle')
   const [previewError, setPreviewError] = useState('')
+  const connection: ConnectionState = apiConnection === 'disconnected' || profileConnection === 'disconnected' || (selected !== '' && streamConnection === 'disconnected')
+    ? 'disconnected'
+    : apiConnection === 'loading' || profileConnection === 'loading' || (selected !== '' && streamConnection === 'loading')
+      ? 'loading'
+      : 'connected'
+
+  const refreshHandshake = useCallback(async (): Promise<string> => {
+    if (handshakeInFlight.current) return handshakeInFlight.current
+    const request = (async () => {
+      const response = await fetch('/api/v1/version')
+      if (!response.ok) throw new Error(`Request failed (${response.status})`)
+      const version = await response.json() as { csrf_token?: string; version?: string }
+      if (!version.csrf_token) throw new Error('Version response did not include a CSRF token')
+      tokenRef.current = version.csrf_token
+      setToken(version.csrf_token)
+      if (version.version) setAppVersion(version.version)
+      setApiConnection('connected')
+      setMessage('Connected to the local API')
+      return version.csrf_token
+    })()
+    handshakeInFlight.current = request
+    try {
+      return await request
+    } finally {
+      if (handshakeInFlight.current === request) handshakeInFlight.current = null
+    }
+  }, [])
 
   const api = useCallback(async <T,>(path: string, options: RequestInit = {}): Promise<T> => {
     const response = await fetch(path, {
       ...options,
       headers: {
         ...(options.headers ?? {}),
-        ...(options.method && options.method !== 'GET' ? { 'X-SpecTide-CSRF': token } : {}),
+        ...(options.method && options.method !== 'GET' ? { 'X-SpecTide-CSRF': tokenRef.current } : {}),
       },
     })
-    if (!response.ok) throw new Error((await response.text()) || `Request failed (${response.status})`)
+    if (!response.ok) {
+      const body = await response.text()
+      if (response.status === 403 && isCsrfRequired(body)) {
+        // Refresh the capability for the next user action, but never replay a
+        // mutation whose server-side outcome may be ambiguous.
+        try { await refreshHandshake() } catch { /* Preserve the original request failure. */ }
+      }
+      throw new Error(body || `Request failed (${response.status})`)
+    }
     return response.json() as Promise<T>
-  }, [token])
+  }, [refreshHandshake])
 
   const refresh = useCallback(async () => {
+    const request = ++refreshRequest.current
+    const requestedSelection = selectedRef.current
     try {
       const currentRuns = await api<Run[]>('/api/v1/runs')
+      if (request !== refreshRequest.current) return
       setRuns(currentRuns)
-      setConnection('connected')
+      setApiConnection('connected')
       const summary = summarizeRuns(currentRuns)
       setMessage(`${summary.active} active · ${summary.completed} completed · ${summary.total} durable runs`)
-      if (selected) {
-        const next = await api<Report>(`/api/v1/runs/${encodeURIComponent(selected)}`)
-        setReport(next)
+      if (requestedSelection) {
+        const next = await api<Report>(`/api/v1/runs/${encodeURIComponent(requestedSelection)}`)
+        if (request === refreshRequest.current && selectedRef.current === requestedSelection) setReport(next)
       }
     } catch (error) {
+      if (request !== refreshRequest.current || selectedRef.current !== requestedSelection) return
       setMessage(`Unable to refresh local state: ${String(error)}`)
-      setConnection('disconnected')
+      setApiConnection('disconnected')
     }
-  }, [api, selected])
+  }, [api])
 
   useEffect(() => {
     let alive = true
-    fetch('/api/v1/version')
-      .then((response) => response.json())
-      .then((version) => {
+    let timer = 0
+    const load = async () => {
+      try {
+        await refreshHandshake()
+      } catch (error) {
         if (alive) {
-          setToken(version.csrf_token)
-          setConnection('connected')
-        }
-      })
-      .catch((error) => {
-        if (alive) {
-          setConnection('disconnected')
+          setApiConnection('disconnected')
           setMessage(`Unable to connect to the local API: ${String(error)}`)
+          timer = window.setTimeout(() => { if (alive) void load() }, 1800)
         }
-      })
-    return () => { alive = false }
-  }, [])
+      }
+    }
+    void load()
+    return () => { alive = false; window.clearTimeout(timer) }
+  }, [refreshHandshake])
 
   useEffect(() => {
     if (!token) return
     void refresh()
-    void api<Profile[]>('/api/v1/profiles').then((items) => { setProfiles(Array.isArray(items) ? items : []); setProfileError(''); setConnection('connected') }).catch((error) => { setProfileError(String(error)); setConnection('disconnected') })
+    const loadProfiles = () => void api<Profile[]>('/api/v1/profiles').then((items) => { setProfiles(Array.isArray(items) ? items : []); setProfileError(''); setProfileConnection('connected') }).catch((error) => { setProfileError(String(error)); setProfileConnection('disconnected') })
+    loadProfiles()
     const timer = window.setInterval(() => void refresh(), 1800)
-    return () => window.clearInterval(timer)
+    const profileTimer = window.setInterval(loadProfiles, 1800)
+    return () => { window.clearInterval(timer); window.clearInterval(profileTimer) }
   }, [api, refresh, token])
 
   useEffect(() => {
@@ -98,7 +156,10 @@ export function App() {
     lastEventSeq.current = 0
     if (!selected) return
     let live = true
+    setStreamConnection('loading')
     let refreshTimer = 0
+    let handshakeRetryTimer = 0
+    let reconnecting = false
     api<Report>(`/api/v1/runs/${encodeURIComponent(selected)}`)
       .then((next) => { if (live) setReport(next) })
       .catch((error) => setMessage(`Unable to load run: ${String(error)}`))
@@ -138,13 +199,24 @@ export function App() {
       stream = new EventSource(`/api/v1/runs/${encodeURIComponent(selected)}/events?after=${lastEventSeq.current}`)
       stream.onmessage = receive
       stream.onopen = () => {
-        setConnection('connected')
+        setStreamConnection('connected')
         window.clearTimeout(refreshTimer)
         refreshTimer = window.setTimeout(() => { if (live) void refresh() }, 0)
+        if (reconnecting) {
+          reconnecting = false
+          const renewToken = () => {
+            if (!live) return
+            void refreshHandshake().catch(() => {
+              handshakeRetryTimer = window.setTimeout(renewToken, 1800)
+            })
+          }
+          renewToken()
+        }
       }
       stream.onerror = () => {
         if (!live) return
-        setConnection('disconnected')
+        reconnecting = true
+        setStreamConnection('disconnected')
         setMessage('Event stream disconnected · waiting to reconnect')
         stream.close()
         window.clearTimeout(reconnectTimer)
@@ -157,15 +229,25 @@ export function App() {
       live = false
       window.clearTimeout(refreshTimer)
       window.clearTimeout(reconnectTimer)
+      window.clearTimeout(handshakeRetryTimer)
       stream.close()
     }
-  }, [api, refresh, selected])
+  }, [api, refresh, refreshHandshake, selected])
 
   useEffect(() => {
+    const request = ++previewRequest.current
     setPreview(null)
     setPreviewState('idle')
     setPreviewError('')
+    return () => { if (previewRequest.current === request) previewRequest.current++ }
   }, [project, prompt])
+
+  useEffect(() => {
+    if (view === 'routing' && connection === 'disconnected' && !token) {
+      setPreviewState('disconnected')
+      setPreviewError('Connect to the local API before previewing routes.')
+    }
+  }, [connection, token, view])
 
   const selectedRun = useMemo(() => runs.find((run) => run.id === selected), [runs, selected])
   async function startRun(nextPrompt = prompt, nextProject = project) {
@@ -234,15 +316,19 @@ export function App() {
       return
     }
     setPreviewError('')
+    const request = ++previewRequest.current
+    const intent = `${project}\u0000${prompt}`
     try {
       const result = await api<RoutePreview>('/api/v1/runs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
         body: JSON.stringify({ project, prompt, dry_run: true }),
       })
+      if (request !== previewRequest.current || intent !== `${project}\u0000${prompt}`) return
       setPreview(result)
       setPreviewState('ready')
     } catch (error) {
+      if (request !== previewRequest.current || intent !== `${project}\u0000${prompt}`) return
       const detail = String(error)
       setPreview(null)
       setPreviewError(detail)
@@ -319,7 +405,7 @@ export function App() {
             {report && <section className="panel artifacts-panel"><div className="panel-head"><div><div className="eyebrow">RUN OUTPUTS</div><h2>Artifacts &amp; approvals</h2></div></div>{report.artifacts?.length || report.approvals?.length ? <div className="artifact-list">{report.artifacts?.map((artifact) => <div className="artifact-row" key={artifact.id}><span>▤</span><strong>{artifact.path}</strong><code>{artifact.sha256.slice(0, 12)}</code></div>)}<ApprovalActions approvals={report.approvals ?? []} runState={report.run.state} busy={approvalBusy} onResolve={(id, decision) => void resolveApproval(id, decision)} /></div> : <div className="empty-inline">No artifacts or approvals recorded for this run.</div>}</section>}
           </>
         )}
-        <footer className="footer"><span>SpecTide <b>0.1.0-dev</b></span><span>Run labels come from persisted route configuration and stage evidence</span></footer>
+        <footer className="footer"><span>SpecTide <b>{appVersion}</b></span><span>Run labels come from persisted route configuration and stage evidence</span></footer>
       </main>
     </div>
   )

@@ -1,7 +1,7 @@
 BIN := bin/spectide
 VERSION ?= dev
 
-.PHONY: fmt format-check lint test web-test web-build build demo smoke security verify load-test-sse release-prep
+.PHONY: fmt format-check lint test web-test web-e2e web-build build demo smoke security verify load-test-sse release-prep
 fmt:
 	gofmt -w cmd internal
 
@@ -17,6 +17,9 @@ test:
 
 web-test:
 	cd web && npm test
+
+web-e2e:
+	cd web && npm run test:e2e
 
 web-build:
 	cd web && npm run build
@@ -34,7 +37,7 @@ smoke: build
 security:
 	./scripts/check-secrets.sh
 
-verify: format-check lint test web-test web-build build security smoke
+verify: format-check lint test web-test web-e2e web-build build security smoke
 
 load-test-sse:
 	SPECTIDE_RUN_SSE_LOAD=1 go test ./internal/api -run TestSSEModerateLoadAcceptance -count=1 -timeout 3m -v

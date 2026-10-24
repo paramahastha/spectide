@@ -125,6 +125,103 @@ describe('FR-026 dashboard page and state matrix', () => {
     expect(requestBody?.project).toBe('./examples/fake-provider-demo')
   })
 
+  it.each(['Project path', 'Task prompt'])('ignores a route preview that resolves after %s changes', async (field) => {
+    let resolvePreview!: (response: Response) => void
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/version')) return json({ csrf_token: 'csrf-fixture' })
+      if (url.endsWith('/api/v1/profiles')) return json([])
+      if (url.endsWith('/api/v1/runs') && init?.method === 'POST') return new Promise<Response>((resolve) => { resolvePreview = resolve })
+      if (url.endsWith('/api/v1/runs')) return json([])
+      return json({}, 404)
+    }))
+    vi.stubGlobal('EventSource', class { close() {} addEventListener() {} })
+    Object.defineProperty(globalThis.crypto, 'randomUUID', { configurable: true, value: () => 'preview-key-delayed' })
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: /Route preview/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /Preview routes/ }))
+    fireEvent.change(screen.getByLabelText(field), { target: { value: field === 'Project path' ? '/workspace/changed-during-preview' : 'Changed intent while preview is pending' } })
+    await act(async () => { resolvePreview(await json(preview)) })
+    expect(screen.getByText(/Route preview has not been run/)).toBeTruthy()
+    expect(screen.queryByText(/fixture-model/)).toBeNull()
+  })
+
+  it('keeps the selected run report when an older selection resolves late', async () => {
+    const older: Report = { run: run('COMPLETED', 'run-a'), stages: [], gates: [], routing_decisions: [], artifacts: [], approvals: [] }
+    const newer: Report = { run: run('COMPLETED', 'run-b'), stages: [], gates: [], routing_decisions: [], artifacts: [], approvals: [] }
+    const pending = new Map<string, (response: Response) => void>()
+    const runs: Run[] = [run('COMPLETED', 'run-a'), run('COMPLETED', 'run-b')]
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/version')) return json({ csrf_token: 'csrf-fixture' })
+      if (url.endsWith('/api/v1/profiles')) return json([])
+      if (url.endsWith('/api/v1/runs')) return json(runs)
+      if (url.includes('/api/v1/runs/run-a')) return new Promise<Response>((resolve) => { pending.set('run-a', resolve) })
+      if (url.includes('/api/v1/runs/run-b')) return new Promise<Response>((resolve) => { pending.set('run-b', resolve) })
+      return json({}, 404)
+    }))
+    vi.stubGlobal('EventSource', class { close() {} addEventListener() {} })
+    render(<App />)
+    await waitFor(() => expect(document.querySelectorAll('.run-card')).toHaveLength(2))
+    const cards = [...document.querySelectorAll<HTMLButtonElement>('.run-card')]
+    fireEvent.click(cards[0])
+    fireEvent.click(cards[1])
+    await act(async () => { pending.get('run-b')?.(await json(newer)) })
+    expect(await screen.findByText('/workspace/demo')).toBeTruthy()
+    await act(async () => { pending.get('run-a')?.(await json(older)) })
+    expect(screen.getByText('run-b')).toBeTruthy()
+  })
+
+  it('ignores an older overlapping refresh after selection changes', async () => {
+    const older: Report = { run: run('COMPLETED', 'run-a'), stages: [], gates: [], routing_decisions: [], artifacts: [], approvals: [] }
+    const newer: Report = { run: run('COMPLETED', 'run-b'), stages: [], gates: [], routing_decisions: [], artifacts: [], approvals: [] }
+    const pending = new Map<string, Array<(response: Response) => void>>()
+    const runs: Run[] = [run('COMPLETED', 'run-a'), run('COMPLETED', 'run-b')]
+    const streams: Array<{ onopen?: () => void; close(): void; addEventListener(): void }> = []
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/version')) return json({ csrf_token: 'csrf-fixture' })
+      if (url.endsWith('/api/v1/profiles')) return json([])
+      if (url.endsWith('/api/v1/runs')) return json(runs)
+      if (url.includes('/api/v1/runs/run-a')) return new Promise<Response>((resolve) => pending.set('run-a', [...(pending.get('run-a') ?? []), resolve]))
+      if (url.includes('/api/v1/runs/run-b')) return new Promise<Response>((resolve) => pending.set('run-b', [...(pending.get('run-b') ?? []), resolve]))
+      return json({}, 404)
+    }))
+    vi.stubGlobal('EventSource', class {
+      onopen?: () => void
+      constructor() { streams.push(this) }
+      close() {}
+      addEventListener() {}
+    })
+    render(<App />)
+    await waitFor(() => expect(document.querySelectorAll('.run-card')).toHaveLength(2))
+    const cards = [...document.querySelectorAll<HTMLButtonElement>('.run-card')]
+    fireEvent.click(cards[0])
+    await waitFor(() => expect(pending.get('run-a')).toHaveLength(1))
+    await act(async () => { streams[0].onopen?.() })
+    await waitFor(() => expect(pending.get('run-a')).toHaveLength(2))
+    fireEvent.click(cards[1])
+    await waitFor(() => expect(pending.get('run-b')).toHaveLength(1))
+    await act(async () => { pending.get('run-b')?.[0](await json(newer)) })
+    expect(await screen.findByText('run-b')).toBeTruthy()
+    await act(async () => { pending.get('run-a')?.[1](await json(older)) })
+    await act(async () => { pending.get('run-a')?.[0](await json(older)) })
+    expect(screen.getByText('run-b')).toBeTruthy()
+  })
+
+  it('renders the build version returned by the API', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/version')) return json({ csrf_token: 'csrf-fixture', version: '9.8.7-test' })
+      if (url.endsWith('/api/v1/profiles')) return json([])
+      if (url.endsWith('/api/v1/runs')) return json([])
+      return json({}, 404)
+    }))
+    vi.stubGlobal('EventSource', class { close() {} addEventListener() {} })
+    render(<App />)
+    expect(await screen.findByText('9.8.7-test')).toBeTruthy()
+  })
+
   it('keeps profile views usable when the API returns a null empty list', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
@@ -181,6 +278,136 @@ describe('FR-026 dashboard page and state matrix', () => {
     vi.useRealTimers()
   })
 
+  it('retries an unavailable initial version handshake until the API recovers', async () => {
+    vi.useFakeTimers()
+    let versionAttempts = 0
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/version')) {
+        versionAttempts++
+        return versionAttempts === 1 ? json({ error: 'starting' }, 503) : json({ csrf_token: 'csrf-fixture' })
+      }
+      if (url.endsWith('/api/v1/profiles')) return json([])
+      if (url.endsWith('/api/v1/runs')) return json([])
+      return json({}, 404)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('EventSource', class { close() {} addEventListener() {} })
+    render(<App />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(versionAttempts).toBe(1)
+    expect(screen.getAllByLabelText('disconnected state').length).toBeGreaterThan(0)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1800) })
+    expect(versionAttempts).toBe(2)
+    expect(screen.getByText(/0 active · 0 completed · 0 durable runs/)).toBeTruthy()
+    expect(screen.queryByLabelText('disconnected state')).toBeNull()
+    vi.useRealTimers()
+  })
+
+  it('keeps a selected event stream disconnected while run polling stays healthy', async () => {
+    vi.useFakeTimers()
+    const item = run('RUNNING', 'stream-run')
+    class MockEventSource {
+      static instances: MockEventSource[] = []
+      onerror: (() => void) | null = null
+      close() {}
+      addEventListener() {}
+      constructor() { MockEventSource.instances.push(this) }
+    }
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/version')) return json({ csrf_token: 'csrf-fixture' })
+      if (url.endsWith('/api/v1/profiles')) return json([])
+      if (url.endsWith('/api/v1/runs')) return json([item])
+      if (url.endsWith('/api/v1/runs/stream-run')) return json({ run: item, stages: [], gates: [], routing_decisions: [], artifacts: [], approvals: [] })
+      return json({}, 404)
+    }))
+    vi.stubGlobal('EventSource', MockEventSource)
+    render(<App />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    fireEvent.click(screen.getByRole('button', { name: /Review a bounded workflow.*RUNNING/ }))
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(MockEventSource.instances.length).toBeGreaterThan(0)
+    await act(async () => { MockEventSource.instances[0].onerror?.() })
+    expect(screen.getAllByText(/RECONNECTING/).length).toBeGreaterThan(0)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1800) })
+    expect(screen.getAllByText(/RECONNECTING/).length).toBeGreaterThan(0)
+    vi.useRealTimers()
+  })
+
+  it('recovers CSRF mutations and the event cursor after daemon restart without reloading', async () => {
+    const item = run('RUNNING', 'restart-run')
+    const report: Report = {
+      run: item,
+      acceptance: { execution: 'SIMULATED', verdict: 'PASS', required_gates: [] },
+      stages: [], gates: [], routing_decisions: [], artifacts: [], approvals: [],
+    }
+    let serverToken = 'csrf-before-restart'
+    let versionRequests = 0
+    let acceptedMutations = 0
+    const mutationTokens: string[] = []
+    class MockEventSource {
+      static instances: MockEventSource[] = []
+      onerror: (() => void) | null = null
+      onopen: (() => void) | null = null
+      listeners = new Map<string, (event: Event) => void>()
+      constructor(readonly url: string) { MockEventSource.instances.push(this) }
+      close() {}
+      addEventListener(type: string, listener: EventListenerOrEventListenerObject) {
+        if (typeof listener === 'function') this.listeners.set(type, listener)
+      }
+      emit(type: string, value: unknown) {
+        this.listeners.get(type)?.(new MessageEvent(type, { data: JSON.stringify(value) }))
+      }
+    }
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/version')) {
+        versionRequests++
+        return json({ csrf_token: serverToken })
+      }
+      if (url.endsWith('/api/v1/profiles')) return json([])
+      if (url.endsWith('/api/v1/runs')) return json([item])
+      if (url.endsWith('/api/v1/runs/restart-run')) return json(report)
+      if (url.endsWith('/api/v1/runs/restart-run/cancel') && init?.method === 'POST') {
+        const requestToken = new Headers(init.headers).get('X-SpecTide-CSRF') ?? ''
+        mutationTokens.push(requestToken)
+        if (requestToken === serverToken) {
+          acceptedMutations++
+          return json({ accepted: true })
+        }
+        return json({ error: { code: 'CSRF_REQUIRED', message: 'missing or invalid CSRF token' } }, 403)
+      }
+      return json({}, 404)
+    }))
+    vi.stubGlobal('EventSource', MockEventSource)
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: /Review a bounded workflow.*RUNNING/ }))
+    const cancel = await screen.findByRole('button', { name: 'Cancel run' })
+    await waitFor(() => expect(MockEventSource.instances.length).toBe(1))
+
+    // Simulate a restart between reads: the old mutation is rejected, refreshed
+    // token is fetched, and the ambiguous request is not replayed.
+    serverToken = 'csrf-after-restart'
+    fireEvent.click(cancel)
+    await waitFor(() => expect(versionRequests).toBe(2))
+    await waitFor(() => expect(mutationTokens).toEqual(['csrf-before-restart']))
+
+    // A recovered event stream refreshes the handshake too and preserves the
+    // selected run's replay cursor across the recovery.
+    MockEventSource.instances[0].emit('provider.event', { run_id: item.id, seq: 7, type: 'provider.event' })
+    MockEventSource.instances[0].onerror?.()
+    await waitFor(() => expect(MockEventSource.instances.length).toBe(2), { timeout: 1500 })
+    MockEventSource.instances[1].onopen?.()
+    await waitFor(() => expect(versionRequests).toBe(3))
+    expect(MockEventSource.instances[1].url).toContain('after=7')
+
+    fireEvent.click(cancel)
+    await waitFor(() => expect(mutationTokens).toEqual(['csrf-before-restart', 'csrf-after-restart']))
+    await waitFor(() => expect(acceptedMutations).toBe(1))
+    expect(screen.getByRole('button', { name: /Review a bounded workflow.*RUNNING/ })).toBeTruthy()
+  })
+
   it.each([
     ['empty', 'No records yet'],
     ['error', 'The stored report could not be loaded'],
@@ -188,6 +415,37 @@ describe('FR-026 dashboard page and state matrix', () => {
   ] as const)('renders the shared %s state', (state, message) => {
     render(<SharedStateSurface state={state} message={message} />)
     expect(screen.getByText(message)).toBeTruthy()
+  })
+
+  it('shows the persisted active simulated stage, route, and attempt', async () => {
+    const item: Run = { ...run('RUNNING', 'active-simulated-run'), execution: 'SIMULATED' }
+    const report: Report = {
+      run: item,
+      acceptance: { execution: 'SIMULATED', verdict: 'NOT_RUN', required_gates: [] },
+      stages: [{ id: 'active-stage-1', key: 'constitution', state: 'RUNNING', provider: 'fake', profile: 'offline', model: 'fixture-model', effort: 'high', attempt: 1 }],
+      gates: [], routing_decisions: [{ stage: 'constitution', provider: 'fake', profile: 'offline', model: 'fixture-model', effort: 'high', policy: 'simulated', explanation: 'offline deterministic fixture' }],
+      artifacts: [], approvals: [],
+    }
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/version')) return json({ csrf_token: 'csrf-fixture' })
+      if (url.endsWith('/api/v1/profiles')) return json([])
+      if (url.endsWith('/api/v1/runs')) return json([item])
+      if (url.endsWith('/api/v1/runs/active-simulated-run')) return json(report)
+      return json({}, 404)
+    }))
+    vi.stubGlobal('EventSource', class { close() {} addEventListener() {} })
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: /Review a bounded workflow.*RUNNING/ }))
+    const detail = await screen.findByLabelText('Run detail surface')
+    await waitFor(() => expect(detail.querySelector('.stage-row')).not.toBeNull())
+    const row = detail.querySelector('.stage-row')
+    expect(row).not.toBeNull()
+    expect(within(row as HTMLElement).getByText('RUNNING')).toBeTruthy()
+    expect(row?.textContent).toContain('fake / offline')
+    expect(row?.textContent).toContain('fixture-model')
+    expect(row?.textContent).toContain('high')
+    expect(row?.textContent).toContain('attempt 1')
   })
 
   it('opens a persisted run detail and exposes stage, gate, and run states', async () => {

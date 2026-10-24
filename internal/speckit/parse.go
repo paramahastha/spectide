@@ -264,7 +264,7 @@ func featureDirectoryName(prompt string) string {
 	return "001-" + slug
 }
 
-var coverageLine = regexp.MustCompile(`^- Coverage:\s*([0-9]+(?:\.[0-9]+)?%)?(?:\s*\(([0-9]+)\s*/\s*([0-9]+)(?:\s+[^)]*)?\))?(?:\s+.+)?$`)
+var coverageLine = regexp.MustCompile(`^- Coverage(?:\s*%)?:\s*([0-9]+(?:\.[0-9]+)?%)?(?:\s*\(([0-9]+)\s*/\s*([0-9]+)(?:\s+[^)]*)?\))?(?:\s+.+)?$`)
 var findingID = regexp.MustCompile(`^[A-Z][A-Z0-9_-]*[0-9]+$`)
 var taskLine = regexp.MustCompile(`^- \[([ xX])\] (T[0-9]{3,}[a-z]?)\s+(.+?)\s*$`)
 var traceReference = regexp.MustCompile(`(?i)(?:\bFR-[0-9]{3}\b|\bSC-[0-9]{3}\b|\bUS[1-5]\b|\bAC[0-9]+\b|\bconstitution\b|\bplan:\s*[a-z0-9])`)
@@ -323,6 +323,10 @@ func ParseAnalysisOutput(output string) (Analysis, error) {
 			break
 		}
 		if headingCount == 0 {
+			continue
+		}
+		if strings.Contains(line, "Coverage Summary Table") {
+			inFindings = false
 			continue
 		}
 		if strings.HasPrefix(line, "|") {
@@ -384,13 +388,13 @@ func ParseAnalysisOutput(output string) (Analysis, error) {
 		if strings.HasPrefix(line, "### ") {
 			inFindings = false
 		}
-		if strings.HasPrefix(line, "- Coverage:") {
+		if strings.HasPrefix(line, "- Coverage:") || strings.HasPrefix(line, "- Coverage %:") {
 			match := coverageLine.FindStringSubmatch(line)
 			if match == nil || (match[1] == "" && (match[2] == "" || match[3] == "")) {
 				return a, fmt.Errorf("ANALYSIS_REPORT_COVERAGE_INVALID")
 			}
 			coverageCount++
-			a.Coverage = strings.TrimSpace(strings.TrimPrefix(line, "- Coverage:"))
+			a.Coverage = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(line, "- Coverage %:"), "- Coverage:"))
 			if match[2] != "" && match[3] != "" {
 				numerator, _ := strconv.Atoi(match[2])
 				denominator, _ := strconv.Atoi(match[3])
@@ -472,7 +476,7 @@ func ParseConvergenceOutputWithPlan(output, plan string) (Convergence, error) {
 		}
 	}
 	if cleanMarkers > 0 {
-		if cleanMarkers != 1 || findingsHeaders != 0 || outcomeCount != 0 || len(c.Appended) > 0 {
+		if cleanMarkers != 1 || findingsHeaders > 1 || outcomeCount != 0 || len(c.Appended) > 0 {
 			return c, fmt.Errorf("CONVERGENCE_OUTCOME_CONTRADICTORY")
 		}
 		c.Converged = true

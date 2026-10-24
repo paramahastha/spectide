@@ -457,7 +457,7 @@ func TestProviderAndQualityAttemptHistoriesAreAppendOnlyAndReported(t *testing.T
 	}
 	second.Result = "FAILED"
 	second.ProcessID = 4102
-	second.ExitCode = 1
+	second.ExitCode = -1 // A POSIX signal termination has no ordinary process exit code.
 	second.Error = "password=attempt-error-secret-987654"
 	if err = s.CompleteExecutionAttempt(ctx, second); err == nil {
 		t.Fatal("execution attempt finished without its completion event")

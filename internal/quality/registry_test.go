@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -82,6 +83,30 @@ func TestDiscoverUsesGoProjectChecksWithoutSpecTideLayoutAssumptions(t *testing.
 	}
 }
 
+func TestDiscoveredChecksCarryPinnedCanonicalWorkingDirectory(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.test/pinned\ngo 1.27.2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	executor := &fakeExecutor{results: make([]runner.Result, 4), errors: make([]error, 4)}
+	registry, err := Discover(root, executor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = registry.RunControlled(context.Background(), root, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, invocation := range executor.seen {
+		if invocation.ExpectedWorkingDirectory != canonical {
+			t.Fatalf("quality invocation was not pinned: %+v want %q", invocation, canonical)
+		}
+	}
+}
+
 func TestDiscoverUsesNodeProjectScriptsAndNoGoCommands(t *testing.T) {
 	root := t.TempDir()
 	data := []byte(`{"scripts":{"test":"vitest run","build":"vite build"}}`)
@@ -95,6 +120,20 @@ func TestDiscoverUsesNodeProjectScriptsAndNoGoCommands(t *testing.T) {
 	checks := registry.Checks()
 	if len(checks) != 2 || checks[0].Key != "node_tests" || checks[0].Binary != "npm" || checks[0].Args[0] != "test" || checks[1].Key != "node_build" {
 		t.Fatalf("Node checks=%+v", checks)
+	}
+}
+
+func TestDiscoverRejectsManifestSymlinksEscapingProjectRoot(t *testing.T) {
+	root := t.TempDir()
+	external := filepath.Join(t.TempDir(), "package.json")
+	if err := os.WriteFile(external, []byte(`{"scripts":{"test":"echo external"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, filepath.Join(root, "package.json")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Discover(root, nil); err == nil || !strings.Contains(err.Error(), "QUALITY_CHECK_MANIFEST_PATH_INVALID") {
+		t.Fatalf("escaped package manifest accepted: %v", err)
 	}
 }
 

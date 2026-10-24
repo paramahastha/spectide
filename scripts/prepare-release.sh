@@ -38,7 +38,7 @@ for target in "${targets[@]}"; do
   mkdir -p "${package_dir}"
   CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" go build \
     -trimpath \
-    -ldflags "-s -w -X github.com/spectide/spectide/internal/cli.BuildVersion=${version}" \
+    -ldflags "-s -w -X github.com/spectide/spectide/internal/buildinfo.Version=${version}" \
     -o "${package_dir}/spectide" ./cmd/spectide
   cp "${repo_root}/README.md" "${repo_root}/LICENSE" "${package_dir}/"
   printf '%s\n' "${version}" > "${package_dir}/VERSION"

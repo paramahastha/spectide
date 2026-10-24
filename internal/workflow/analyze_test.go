@@ -238,6 +238,78 @@ func TestWorkspaceFingerprintIncludesGitState(t *testing.T) {
 	}
 }
 
+func TestWorkspaceFingerprintTracksExcludedGitPathsAndMetadata(t *testing.T) {
+	root := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	run("init", "-q")
+	run("config", "user.email", "test@example.invalid")
+	run("config", "user.name", "SpecTide Test")
+	generated := filepath.Join(root, "target", "tracked.txt")
+	if err := os.MkdirAll(filepath.Dir(generated), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(generated, []byte("before"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "target/tracked.txt")
+	run("commit", "-qm", "initial")
+	before, err := workspaceFingerprint(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(generated, []byte("after"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	after, err := workspaceFingerprint(root)
+	if err != nil || before == after {
+		t.Fatalf("tracked excluded-directory content was omitted: %v", err)
+	}
+	if err := os.WriteFile(generated, []byte("staged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "target/tracked.txt")
+	before = after
+	after, err = workspaceFingerprint(root)
+	if err != nil || before == after {
+		t.Fatalf("Git index change was omitted: %v", err)
+	}
+	if err := os.WriteFile(generated, []byte("already dirty"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err = workspaceFingerprint(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(generated, []byte("changed while dirty"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	after, err = workspaceFingerprint(root)
+	if err != nil || before == after {
+		t.Fatalf("content change to already-dirty tracked path was omitted: %v", err)
+	}
+	before = after
+	run("config", "core.autocrlf", "true")
+	after, err = workspaceFingerprint(root)
+	if err != nil || before == after {
+		t.Fatalf("Git configuration change was omitted: %v", err)
+	}
+	before = after
+	hook := filepath.Join(root, ".git", "hooks", "pre-commit")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	after, err = workspaceFingerprint(root)
+	if err != nil || before == after {
+		t.Fatalf("Git hook change was omitted: %v", err)
+	}
+}
+
 func TestWorkspaceFingerprintExcludesOnlyExistingTaskLedger(t *testing.T) {
 	root := t.TempDir()
 	tasksPath := filepath.Join(root, "specs", "001-product", "tasks.md")

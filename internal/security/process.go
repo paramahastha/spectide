@@ -126,7 +126,7 @@ func ValidateProcess(p ProcessPolicy) error {
 		if err != nil {
 			return fmt.Errorf("WORKING_DIRECTORY_INVALID: %w", err)
 		}
-		expected, err := filepath.EvalSymlinks(p.ExpectedWorkingDirectory)
+		expected, err := filepath.Abs(p.ExpectedWorkingDirectory)
 		if err != nil || filepath.Clean(workingDirectory) != filepath.Clean(expected) {
 			return fmt.Errorf("WORKING_DIRECTORY_REFERENCE_DRIFT")
 		}

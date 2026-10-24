@@ -19,6 +19,10 @@ func (Adapter) Build(r adapters.Request) (runner.Invocation, error) {
 	a := []string{"-p", "--output-format", "stream-json", "--verbose"}
 	if r.ReadOnly {
 		a = append(a, "--permission-mode", "plan")
+	} else {
+		// This mode is capability-probed before invocation and constrains
+		// writes to accepted file edits instead of inheriting user defaults.
+		a = append(a, "--permission-mode", "acceptEdits")
 	}
 	if r.Model != "" {
 		a = append(a, "--model", r.Model)

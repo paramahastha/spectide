@@ -95,6 +95,13 @@ func TestEffectiveRunConfigurationFreezesDiscoveredProjectQualityChecks(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.QualityWorkspaceRoot != canonicalRoot {
+		t.Fatalf("quality workspace root was not frozen: got=%q want=%q", restored.QualityWorkspaceRoot, canonicalRoot)
+	}
 	checks, err := restored.qualityRegistry()
 	if err != nil {
 		t.Fatal(err)
@@ -102,6 +109,10 @@ func TestEffectiveRunConfigurationFreezesDiscoveredProjectQualityChecks(t *testi
 	got := checks.Checks()
 	if len(got) != 1 || got[0].Key != "node_tests" || got[0].UnavailableReason != "" || got[0].Binary != "npm" {
 		t.Fatalf("project checks were not frozen/restored: %+v", got)
+	}
+	skipped := checks.Except(map[string]struct{}{"node_tests": {}})
+	if skipped.WorkingDirectory() != canonicalRoot {
+		t.Fatalf("filtered/resumed registry lost approved root: %q", skipped.WorkingDirectory())
 	}
 }
 

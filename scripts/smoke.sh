@@ -63,6 +63,7 @@ try:
             if address:
                 with urllib.request.urlopen(f"http://{address}/healthz", timeout=0.05) as response:
                     if response.status == 200:
+                        health_elapsed = time.monotonic_ns() - started
                         index = urllib.request.urlopen(f"http://{address}/", timeout=1).read().decode("utf-8")
                         if '<div id="root"></div>' not in index:
                             raise SystemExit("dashboard index was not served by the binary")
@@ -72,9 +73,8 @@ try:
                         script = urllib.request.urlopen(f"http://{address}{script_match.group(1)}", timeout=1).read().decode("utf-8")
                         if "SpecTide" not in script:
                             raise SystemExit("dashboard JavaScript asset was not served from the embedded bundle")
-                        elapsed = time.monotonic_ns() - started
-                        print(f"{address}\t{elapsed / 1_000_000:.3f}")
-                        if elapsed > 2_000_000_000:
+                        print(f"{address}\t{health_elapsed / 1_000_000:.3f}")
+                        if health_elapsed > 2_000_000_000:
                             raise SystemExit("health endpoint startup exceeded the 2s threshold")
                         break
         except (OSError, urllib.error.URLError):

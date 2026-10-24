@@ -75,7 +75,7 @@ func (s *Store) CompleteExecutionAttempt(ctx context.Context, attempt model.Exec
 		finished := now()
 		attempt.FinishedAt = &finished
 	}
-	if attempt.DurationMillis < 0 || attempt.ProcessID < 0 || attempt.ExitCode < 0 || attempt.FinishedAt.Before(attempt.StartedAt) {
+	if attempt.DurationMillis < 0 || attempt.ProcessID < 0 || (attempt.ExitCode < 0 && attempt.Result == "SUCCEEDED") || attempt.FinishedAt.Before(attempt.StartedAt) {
 		return fmt.Errorf("EXECUTION_ATTEMPT_RUNTIME_INVALID")
 	}
 	attempt.Error = security.Redact(attempt.Error)
@@ -140,6 +140,13 @@ func (s *Store) InterruptRunningAttempts(ctx context.Context, runID, reason stri
 		return err
 	}
 	defer tx.Rollback()
+	if err = interruptRunningAttemptsTx(ctx, tx, runID, reason); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func interruptRunningAttemptsTx(ctx context.Context, tx *sql.Tx, runID, reason string) error {
 	rows, err := tx.QueryContext(ctx, `SELECT id,stage,phase,iteration,started_at FROM execution_attempts WHERE run_id=? AND result='RUNNING' ORDER BY started_at,id`, runID)
 	if err != nil {
 		return err
@@ -177,7 +184,7 @@ func (s *Store) InterruptRunningAttempts(ctx context.Context, runID, reason stri
 			return err
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 func isLowerHex(value string) bool {

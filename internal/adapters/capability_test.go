@@ -15,6 +15,14 @@ func TestCapabilityParsersKeepOnlyVerifiedAnonymizedValues(t *testing.T) {
 	if got := claudeAuthStatus(`{"loggedIn":false,"email":"person@example.com"}`, true); got != "UNAUTHENTICATED" {
 		t.Fatalf("claude unauth=%q", got)
 	}
+	for _, raw := range []string{`{"loggedIn":true}`, `{"loggedIn":false}`, `{"loggedIn":null}`, `{}`, `not-json`} {
+		if got := claudeAuthStatus(raw, false); got != "UNKNOWN" {
+			t.Errorf("failed Claude auth probe %q was trusted as %q", raw, got)
+		}
+	}
+	if got := claudeAuthStatus(`{}`, true); got != "UNKNOWN" {
+		t.Fatalf("ambiguous Claude auth payload=%q", got)
+	}
 	if got := textAuthStatus("Not logged in", false); got != "UNAUTHENTICATED" {
 		t.Fatalf("codex unauth=%q", got)
 	}
@@ -93,7 +101,7 @@ func TestProviderOutputStreamHandlesPartialFramesAndExtractsTerminalText(t *test
 
 func TestProviderOutputStreamUsesTerminalResultAndRejectsErrors(t *testing.T) {
 	stream := NewOutputStream(Codex)
-	for _, frame := range []string{`{"type":"item.completed","item":{"type":"agent_message","text":"intermediate"}}`, `{"type":"turn.completed","last_agent_message":"final answer"}`} {
+	for _, frame := range []string{`{"type":"item.completed","item":{"type":"agent_message","text":"documented final answer"}}`, `{"type":"turn.completed","usage":{"input_tokens":12,"output_tokens":4}}`} {
 		if err := stream.Feed([]byte(frame + "\n")); err != nil {
 			t.Fatal(err)
 		}
@@ -101,8 +109,15 @@ func TestProviderOutputStreamUsesTerminalResultAndRejectsErrors(t *testing.T) {
 	if err := stream.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if got := stream.TerminalText(); got != "final answer" {
+	if got := stream.TerminalText(); got != "documented final answer" {
 		t.Fatalf("terminal=%q", got)
+	}
+	missingMessage := NewOutputStream(Codex)
+	if err := missingMessage.Feed([]byte(`{"type":"turn.completed","usage":{}}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := missingMessage.Close(); err == nil || !strings.Contains(err.Error(), "PROVIDER_TERMINAL_OUTPUT_MISSING") {
+		t.Fatalf("terminal without agent message=%v", err)
 	}
 	bad := NewOutputStream(OpenCode)
 	if err := bad.Feed([]byte(`{"type":"error","message":"sensitive provider body"}` + "\n")); err == nil {
@@ -196,7 +211,7 @@ func TestProviderOutputStreamRejectsPartialTerminalPayloads(t *testing.T) {
 		frame    string
 		code     string
 	}{
-		{Codex, `{"type":"turn.completed"}`, "PROVIDER_EVENT_SHAPE_INVALID"},
+		{Codex, `{"type":"turn.completed","usage":{}}`, "PROVIDER_TERMINAL_OUTPUT_MISSING"},
 		{OpenCode, `{"type":"step_finish"}`, "PROVIDER_TERMINAL_OUTPUT_MISSING"},
 	}
 	for _, testCase := range cases {

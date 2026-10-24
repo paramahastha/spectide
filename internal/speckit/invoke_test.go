@@ -18,6 +18,15 @@ type fixtureAdapter struct {
 	request adapters.Request
 }
 
+func canonicalProjectRoot(t *testing.T, root string) string {
+	t.Helper()
+	canonical, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return canonical
+}
+
 func (f *fixtureAdapter) Name() adapters.ProviderName { return adapters.Fake }
 func (f *fixtureAdapter) Probe(context.Context, adapters.Profile) (adapters.Capability, error) {
 	return adapters.Capability{Provider: adapters.Fake}, nil
@@ -42,13 +51,13 @@ func TestExecuteStageUsesVerifiedPromptAndReadOnlyAnalyzeInvocation(t *testing.T
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256(content)
-	installation := Installation{ProjectRoot: root, Verified: true, Commands: map[string]string{"analyze": "/speckit.analyze"}, CommandFiles: map[string]string{"analyze": filepath.ToSlash(rel)}, CommandHashes: map[string]string{"analyze": hex.EncodeToString(digest[:])}}
+	installation := Installation{ProjectRoot: canonicalProjectRoot(t, root), Verified: true, Commands: map[string]string{"analyze": "/speckit.analyze"}, CommandFiles: map[string]string{"analyze": filepath.ToSlash(rel)}, CommandHashes: map[string]string{"analyze": hex.EncodeToString(digest[:])}}
 	adapter := &fixtureAdapter{}
 	result, err := ExecuteStage(context.Background(), installation, adapter, adapters.Request{Profile: adapters.Profile{Provider: adapters.Fake}}, "analyze", "inspect acceptance")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !adapter.request.ReadOnly || adapter.request.ProjectRoot != root || adapter.request.Stage != "analyze" || adapter.request.Prompt != "Read files without editing. Task: inspect acceptance" {
+	if !adapter.request.ReadOnly || adapter.request.ProjectRoot != installation.ProjectRoot || adapter.request.Stage != "analyze" || adapter.request.Prompt != "Read files without editing. Task: inspect acceptance" {
 		t.Fatalf("provider request=%+v", adapter.request)
 	}
 	if result.Process.ExitCode != 0 || len(result.Events) != 1 || result.Events[0].Type != "fake.fixture" {
@@ -112,7 +121,7 @@ func TestExecuteStageWithOwnerTemplateAvoidsGeneralImplementationPrompt(t *testi
 			t.Fatal(err)
 		}
 	}
-	installation := Installation{ProjectRoot: root, Verified: true, Commands: map[string]string{"implement": "/speckit.implement", "plan": "/speckit.plan"}, CommandFiles: commandFiles, CommandHashes: map[string]string{}}
+	installation := Installation{ProjectRoot: canonicalProjectRoot(t, root), Verified: true, Commands: map[string]string{"implement": "/speckit.implement", "plan": "/speckit.plan"}, CommandFiles: commandFiles, CommandHashes: map[string]string{}}
 	for stage, rel := range commandFiles {
 		content, err := os.ReadFile(filepath.Join(root, rel))
 		if err != nil {
@@ -158,7 +167,7 @@ func TestExecuteSpecifyPromptUsesOnlyFreshOrExistingSelectedScope(t *testing.T) 
 				t.Fatal(err)
 			}
 			digest := sha256.Sum256(body)
-			installation := Installation{ProjectRoot: root, Verified: true, Commands: map[string]string{"specify": "/speckit.specify"}, CommandFiles: map[string]string{"specify": filepath.ToSlash(rel)}, CommandHashes: map[string]string{"specify": hex.EncodeToString(digest[:])}}
+			installation := Installation{ProjectRoot: canonicalProjectRoot(t, root), Verified: true, Commands: map[string]string{"specify": "/speckit.specify"}, CommandFiles: map[string]string{"specify": filepath.ToSlash(rel)}, CommandHashes: map[string]string{"specify": hex.EncodeToString(digest[:])}}
 			adapter := &fixtureAdapter{}
 			_, err := ExecuteStage(context.Background(), installation, adapter, adapters.Request{FeatureDirectory: feature, Profile: adapters.Profile{Provider: adapters.Fake}}, "specify", "build the selected project")
 			if err != nil {
@@ -199,7 +208,7 @@ func TestExecuteStageParsesStreamingProviderTerminalText(t *testing.T) {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256(body)
-	installation := Installation{ProjectRoot: root, Verified: true, Commands: map[string]string{"analyze": "/speckit.analyze"}, CommandFiles: map[string]string{"analyze": filepath.ToSlash(rel)}, CommandHashes: map[string]string{"analyze": hex.EncodeToString(digest[:])}}
+	installation := Installation{ProjectRoot: canonicalProjectRoot(t, root), Verified: true, Commands: map[string]string{"analyze": "/speckit.analyze"}, CommandFiles: map[string]string{"analyze": filepath.ToSlash(rel)}, CommandHashes: map[string]string{"analyze": hex.EncodeToString(digest[:])}}
 	result, err := ExecuteStage(context.Background(), installation, streamingFixtureAdapter{}, adapters.Request{Profile: adapters.Profile{Provider: adapters.OpenCode}}, "analyze", "review")
 	if err != nil {
 		t.Fatal(err)
@@ -237,7 +246,7 @@ func TestExecuteStagePreservesTypedProviderStreamErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256(body)
-	installation := Installation{ProjectRoot: root, Verified: true, Commands: map[string]string{"analyze": "/speckit.analyze"}, CommandFiles: map[string]string{"analyze": filepath.ToSlash(rel)}, CommandHashes: map[string]string{"analyze": hex.EncodeToString(digest[:])}}
+	installation := Installation{ProjectRoot: canonicalProjectRoot(t, root), Verified: true, Commands: map[string]string{"analyze": "/speckit.analyze"}, CommandFiles: map[string]string{"analyze": filepath.ToSlash(rel)}, CommandHashes: map[string]string{"analyze": hex.EncodeToString(digest[:])}}
 	_, err := ExecuteStage(context.Background(), installation, malformedStreamingFixtureAdapter{}, adapters.Request{Profile: adapters.Profile{Provider: adapters.OpenCode}}, "analyze", "inspect")
 	var providerErr *adapters.ProviderError
 	if !errors.As(err, &providerErr) || providerErr.Code != "MALFORMED_PROVIDER_EVENT" {

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/spectide/spectide/internal/buildinfo"
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/events"
 	"github.com/spectide/spectide/internal/model"
@@ -378,7 +379,7 @@ func (s *Server) version(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
 	}
-	jsonOut(w, 200, map[string]any{"version": "0.1.0-dev", "csrf_token": s.CSRF, "providers": map[string]string{"fake": "SIMULATED", "claude": "NOT_PROBED", "codex": "NOT_PROBED", "opencode": "NOT_PROBED"}})
+	jsonOut(w, 200, map[string]any{"version": buildinfo.Version, "csrf_token": s.CSRF, "providers": map[string]string{"fake": "SIMULATED", "claude": "NOT_PROBED", "codex": "NOT_PROBED", "opencode": "NOT_PROBED"}})
 }
 func (s *Server) runs(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {

@@ -1,6 +1,8 @@
 /bin/spectide
 /dist/
 /web/node_modules/
+/web/test-results/
+/web/playwright-report/
 /web/dist/
 /.taste-skill/
 *.db

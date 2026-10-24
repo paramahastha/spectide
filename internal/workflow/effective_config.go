@@ -18,6 +18,8 @@ type effectiveRunConfiguration struct {
 	Profiles               []approvedProfileReference `json:"profiles"`
 	RequiredChecks         []requiredCheckReference   `json:"required_checks"`
 	QualitySelectionPolicy string                     `json:"quality_selection_policy,omitempty"`
+	QualityManifestSHA256  string                     `json:"quality_manifest_sha256,omitempty"`
+	QualityWorkspaceRoot   string                     `json:"quality_workspace_root,omitempty"`
 }
 
 type effectiveStage struct {
@@ -99,6 +101,7 @@ func buildEffectiveRunConfiguration(cfg config.Config, decisions map[string]conf
 	if len(registries) > 0 && registries[0] != nil {
 		registry = registries[0]
 	}
+	effective.QualityWorkspaceRoot = registry.WorkingDirectory()
 	for _, check := range registry.Checks() {
 		effective.RequiredChecks = append(effective.RequiredChecks, requiredCheckReference{
 			Key: check.Key, Binary: check.Binary, Args: append([]string(nil), check.Args...), Required: check.Required,
@@ -230,6 +233,11 @@ func slicesEqual(a, b []string) bool {
 
 func (effective effectiveRunConfiguration) qualityRegistry() (*quality.Registry, error) {
 	registry := quality.NewRegistry(nil)
+	if effective.QualityWorkspaceRoot != "" {
+		if err := registry.PinWorkingDirectory(effective.QualityWorkspaceRoot); err != nil {
+			return nil, fmt.Errorf("WORKSPACE_DRIFT: immutable quality workspace root is invalid")
+		}
+	}
 	for _, check := range effective.RequiredChecks {
 		if check.TimeoutSeconds < 1 || check.TimeoutSeconds > config.MaxStageTimeoutSeconds {
 			return nil, fmt.Errorf("WORKSPACE_DRIFT: immutable check timeout is invalid")

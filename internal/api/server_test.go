@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/spectide/spectide/internal/adapters"
+	"github.com/spectide/spectide/internal/buildinfo"
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/model"
 	"github.com/spectide/spectide/internal/runner"
@@ -40,6 +41,85 @@ func TestRejectsNonLoopbackHost(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("status=%d", w.Code)
 	}
+}
+
+func TestVersionEndpointUsesSharedBuildVersion(t *testing.T) {
+	previous := buildinfo.Version
+	buildinfo.Version = "9.8.7-test"
+	t.Cleanup(func() { buildinfo.Version = previous })
+	s := testServer(t)
+	request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/v1/version", nil)
+	response := httptest.NewRecorder()
+	s.Handler().ServeHTTP(response, request)
+	var payload map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["version"] != "9.8.7-test" {
+		t.Fatalf("API build version=%v", payload["version"])
+	}
+}
+
+func TestSimulatedActiveStageIsVisibleThroughReportAPI(t *testing.T) {
+	server := testServer(t)
+	run, err := server.Engine.Start(context.Background(), t.TempDir(), "Observe the active simulated stage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	var active model.Stage
+	for time.Now().Before(deadline) {
+		request := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/v1/runs/"+run.ID, nil)
+		request.Host = "127.0.0.1"
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("report status=%d body=%s", response.Code, response.Body.String())
+		}
+		var report model.Report
+		if err := json.Unmarshal(response.Body.Bytes(), &report); err != nil {
+			t.Fatal(err)
+		}
+		for _, stage := range report.Stages {
+			if stage.State == model.StageRun {
+				active = stage
+				for _, decision := range report.Decisions {
+					if decision.Stage == stage.Key && decision.Provider == stage.Provider && decision.Profile == stage.Profile {
+						goto routeVerified
+					}
+				}
+				t.Fatalf("active stage route is absent from API report: %+v", report)
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("API report never exposed an active simulated stage")
+
+routeVerified:
+	if active.Provider != "fake" || active.Profile != "fake-demo" || active.Model != "deterministic" || active.Effort != "none" || active.Attempt != 1 {
+		t.Fatalf("API active stage=%+v", active)
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		current, err := server.Store.GetRun(context.Background(), run.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current.State == model.Completed {
+			finalStages, err := server.Store.Stages(context.Background(), run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, stage := range finalStages {
+				if stage.ID == active.ID && stage.State != model.Succeeded {
+					t.Fatalf("stage final state=%s, want %s", stage.State, model.Succeeded)
+				}
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("simulated run did not reach its terminal state")
 }
 
 func TestAPIJSONAndErrorResponsesRedactNestedSecrets(t *testing.T) {

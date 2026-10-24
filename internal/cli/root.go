@@ -17,6 +17,7 @@ import (
 
 	"github.com/spectide/spectide/internal/adapters"
 	"github.com/spectide/spectide/internal/app"
+	"github.com/spectide/spectide/internal/buildinfo"
 	"github.com/spectide/spectide/internal/config"
 	"github.com/spectide/spectide/internal/events"
 	"github.com/spectide/spectide/internal/model"
@@ -26,10 +27,6 @@ import (
 	"github.com/spectide/spectide/internal/speckit"
 	"github.com/spf13/cobra"
 )
-
-// BuildVersion is set by release builds with -ldflags; local development keeps
-// the explicit development version.
-var BuildVersion = "0.1.0-dev"
 
 func writeJSON(out io.Writer, value any) error {
 	encoded, err := json.Marshal(events.SanitizePayload(value))
@@ -59,7 +56,7 @@ func Root() *cobra.Command {
 	root := &cobra.Command{Use: "spectide", Short: "Local, evidence-backed Spec-Kit orchestration", SilenceUsage: true}
 	root.PersistentFlags().StringVar(&db, "db", "", "SQLite state database path")
 	open := func() (*app.App, error) { return app.Open(db) }
-	root.AddCommand(&cobra.Command{Use: "version", Run: func(c *cobra.Command, _ []string) { fmt.Fprintf(c.OutOrStdout(), "spectide %s\n", BuildVersion) }})
+	root.AddCommand(&cobra.Command{Use: "version", Run: func(c *cobra.Command, _ []string) { fmt.Fprintf(c.OutOrStdout(), "spectide %s\n", buildinfo.Version) }})
 	root.AddCommand(&cobra.Command{Use: "doctor", Short: "Report local provider and Spec-Kit readiness", RunE: func(c *cobra.Command, _ []string) error {
 		providers := map[string]string{"fake": "SIMULATED_READY", "claude": probe("claude"), "codex": probe("codex"), "opencode": probe("opencode")}
 		_, specErr := speckit.Discover(".")
@@ -75,6 +72,9 @@ func Root() *cobra.Command {
 			return e
 		}
 		defer a.Close()
+		if e = a.Store.RecoverAbandonedRuns(c.Context(), time.Now().UTC()); e != nil {
+			return fmt.Errorf("startup recovery: %w", e)
+		}
 		if e = a.Store.PruneRetention(c.Context(), time.Now().UTC()); e != nil {
 			return fmt.Errorf("retention maintenance: %w", e)
 		}
@@ -510,7 +510,10 @@ func Root() *cobra.Command {
 		if st, e := os.Stat(abs); e != nil || !st.IsDir() {
 			return fmt.Errorf("project path must be an existing directory")
 		}
-		path := config.ProjectPath(abs)
+		path, e := config.SafeProjectPath(abs)
+		if e != nil {
+			return e
+		}
 		v, e := config.LoadEffective(config.GlobalPath(), path)
 		if e != nil {
 			return e

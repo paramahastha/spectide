@@ -36,6 +36,28 @@ func TestProjectConfigSaveLoadIsPrivateAndValidated(t *testing.T) {
 	}
 }
 
+func TestSaveDoesNotFollowPredictableTemporaryFileSymlink(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.json")
+	if err := os.WriteFile(outside, []byte("outside-original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, FileName)
+	if err := os.Symlink(outside, path+".tmp"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(path, Default()); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(outside)
+	if err != nil || string(contents) != "outside-original" {
+		t.Fatalf("external temp target changed: %q err=%v", contents, err)
+	}
+	if _, err = os.Stat(path); err != nil {
+		t.Fatalf("config was not atomically saved: %v", err)
+	}
+}
+
 func TestConfigPersistenceRedactsDisplayNameAndRejectsSecretIdentities(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")

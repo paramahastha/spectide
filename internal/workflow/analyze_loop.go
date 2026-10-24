@@ -49,7 +49,11 @@ func (e *Engine) runLiveAnalyzeLoop(ctx context.Context, run model.Run, decision
 			if err != nil {
 				return err
 			}
-			before, err := workspaceFiles(installation.ProjectRoot)
+			before, err := workspaceFingerprintExcept(installation.ProjectRoot, []string{ownerPath})
+			if err != nil {
+				return err
+			}
+			beforeFiles, err := workspaceFiles(installation.ProjectRoot)
 			if err != nil {
 				return err
 			}
@@ -63,17 +67,27 @@ func (e *Engine) runLiveAnalyzeLoop(ctx context.Context, run model.Run, decision
 				"Finding: " + security.Redact(finding.Summary),
 				"Resolution: " + security.Redact(finding.Resolution),
 			}, "\n")
-			if _, cancelled, runErr := e.runLiveStageWithControlOptions(ctx, run, "implement", "analyze_remediation", implementRoute, prompt, installation, featureDir, liveStageOptions{templateStage: templateStage, ownerPath: ownerPath, LoopCounts: budget.Counts(), HasLoopCounts: true}); runErr != nil {
+			_, cancelled, runErr := e.runLiveStageWithControlOptions(ctx, run, "implement", "analyze_remediation", implementRoute, prompt, installation, featureDir, liveStageOptions{templateStage: templateStage, ownerPath: ownerPath, LoopCounts: budget.Counts(), HasLoopCounts: true})
+			after, fingerprintErr := workspaceFingerprintExcept(installation.ProjectRoot, []string{ownerPath})
+			if fingerprintErr != nil || after != before {
+				boundaryErr := fmt.Errorf("ANALYZE_REMEDIATION_CHANGED_NON_OWNER_ARTIFACT")
+				if fingerprintErr != nil {
+					boundaryErr = fmt.Errorf("ANALYZE_REMEDIATION_BOUNDARY_UNVERIFIABLE: %w", fingerprintErr)
+				}
+				_ = e.store.Event(context.Background(), run.ID, "analyze", "analysis.boundary_violation", "error", map[string]any{"finding_id": finding.ID, "owner": finding.Owner})
+				return boundaryErr
+			}
+			if runErr != nil {
 				if cancelled {
 					return context.Canceled
 				}
 				return runErr
 			}
-			after, err := workspaceFiles(installation.ProjectRoot)
+			afterFiles, err := workspaceFiles(installation.ProjectRoot)
 			if err != nil {
 				return err
 			}
-			if err := validateWorkspaceOwnerChange(before, after, ownerPath); err != nil {
+			if err := validateWorkspaceOwnerChange(beforeFiles, afterFiles, ownerPath); err != nil {
 				return err
 			}
 			if err := e.store.Event(ctx, run.ID, "analyze", "analysis.remediated", "info", map[string]any{"finding_id": finding.ID, "owner": finding.Owner, "severity": finding.Severity}); err != nil {

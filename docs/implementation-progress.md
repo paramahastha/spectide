@@ -1,5 +1,9 @@
 # Implementation Progress
 
+## Current implementation checkpoint — 2026-10-24
+
+Phase 10 through Phase 20 convergence findings T107–T140 are implemented and checked complete. Workspace/Git mutation fingerprints, approval continuation authorization, provider output parsing, dashboard recovery/accessibility/CSRF token rotation, accurate simulated-stage lifecycle, workflow cancellation and launch recovery, artifact checkpointing, and verification documentation reconciliation are complete. The offline provider fixture passed 50 repetitions. Full `make verify` passed on 2026-10-24 after T140: Go vet/tests, 43 Vitest tests, six Playwright tests including 26 Axe page/state scans, typecheck/build, secret scan, and smoke; startup was 21.638 ms. Final `/speckit.converge` passed on 2026-10-24 with zero findings after checking 142 tasks, 30 requirements, eight success criteria, 14 scenarios, nine plan areas, and five constitution principles. Its uncached Go tests, vet, build, TypeScript, and 43 component tests passed. Browser, race, load, and authenticated-provider checks were not rerun during that convergence pass. Current acceptance and verification summaries are in [the acceptance ledger](acceptance-ledger.md), [the accessibility audit](accessibility-audit.md), and [final verification](final-verification.md); older checkpoint notes below retain their dated status and are superseded where they conflict. Authenticated-provider smoke remains NOT_RUN as allowed by spec.md:171; no release or publication occurred.
+
 ## Checkpoint: 2026-10-22
 
 ### Phase checkpoint — persistence and local security hardening
@@ -912,3 +916,31 @@
 - Chrome origin authorization and server restart are complete. The rebuilt dashboard renders run detail, the 12-stage dry-run preview, both profile empty states, and a clean console. Keyboard focus is visible; document-level horizontal overflow was absent at desktop 200% zoom, 1024×768, and 390×844. Full page/state coverage, rendered browser Axe/contrast/reduced-motion checks, two-client interaction, and image-file screenshots remain open. No screenshot archive was created. Authenticated-provider execution remains NOT_RUN.
 - Updated T045's note to accurately describe the verification/convergence sequence. T078 is partial: its ledger and report updates are current, but it cannot be closed without the remaining browser evidence and archived screenshot set. T031/T046/T077/T078/T103 and release acceptance remain open.
 - `git diff --check` passed after these documentation updates.
+
+### Browser acceptance follow-up — 2026-10-23
+
+- In the authorized Chrome session, rechecked the simulated run list/detail, 12-stage ready route preview, profile empty states, and a blocked preview for a nonexistent relative project path. The blocked preview remained `NOT_RUN` and did not start a run; changing the project input cleared the prior result.
+- A second Chrome tab selected the same persisted run. The stage detail, event timeline, and six quality gates matched the first viewer. Keyboard focus reached the Project path field with a visible outline.
+- The first browser Axe scan exposed a serious contrast violation on a blocked stage's small index. Updated `.stage-index` to use the accessible muted text token; later scans passed without critical or serious violations.
+- Added Playwright/Chromium coverage, Axe scans, two-viewer fixture comparison, keyboard focus, reduced-motion, and responsive layout checks. Five browser tests passed, and desktop, phone, ready/blocked, empty, and disconnected screenshots are archived under `docs/screenshots/`.
+- The suite emulates 200% page scaling in CSS; it does not call that browser zoom. The prior authorized Chrome check remains separate evidence of actual 200% browser zoom. Live SSE reconnect and authenticated provider execution remain unverified.
+- `make verify` and official convergence remain to be rerun after these changes.
+### T138 — acceptance and verification evidence reconciled — 2026-10-24
+
+- The official `/speckit.converge` review appended T138 after finding stale current-table statements: old 34/36 dashboard test counts, completed browser evidence described as NOT_RUN, and obsolete Phase 12/14/release blockers. It reported no new functional defect.
+- Updated the current acceptance and verification tables to distinguish the historical counts and dated 2026-10-23 full `make verify` (41 Vitest tests and six Chromium tests) from the fresh convergence checks: uncached `go test ./... -count=1`, `go vet ./...`, and 41 dashboard component tests passed. Browser, race, SSE load, and authenticated-provider checks were not rerun during that convergence pass.
+- Kept genuinely partial requirements partial, preserved optional authenticated-provider smoke as NOT_RUN, and retained live network SSE recovery as unverified. The linked current evidence is in [the acceptance ledger](acceptance-ledger.md) and [final verification](final-verification.md).
+
+### T139 — dashboard CSRF recovery after daemon restart — 2026-10-24
+
+- The convergence review found that a successful initial version handshake never refreshed when the daemon restarted and rotated its CSRF token. Reads and SSE could reconnect while mutations kept failing with the previous token.
+- Added single-flight version/CSRF refresh on recovered event streams and structured `CSRF_REQUIRED` responses. A rejected mutation is reported but never replayed; the next user-initiated mutation uses the refreshed token. Selection and event replay cursors remain intact.
+- Added an automated restart regression proving the old token is rejected once, reads and SSE recover without reloading, the replay cursor is retained, and the next control request succeeds with the new token. The targeted regression and all 42 Vitest tests passed. Full `make verify` passed, including Go vet/tests, typecheck, six Playwright/Axe tests, production build, secret scan, and offline smoke. `git diff --check` passed.
+- The final `/speckit.converge` rerun subsequently checked T140 and the complete ledger; it passed with zero findings on 2026-10-24. See the current checkpoint at the top of this file.
+
+### T140 — simulated active-stage persistence — 2026-10-24
+
+- Convergence confirmed that fake provider stages emitted `stage.started` while remaining PENDING throughout execution. The engine now persists a RUNNING stage transition immediately after the start event and before the simulated wait/provider script; terminal success, failure, and cancellation handling remains in place.
+- Added workflow/store and report API regressions that observe the active stage, route, model/effort, attempt, durable transition event, and terminal SUCCEEDED state. Added dashboard coverage that displays a persisted simulated RUNNING stage with its route and attempt.
+- Full `make verify` passed: Go vet/tests, 43 Vitest tests, six Playwright/Axe tests, typecheck/build, binary build, secret scan, and smoke. Startup was 21.638 ms. `git diff --check` passed.
+- Final `/speckit.converge` passed on 2026-10-24 after checking T140 and the complete ledger; it reported zero findings. See the current checkpoint at the top of this file.

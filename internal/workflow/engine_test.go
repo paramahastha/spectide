@@ -77,6 +77,95 @@ func TestFakeLifecyclePersistsEvidence(t *testing.T) {
 	t.Fatal("workflow did not complete")
 }
 
+func TestSimulatedStagePersistsActiveStateBeforeFakeExecution(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "spectide.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	engine := New(s)
+	project := t.TempDir()
+	run, err := engine.Start(context.Background(), project, "Observe a simulated stage")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	var active model.Stage
+	for time.Now().Before(deadline) {
+		stages, listErr := s.Stages(context.Background(), run.ID)
+		if listErr != nil {
+			t.Fatal(listErr)
+		}
+		for _, stage := range stages {
+			if stage.State == model.StageRun {
+				active = stage
+				break
+			}
+		}
+		if active.ID != "" {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if active.ID == "" {
+		t.Fatal("simulated workflow never persisted an active stage")
+	}
+	if active.Provider != "fake" || active.Profile != "fake-demo" || active.Model != "deterministic" || active.Effort != "none" || active.Attempt != 1 {
+		t.Fatalf("active simulated stage lost route or attempt: %+v", active)
+	}
+	report, err := s.Report(context.Background(), run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decision *model.RoutingDecision
+	for i := range report.Decisions {
+		if report.Decisions[i].Stage == active.Key {
+			decision = &report.Decisions[i]
+			break
+		}
+	}
+	if decision == nil || decision.Provider != active.Provider || decision.Profile != active.Profile {
+		t.Fatalf("active stage route is absent from its report: stage=%+v decisions=%+v", active, report.Decisions)
+	}
+	events, err := s.Events(context.Background(), run.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transitionRecorded := false
+	for _, event := range events {
+		if event.Stage == active.Key && event.Type == "stage.transition" && event.Payload["state"] == string(model.StageRun) {
+			transitionRecorded = true
+			break
+		}
+	}
+	if !transitionRecorded {
+		t.Fatalf("active simulated stage has no durable RUNNING transition: %+v", events)
+	}
+
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		current, getErr := s.GetRun(context.Background(), run.ID)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		if current.State == model.Completed {
+			finalStages, listErr := s.Stages(context.Background(), run.ID)
+			if listErr != nil {
+				t.Fatal(listErr)
+			}
+			for _, stage := range finalStages {
+				if stage.ID == active.ID && stage.State != model.Succeeded {
+					t.Fatalf("active stage terminal state=%s, want %s", stage.State, model.Succeeded)
+				}
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("simulated workflow did not reach a durable terminal state")
+}
+
 func TestFakeProviderScenarioFixturesRunThroughCompleteEngine(t *testing.T) {
 	fixtureBytes, err := os.ReadFile(filepath.Join("..", "..", "testdata", "fake-provider", "scenarios.json"))
 	if err != nil {

@@ -29,6 +29,10 @@ func Discover(root string) (Installation, error) {
 	if e != nil {
 		return Installation{}, e
 	}
+	abs, e = filepath.EvalSymlinks(abs)
+	if e != nil {
+		return Installation{}, fmt.Errorf("SPEC_KIT_PROJECT_ROOT_INVALID: %w", e)
+	}
 	info, e := os.Stat(filepath.Join(abs, ".specify"))
 	if e != nil || !info.IsDir() {
 		return Installation{}, fmt.Errorf("SPEC_KIT_NOT_INITIALIZED: .specify is missing")

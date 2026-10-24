@@ -118,7 +118,7 @@ func Run(ctx context.Context, in Invocation) (Result, error) {
 		if err != nil {
 			return Result{}, fmt.Errorf("WORKING_DIRECTORY_INVALID: %w", err)
 		}
-		expected, err := filepath.EvalSymlinks(in.ExpectedWorkingDirectory)
+		expected, err := filepath.Abs(in.ExpectedWorkingDirectory)
 		if err != nil || filepath.Clean(resolved) != filepath.Clean(expected) {
 			return Result{}, fmt.Errorf("WORKING_DIRECTORY_REFERENCE_DRIFT")
 		}
@@ -171,6 +171,10 @@ func Run(ctx context.Context, in Invocation) (Result, error) {
 	cmd.Stdout = streamOut
 	cmd.Stderr = errOut
 	err := cmd.Run()
+	res := Result{Stdout: security.Redact(out.String()), Stderr: security.Redact(errOut.String()), StdoutTruncated: streamOut.truncated, StartedAt: start.UTC()}
+	if exit, ok := err.(*exec.ExitError); ok {
+		res.ExitCode = exit.ExitCode()
+	}
 	if ctx.Err() != nil || errors.Is(err, exec.ErrWaitDelay) {
 		// CommandContext may stop watching once the group leader exits, even
 		// though descendants still hold its pipes. Reassert termination after
@@ -181,7 +185,8 @@ func Run(ctx context.Context, in Invocation) (Result, error) {
 		<-escalationDone
 	}
 	finished := time.Now()
-	res := Result{Stdout: security.Redact(out.String()), Stderr: security.Redact(errOut.String()), StdoutTruncated: streamOut.truncated, StartedAt: start.UTC(), FinishedAt: finished.UTC(), Duration: finished.Sub(start)}
+	res.FinishedAt = finished.UTC()
+	res.Duration = finished.Sub(start)
 	if cmd.Process != nil {
 		res.ProcessID = cmd.Process.Pid
 	}
@@ -194,8 +199,7 @@ func Run(ctx context.Context, in Invocation) (Result, error) {
 	if streamOut.streamErr != nil {
 		return res, fmt.Errorf("PROVIDER_STREAM_INVALID: %w", streamOut.streamErr)
 	}
-	if exit, ok := err.(*exec.ExitError); ok {
-		res.ExitCode = exit.ExitCode()
+	if _, ok := err.(*exec.ExitError); ok {
 		return res, fmt.Errorf("provider exited with %d", res.ExitCode)
 	}
 	if err != nil {

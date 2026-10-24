@@ -114,7 +114,11 @@ func TestConfigAndWorkingDirectoryReferencesRejectSymlinkRetargeting(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	policy := ProcessPolicy{Binary: "/bin/echo", Dir: workLink, ExpectedWorkingDirectory: workA, ExpectedConfigDirectory: approvedConfig, EnforceConfigDirectory: true, Env: []string{"CODEX_HOME=" + configLink}}
+	approvedWork, err := filepath.EvalSymlinks(workA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := ProcessPolicy{Binary: "/bin/echo", Dir: workLink, ExpectedWorkingDirectory: approvedWork, ExpectedConfigDirectory: approvedConfig, EnforceConfigDirectory: true, Env: []string{"CODEX_HOME=" + configLink}}
 	if err = ValidateProcess(policy); err != nil {
 		t.Fatalf("initial approved directories rejected: %v", err)
 	}
@@ -141,5 +145,28 @@ func TestConfigAndWorkingDirectoryReferencesRejectSymlinkRetargeting(t *testing.
 	}
 	if err = ValidateProcess(policy); err == nil || !strings.Contains(err.Error(), "WORKING_DIRECTORY_REFERENCE_DRIFT") {
 		t.Fatalf("working-directory symlink retarget was accepted: %v", err)
+	}
+}
+
+func TestWorkingDirectoryReferenceRejectsApprovedPathReplacement(t *testing.T) {
+	parent := t.TempDir()
+	approved := filepath.Join(parent, "approved")
+	outside := t.TempDir()
+	if err := os.Mkdir(approved, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(approved, filepath.Join(parent, "renamed-approved")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, approved); err != nil {
+		t.Fatal(err)
+	}
+	approvedCanonical, err := filepath.EvalSymlinks(filepath.Join(parent, "renamed-approved"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := ProcessPolicy{Binary: "/bin/echo", Dir: approved, ExpectedWorkingDirectory: approvedCanonical}
+	if err := ValidateProcess(policy); err == nil || !strings.Contains(err.Error(), "WORKING_DIRECTORY_REFERENCE_DRIFT") {
+		t.Fatalf("replacement workspace alias passed approval binding: %v", err)
 	}
 }

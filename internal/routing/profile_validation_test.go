@@ -112,3 +112,30 @@ func TestFallbackProfilesAreAuthorizedAndRemainWithinProjectBoundary(t *testing.
 		t.Fatalf("fallback provider mismatch error=%v", err)
 	}
 }
+
+func TestWriteCapabilityRequiredForEveryWriteEnabledStageAndFallback(t *testing.T) {
+	project := t.TempDir()
+	cfg := config.Default()
+	cfg.DefaultRoute = config.Route{Provider: "codex", Profile: "primary"}
+	capability := &model.ProfileCapability{Provider: "codex", ExecutableFound: true, Version: "1.0", Authenticated: "AUTHENTICATED", ReadOnlyExecution: true, SafetyModes: []string{"read-only"}}
+	profile := model.Profile{Name: "primary", Provider: "codex", AllowedScopes: []string{project}, Capability: capability}
+	for _, stage := range []string{"constitution", "specify", "clarify", "plan", "checklist", "tasks", "converge", "implement"} {
+		cfg.StageRoutes = map[string]config.Route{stage: {Provider: "codex", Profile: "primary"}}
+		if err := ValidateProfileCapabilities(cfg, []model.Profile{profile}); err == nil || !strings.Contains(err.Error(), "WORKSPACE_WRITE_UNVERIFIED") {
+			t.Fatalf("write-unverified %s route accepted: %v", stage, err)
+		}
+	}
+	cfg.DefaultRoute = config.Route{Provider: "fake", Profile: "fake-demo"}
+	cfg.StageRoutes = map[string]config.Route{"analyze": {Provider: "codex", Profile: "primary"}, "final_review": {Provider: "codex", Profile: "primary"}}
+	if err := ValidateProfileCapabilities(cfg, []model.Profile{profile}); err != nil {
+		t.Fatalf("verified read-only routes should not require workspace-write: %v", err)
+	}
+	cfg.StageRoutes = nil
+	cfg.DefaultRoute = config.Route{Provider: "codex", Profile: "primary"}
+	cfg.DefaultRoute.FallbackAuthorized = true
+	cfg.DefaultRoute.Fallback = []config.Route{{Provider: "claude", Profile: "backup"}}
+	backup := model.Profile{Name: "backup", Provider: "claude", AllowedScopes: []string{project}, Capability: &model.ProfileCapability{Provider: "claude", ExecutableFound: true, Version: "1.0", Authenticated: "AUTHENTICATED", ReadOnlyExecution: true, SafetyModes: []string{"read-only"}}}
+	if err := ValidateProfileCapabilities(cfg, []model.Profile{profile, backup}); err == nil || !strings.Contains(err.Error(), "WORKSPACE_WRITE_UNVERIFIED") {
+		t.Fatalf("write-unverified fallback accepted: %v", err)
+	}
+}

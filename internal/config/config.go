@@ -303,12 +303,26 @@ func Save(path string, c Config) error {
 	if err = os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err = os.WriteFile(tmp, b, 0o600); err != nil {
+	dir := filepath.Dir(path)
+	tmpFile, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := tmpFile.Name()
+	defer os.Remove(tmp)
+	if err = tmpFile.Chmod(0o600); err == nil {
+		_, err = tmpFile.Write(b)
+	}
+	if err == nil {
+		err = tmpFile.Sync()
+	}
+	if closeErr := tmpFile.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
 		return err
 	}
 	if err = os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
 		return err
 	}
 	return nil

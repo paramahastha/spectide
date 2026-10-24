@@ -37,7 +37,7 @@ func TestProviderNormalizersAcceptJSONLAndDiscardRawPayload(t *testing.T) {
 		count   int
 	}{
 		{claude.Adapter{}, `{"type":"system","message":"private body"}` + "\n" + `{"type":"assistant"}` + "\n" + `{"type":"result","result":"done"}` + "\n", 3},
-		{codex.Adapter{}, `{"type":"item.completed","item":{"type":"agent_message","text":"part"}}` + "\n" + `{"type":"turn.completed","last_agent_message":"done"}` + "\n", 2},
+		{codex.Adapter{}, `{"type":"item.completed","item":{"type":"agent_message","text":"done"}}` + "\n" + `{"type":"turn.completed","usage":{"input_tokens":2,"output_tokens":1}}` + "\n", 2},
 		{opencode.Adapter{}, `{"type":"text","text":"done"}` + "\n" + `{"type":"step_finish"}` + "\n", 2},
 	}
 	for _, tc := range cases {
@@ -79,6 +79,10 @@ func TestReadOnlyAndEffortPoliciesFailClosed(t *testing.T) {
 	}
 	if !foundPlan {
 		t.Fatal("Claude analyze route lacks plan permission mode")
+	}
+	claudeWrite, err := (claude.Adapter{}).Build(adapters.Request{Profile: profile, ProjectRoot: "/tmp/work", Prompt: "edit the approved workspace"})
+	if err != nil || !hasArgPair(claudeWrite.Args, "--permission-mode", "acceptEdits") {
+		t.Fatalf("Claude write route did not select its constrained edit policy: invocation=%+v err=%v", claudeWrite, err)
 	}
 	claudeEffort, err := (claude.Adapter{}).Build(adapters.Request{Profile: profile, ProjectRoot: "/tmp/work", Prompt: "inspect", Effort: "high"})
 	if err != nil || !hasArgPair(claudeEffort.Args, "--effort", "high") {

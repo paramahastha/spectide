@@ -181,13 +181,19 @@ func ValidateRouteCapability(stage string, route config.Route, profile model.Pro
 			return fmt.Errorf("EFFORT_NOT_VERIFIED: %s", profile.Name)
 		}
 	}
-	if (stage == "analyze" || stage == "final_review") && (!capability.ReadOnlyExecution || !containsCapability(capability.SafetyModes, "read-only")) {
+	if !RequiresWorkspaceWrite(stage) && (!capability.ReadOnlyExecution || !containsCapability(capability.SafetyModes, "read-only")) {
 		return fmt.Errorf("READ_ONLY_EXECUTION_UNVERIFIED: %s", profile.Name)
 	}
-	if stage == "implement" && (!capability.WorkspaceWrite || !containsCapability(capability.SafetyModes, "workspace-write")) {
+	if RequiresWorkspaceWrite(stage) && (!capability.WorkspaceWrite || !containsCapability(capability.SafetyModes, "workspace-write")) {
 		return fmt.Errorf("WORKSPACE_WRITE_UNVERIFIED: %s", profile.Name)
 	}
 	return nil
+}
+
+// RequiresWorkspaceWrite matches the adapter invocation policy: only analysis
+// prompts run read-only; every other provider invocation can write its scope.
+func RequiresWorkspaceWrite(stage string) bool {
+	return stage != "analyze" && stage != "final_review"
 }
 
 func containsCapability(values []string, value string) bool {
